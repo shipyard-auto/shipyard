@@ -1,0 +1,123 @@
+name: Shipyard Release
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "shipyard/**"
+      - ".github/workflows/shipyard-release.yml"
+
+permissions:
+  contents: write
+  pull-requests: read
+
+concurrency:
+  group: shipyard-release-main
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: shipyard
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.2"
+
+      - name: Compute release version
+        id: version
+        shell: bash
+        run: |
+          latest_tag="$(git tag -l 'v0.*' --sort=-version:refname | head -n 1)"
+          if [ -z "$latest_tag" ]; then
+            next_tag="v0.1"
+          else
+            current="${latest_tag#v0.}"
+            next=$((current + 1))
+            next_tag="v0.$next"
+          fi
+
+          version="${next_tag#v}"
+          echo "tag=$next_tag" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Generate changelog from merged PR
+        id: changelog
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const sha = context.sha;
+            const response = await github.request("GET /repos/{owner}/{repo}/commits/{commit_sha}/pulls", {
+              owner,
+              repo,
+              commit_sha: sha,
+              mediaType: { previews: ["groot"] }
+            });
+
+            const pr = response.data[0];
+            const fallbackBody = [
+              `## Release ${process.env.RELEASE_TAG}`,
+              "",
+              "Automated release from a direct push to `main`.",
+              "",
+              `- Commit: ${sha}`
+            ].join("\n");
+
+            if (!pr) {
+              core.setOutput("body", fallbackBody);
+              return;
+            }
+
+            const prBody = (pr.body || "").trim();
+            const summary = prBody.length > 0 ? prBody : "_No PR description provided._";
+            const body = [
+              `## Release ${process.env.RELEASE_TAG}`,
+              "",
+              `Source PR: #${pr.number} - ${pr.title}`,
+              "",
+              "### Changelog",
+              summary,
+              "",
+              "### Metadata",
+              `- PR: #${pr.number}`,
+              `- Author: @${pr.user.login}`,
+              `- Merge Commit: ${sha}`
+            ].join("\n");
+
+            core.setOutput("body", body);
+        env:
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+
+      - name: Run tests
+        run: go test ./...
+
+      - name: Build release artifacts
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          COMMIT: ${{ github.sha }}
+          BUILD_DATE: ${{ github.event.head_commit.timestamp }}
+        run: make package
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: ${{ steps.version.outputs.tag }}
+          body: ${{ steps.changelog.outputs.body }}
+          files: |
+            shipyard/dist/shipyard_${{ steps.version.outputs.version }}_linux_amd64.tar.gz
+            shipyard/dist/shipyard_${{ steps.version.outputs.version }}_linux_arm64.tar.gz
+            shipyard/dist/shipyard_${{ steps.version.outputs.version }}_darwin_amd64.tar.gz
+            shipyard/dist/shipyard_${{ steps.version.outputs.version }}_darwin_arm64.tar.gz
