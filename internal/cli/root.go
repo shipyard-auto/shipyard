@@ -94,6 +94,7 @@ func renderHelp(w io.Writer, cmd *cobra.Command) {
 
 	if cmd.HasAvailableSubCommands() {
 		ui.Printf(w, "\n%s\n", ui.SectionTitle("Available Commands"))
+		ui.Printf(w, "  %-12s %s\n", ui.Highlight("help"), "Show help for this command")
 		for _, sub := range cmd.Commands() {
 			if !sub.IsAvailableCommand() || sub.IsAdditionalHelpTopicCommand() {
 				continue
