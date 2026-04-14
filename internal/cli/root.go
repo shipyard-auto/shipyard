@@ -33,6 +33,7 @@ func NewRootCmd() *cobra.Command {
 	cmd.Version = app.Version
 
 	cmd.AddCommand(newUninstallCmd())
+	cmd.AddCommand(newUpdateCmd())
 	cmd.AddCommand(newVersionCmd())
 	cmd.SetHelpCommand(&cobra.Command{
 		Use:   "help [command]",
@@ -106,6 +107,7 @@ func renderRootHelp(w io.Writer, cmd *cobra.Command) {
 
 	ui.Printf(w, "\n%s\n", ui.SectionTitle("Examples"))
 	ui.Printf(w, "  %s\n", ui.Highlight("shipyard help"))
+	ui.Printf(w, "  %s\n", ui.Highlight("shipyard update"))
 	ui.Printf(w, "  %s\n", ui.Highlight("shipyard version"))
 	ui.Printf(w, "  %s\n", ui.Highlight("shipyard uninstall --yes"))
 }
