@@ -2,6 +2,7 @@ package cron
 
 import (
 	"errors"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -103,7 +104,7 @@ func TestServiceUpdateDisablesJobInCrontab(t *testing.T) {
 		Now:     func() time.Time { return now.Add(time.Hour) },
 	}
 
-	updated, err := service.Update("AB12CD", JobInput{Enabled: boolptr(false)})
+	updated, err := service.Update("AB12CD", JobInput{Enabled: boolptrTest(false)})
 	if err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}
@@ -160,8 +161,95 @@ func TestServiceReturnsNotFound(t *testing.T) {
 	}
 }
 
-func strptr(value string) *string { return &value }
-func boolptr(value bool) *bool    { return &value }
+func TestServiceAddRejectsInvalidSchedule(t *testing.T) {
+	t.Parallel()
+
+	service := Service{
+		Repo:    &memoryRepo{store: Store{Notice: storeNotice, Version: storeVersion, Jobs: []Job{}}},
+		Crontab: &fakeCrontab{},
+		IDGen:   fakeIDGen{id: "AA11BB"},
+		Now:     time.Now,
+	}
+
+	_, err := service.Add(JobInput{
+		Name:     strptr("Broken"),
+		Schedule: strptr("* *"),
+		Command:  strptr("/bin/echo hello"),
+	})
+	if err == nil || !strings.Contains(err.Error(), "schedule") {
+		t.Fatalf("Add() error = %v, want schedule validation error", err)
+	}
+}
+
+func TestServiceUpdateRejectsInvalidSchedule(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now().UTC()
+	service := Service{
+		Repo: &memoryRepo{store: Store{
+			Notice:  storeNotice,
+			Version: storeVersion,
+			Jobs: []Job{{
+				ID:        "AB12CD",
+				Name:      "Backup",
+				Schedule:  "0 * * * *",
+				Command:   "/usr/local/bin/backup",
+				Enabled:   true,
+				CreatedAt: now,
+				UpdatedAt: now,
+			}},
+		}},
+		Crontab: &fakeCrontab{readValue: "# shipyard:AB12CD Backup\n0 * * * * /usr/local/bin/backup\n"},
+		IDGen:   fakeIDGen{id: "AA11BB"},
+		Now:     time.Now,
+	}
+
+	_, err := service.Update("AB12CD", JobInput{Schedule: strptr("99 * * * *")})
+	if err == nil || !strings.Contains(err.Error(), "schedule") {
+		t.Fatalf("Update() error = %v, want schedule validation error", err)
+	}
+}
+
+func TestServiceRunExecutesCommand(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now().UTC()
+	service := Service{
+		Repo: &memoryRepo{store: Store{
+			Notice:  storeNotice,
+			Version: storeVersion,
+			Jobs: []Job{{
+				ID:        "AB12CD",
+				Name:      "Backup",
+				Schedule:  "0 * * * *",
+				Command:   "echo hello",
+				Enabled:   true,
+				CreatedAt: now,
+				UpdatedAt: now,
+			}},
+		}},
+		Crontab: &fakeCrontab{},
+		IDGen:   fakeIDGen{id: "AA11BB"},
+		Now:     time.Now,
+		Exec: func(name string, args ...string) *exec.Cmd {
+			return exec.Command("sh", "-lc", "echo hello")
+		},
+	}
+
+	job, output, err := service.Run("AB12CD")
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if job.ID != "AB12CD" {
+		t.Fatalf("job.ID = %q, want %q", job.ID, "AB12CD")
+	}
+	if strings.TrimSpace(output) != "hello" {
+		t.Fatalf("output = %q, want %q", output, "hello")
+	}
+}
+
+func strptr(value string) *string  { return &value }
+func boolptrTest(value bool) *bool { return &value }
 
 func containsAll(text string, values ...string) bool {
 	for _, value := range values {

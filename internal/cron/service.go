@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"slices"
 	"strings"
 	"time"
@@ -18,6 +19,7 @@ type Service struct {
 	IDGen     IDGenerator
 	Now       func() time.Time
 	StorePath string
+	Exec      func(name string, args ...string) *exec.Cmd
 }
 
 func NewService() (Service, error) {
@@ -32,6 +34,7 @@ func NewService() (Service, error) {
 		IDGen:     RandomIDGenerator{},
 		Now:       time.Now,
 		StorePath: repo.Path,
+		Exec:      exec.Command,
 	}, nil
 }
 
@@ -164,6 +167,29 @@ func (s Service) Delete(id string) error {
 	return s.persist(store, next)
 }
 
+func (s Service) Enable(id string) (Job, error) {
+	return s.Update(id, JobInput{Enabled: boolptr(true)})
+}
+
+func (s Service) Disable(id string) (Job, error) {
+	return s.Update(id, JobInput{Enabled: boolptr(false)})
+}
+
+func (s Service) Run(id string) (Job, string, error) {
+	job, err := s.Get(id)
+	if err != nil {
+		return Job{}, "", err
+	}
+
+	cmd := s.Exec("/bin/sh", "-lc", job.Command)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return job, string(output), fmt.Errorf("run cron job %s: %w", job.ID, err)
+	}
+
+	return job, string(output), nil
+}
+
 func (s Service) LoadInputFile(path string) (JobInput, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -179,6 +205,10 @@ func (s Service) LoadInputFile(path string) (JobInput, error) {
 }
 
 func (s Service) persist(previous, next Store) error {
+	if err := validateStore(next); err != nil {
+		return err
+	}
+
 	if err := s.Repo.Save(next); err != nil {
 		return err
 	}
@@ -195,33 +225,6 @@ func (s Service) persist(previous, next Store) error {
 		return err
 	}
 
-	return nil
-}
-
-func validateAddInput(input JobInput) error {
-	if strings.TrimSpace(derefString(input.Name)) == "" {
-		return errors.New("name is required")
-	}
-	if strings.TrimSpace(derefString(input.Schedule)) == "" {
-		return errors.New("schedule is required")
-	}
-	if strings.TrimSpace(derefString(input.Command)) == "" {
-		return errors.New("command is required")
-	}
-
-	return nil
-}
-
-func validateStoredJob(job Job) error {
-	if strings.TrimSpace(job.Name) == "" {
-		return errors.New("name is required")
-	}
-	if strings.TrimSpace(job.Schedule) == "" {
-		return errors.New("schedule is required")
-	}
-	if strings.TrimSpace(job.Command) == "" {
-		return errors.New("command is required")
-	}
 	return nil
 }
 
@@ -255,4 +258,8 @@ func derefBool(value *bool, fallback bool) bool {
 		return fallback
 	}
 	return *value
+}
+
+func boolptr(value bool) *bool {
+	return &value
 }

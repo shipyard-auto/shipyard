@@ -33,6 +33,9 @@ func newCronCmd() *cobra.Command {
 	cmd.AddCommand(newCronShowCmd())
 	cmd.AddCommand(newCronAddCmd())
 	cmd.AddCommand(newCronUpdateCmd())
+	cmd.AddCommand(newCronEnableCmd())
+	cmd.AddCommand(newCronDisableCmd())
+	cmd.AddCommand(newCronRunCmd())
 	cmd.AddCommand(newCronDeleteCmd())
 
 	return cmd
@@ -250,6 +253,123 @@ func newCronDeleteCmd() *cobra.Command {
 			}
 
 			ui.Printf(cmd.OutOrStdout(), "%s %s\n", ui.Emphasis("Deleted Shipyard cron job"), ui.Highlight(strings.ToUpper(args[0])))
+			return nil
+		},
+	}
+}
+
+func newCronEnableCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:     "enable <id>",
+		Short:   "Enable a Shipyard cron job",
+		Long:    "Enable a Shipyard-managed cron job and rewrite the managed entries in the current user's crontab.",
+		Example: "shipyard cron enable AB12CD",
+		Args: func(cmd *cobra.Command, args []string) error {
+			if wantsInlineHelp(args) {
+				return nil
+			}
+			return cobra.ExactArgs(1)(cmd, args)
+		},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if wantsInlineHelp(args) {
+				return cmd.Help()
+			}
+
+			service, err := cron.NewService()
+			if err != nil {
+				return err
+			}
+
+			job, err := service.Enable(args[0])
+			if err != nil {
+				return humanizeCronError(err, args[0])
+			}
+
+			ui.Printf(cmd.OutOrStdout(), "%s\n", ui.Emphasis("Shipyard cron job enabled."))
+			renderCronDetails(cmd.OutOrStdout(), job)
+			return nil
+		},
+	}
+}
+
+func newCronDisableCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:     "disable <id>",
+		Short:   "Disable a Shipyard cron job",
+		Long:    "Disable a Shipyard-managed cron job without deleting its metadata from ~/.shipyard/crons.json.",
+		Example: "shipyard cron disable AB12CD",
+		Args: func(cmd *cobra.Command, args []string) error {
+			if wantsInlineHelp(args) {
+				return nil
+			}
+			return cobra.ExactArgs(1)(cmd, args)
+		},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if wantsInlineHelp(args) {
+				return cmd.Help()
+			}
+
+			service, err := cron.NewService()
+			if err != nil {
+				return err
+			}
+
+			job, err := service.Disable(args[0])
+			if err != nil {
+				return humanizeCronError(err, args[0])
+			}
+
+			ui.Printf(cmd.OutOrStdout(), "%s\n", ui.Emphasis("Shipyard cron job disabled."))
+			renderCronDetails(cmd.OutOrStdout(), job)
+			return nil
+		},
+	}
+}
+
+func newCronRunCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "run <id>",
+		Short: "Run a Shipyard cron job immediately",
+		Long:  "Execute the command of a Shipyard-managed cron job immediately without waiting for the scheduler.",
+		Example: strings.Join([]string{
+			"shipyard cron run AB12CD",
+		}, "\n"),
+		Args: func(cmd *cobra.Command, args []string) error {
+			if wantsInlineHelp(args) {
+				return nil
+			}
+			return cobra.ExactArgs(1)(cmd, args)
+		},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if wantsInlineHelp(args) {
+				return cmd.Help()
+			}
+
+			service, err := cron.NewService()
+			if err != nil {
+				return err
+			}
+
+			job, output, err := service.Run(args[0])
+			if err != nil {
+				if output != "" {
+					ui.Printf(cmd.OutOrStdout(), "%s\n\n", ui.SectionTitle("Command Output"))
+					ui.Printf(cmd.OutOrStdout(), "%s", output)
+					if !strings.HasSuffix(output, "\n") {
+						ui.Printf(cmd.OutOrStdout(), "\n")
+					}
+				}
+				return humanizeCronError(err, args[0])
+			}
+
+			ui.Printf(cmd.OutOrStdout(), "%s %s\n", ui.Emphasis("Ran Shipyard cron job"), ui.Highlight(job.ID))
+			if output != "" {
+				ui.Printf(cmd.OutOrStdout(), "\n%s\n", ui.SectionTitle("Command Output"))
+				ui.Printf(cmd.OutOrStdout(), "%s", output)
+				if !strings.HasSuffix(output, "\n") {
+					ui.Printf(cmd.OutOrStdout(), "\n")
+				}
+			}
 			return nil
 		},
 	}
