@@ -1,0 +1,28 @@
+# Build artifacts
+dist/
+*.tar.gz
+*.zip
+
+# Go coverage and binaries
+coverage.out
+cover.out
+*.test
+
+# Local caches
+.cache/
+
+# Environment overrides
+.env
+.env.local
+
+# IDE and editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# macOS
+.DS_Store
+
+AGENTS.md
