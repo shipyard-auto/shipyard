@@ -1,6 +1,6 @@
 APP_NAME := shipyard
 DIST_DIR := dist
-VERSION ?= 0.1
+VERSION ?= $(shell cat VERSION)
 COMMIT ?= dev
 BUILD_DATE ?= $(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
 LDFLAGS := -X github.com/shipyard-auto/shipyard/internal/app.Version=$(VERSION) -X github.com/shipyard-auto/shipyard/internal/app.Commit=$(COMMIT) -X github.com/shipyard-auto/shipyard/internal/app.BuildDate=$(BUILD_DATE)

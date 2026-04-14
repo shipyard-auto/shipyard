@@ -63,6 +63,15 @@ banner() {
   say ""
 }
 
+panel() {
+  say "${C_CYAN}${C_BOLD}Configuration${C_RESET}"
+  say "  ${C_DIM}Release:${C_RESET} $VERSION"
+  say "  ${C_DIM}Target:${C_RESET}  $PLATFORM_OS/$PLATFORM_ARCH"
+  say "  ${C_DIM}Binary:${C_RESET}  $INSTALL_DIR/shipyard"
+  say "  ${C_DIM}Home:${C_RESET}    $SHIPYARD_HOME"
+  say ""
+}
+
 need_cmd() {
   if ! command -v "$1" >/dev/null 2>&1; then
     fail "required command not found: $1"
@@ -111,52 +120,17 @@ download_url() {
   printf 'https://github.com/%s/%s/releases/download/%s/%s' "$OWNER" "$REPO" "$VERSION" "$archive"
 }
 
-frame_for() {
-  index="$1"
-  case "$index" in
-    0) printf '~ ~ ~  |\\__   ~ ~ ~' ;;
-    1) printf ' ~ ~ ~ |\\__  ~ ~ ~ ' ;;
-    2) printf '~ ~ ~  |\\__~ ~ ~   ' ;;
-    3) printf ' ~ ~ ~ |\\__ ~ ~ ~  ' ;;
-    *) printf '~ ~ ~  |\\__   ~ ~ ~' ;;
-  esac
-}
-
-animate_pid() {
-  pid="$1"
-  message="$2"
-  frame=0
-
-  while kill -0 "$pid" >/dev/null 2>&1; do
-    boat="$(frame_for "$frame")"
-    printf '\r\033[2K%s%s%s %s' "$C_CYAN" "$boat" "$C_RESET" "${C_BOLD}${message}${C_RESET}"
-    sleep 0.12
-    frame=$(( (frame + 1) % 5 ))
-  done
-
-  wait "$pid"
-  status=$?
-  printf '\r\033[2K'
-  return "$status"
-}
-
 run_step() {
   message="$1"
-  logfile="$2"
-  shift 2
+  shift
 
-  : > "$logfile"
-  "$@" >"$logfile" 2>&1 &
-  pid=$!
-
-  if animate_pid "$pid" "$message"; then
+  info "$message"
+  if "$@"; then
     success "$message"
     return 0
   fi
 
-  say ""
-  fail "$message failed
-$(cat "$logfile")"
+  fail "$message failed"
 }
 
 write_manifest() {
@@ -178,33 +152,24 @@ main() {
 
   banner
 
-  info "Resolving release"
   resolve_version
   detect_platform
-  success "Resolved ${C_BOLD}${VERSION}${C_RESET} for ${PLATFORM_OS}/${PLATFORM_ARCH}"
+  panel
 
   tmpdir="$(mktemp -d)"
   trap 'rm -rf "$tmpdir"' EXIT INT TERM
 
   archive_path="$tmpdir/shipyard.tar.gz"
-  download_log="$tmpdir/download.log"
-  extract_log="$tmpdir/extract.log"
-  install_log="$tmpdir/install.log"
   url="$(download_url)"
 
-  say "${C_DIM}Release:${C_RESET}   $VERSION"
-  say "${C_DIM}Target:${C_RESET}    $PLATFORM_OS/$PLATFORM_ARCH"
-  say "${C_DIM}Binary:${C_RESET}    $INSTALL_DIR/shipyard"
-  say "${C_DIM}Home:${C_RESET}      $SHIPYARD_HOME"
-  say ""
-
-  run_step "Downloading release" "$download_log" curl -fsSL "$url" -o "$archive_path"
+  run_step "Downloading release package" curl -fsSL "$url" -o "$archive_path"
 
   mkdir -p "$INSTALL_DIR"
-  run_step "Extracting package" "$extract_log" tar -xzf "$archive_path" -C "$tmpdir"
+  run_step "Extracting package" tar -xzf "$archive_path" -C "$tmpdir"
 
   mkdir -p "$SHIPYARD_HOME"
-  run_step "Installing shipyard" "$install_log" install -m 0755 "$tmpdir/shipyard" "$INSTALL_DIR/shipyard"
+  run_step "Installing shipyard binary" install -m 0755 "$tmpdir/shipyard" "$INSTALL_DIR/shipyard"
+
   write_manifest
   success "Wrote install metadata to $SHIPYARD_HOME/install.json"
 
@@ -219,10 +184,11 @@ main() {
 
   say ""
   say "${C_GREEN}${C_BOLD}Shipyard installed successfully.${C_RESET}"
+  say "${C_DIM}Your yard is ready.${C_RESET}"
   say ""
   say "${C_BOLD}Next steps${C_RESET}"
-  say "  ${C_CYAN}1.${C_RESET} Run ${C_BOLD}$INSTALL_DIR/shipyard help${C_RESET}"
-  say "  ${C_CYAN}2.${C_RESET} Run ${C_BOLD}$INSTALL_DIR/shipyard version${C_RESET}"
+  say "  ${C_CYAN}1.${C_RESET} ${C_BOLD}$INSTALL_DIR/shipyard help${C_RESET}"
+  say "  ${C_CYAN}2.${C_RESET} ${C_BOLD}$INSTALL_DIR/shipyard version${C_RESET}"
 
   if [ "$path_ok" -eq 0 ]; then
     say ""

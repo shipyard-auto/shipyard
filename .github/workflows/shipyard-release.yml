@@ -35,17 +35,19 @@ jobs:
         id: version
         shell: bash
         run: |
-          latest_tag="$(git tag -l 'v0.*' --sort=-version:refname | head -n 1)"
-          if [ -z "$latest_tag" ]; then
-            next_tag="v0.1"
-          else
-            current="${latest_tag#v0.}"
-            next=$((current + 1))
-            next_tag="v0.$next"
+          version="$(tr -d '[:space:]' < VERSION)"
+          if [ -z "$version" ]; then
+            echo "VERSION file is empty" >&2
+            exit 1
           fi
 
-          version="${next_tag#v}"
-          echo "tag=$next_tag" >> "$GITHUB_OUTPUT"
+          tag="v$version"
+          if git rev-parse "$tag" >/dev/null 2>&1; then
+            echo "Tag $tag already exists. Bump VERSION before pushing to main." >&2
+            exit 1
+          fi
+
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Generate changelog from merged PR
