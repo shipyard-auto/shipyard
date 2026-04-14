@@ -8,10 +8,64 @@ VERSION="${VERSION:-}"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
 SHIPYARD_HOME="${SHIPYARD_HOME:-$HOME/.shipyard}"
 
+if [ -t 1 ] && [ "${NO_COLOR:-}" = "" ]; then
+  C_RESET="$(printf '\033[0m')"
+  C_BOLD="$(printf '\033[1m')"
+  C_DIM="$(printf '\033[2m')"
+  C_CYAN="$(printf '\033[36m')"
+  C_BLUE="$(printf '\033[34m')"
+  C_GREEN="$(printf '\033[32m')"
+  C_YELLOW="$(printf '\033[33m')"
+  C_RED="$(printf '\033[31m')"
+else
+  C_RESET=""
+  C_BOLD=""
+  C_DIM=""
+  C_CYAN=""
+  C_BLUE=""
+  C_GREEN=""
+  C_YELLOW=""
+  C_RED=""
+fi
+
+say() {
+  printf '%s\n' "$1"
+}
+
+info() {
+  printf '%s==>%s %s\n' "$C_CYAN" "$C_RESET" "$1"
+}
+
+success() {
+  printf '%s==>%s %s\n' "$C_GREEN" "$C_RESET" "$1"
+}
+
+warn() {
+  printf '%s==>%s %s\n' "$C_YELLOW" "$C_RESET" "$1"
+}
+
+fail() {
+  printf '%s==>%s %s\n' "$C_RED" "$C_RESET" "$1" >&2
+  exit 1
+}
+
+banner() {
+  say ""
+  say "${C_BLUE}${C_BOLD}                               |    |    |                              ${C_RESET}"
+  say "${C_BLUE}${C_BOLD}                              )_)  )_)  )_)                             ${C_RESET}"
+  say "${C_BLUE}${C_BOLD}                             )___))___))___)\\                           ${C_RESET}"
+  say "${C_BLUE}${C_BOLD}                            )____)____)_____)\\\\                         ${C_RESET}"
+  say "${C_BLUE}${C_BOLD}                          _____|____|____|____\\\\__                      ${C_RESET}"
+  say "${C_BLUE}${C_BOLD}                 ---------\\                       /---------             ${C_RESET}"
+  say "${C_CYAN}                   ^^^^^ ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^               ${C_RESET}"
+  say "${C_BOLD}                          SHIPYARD :: INSTALLER                         ${C_RESET}"
+  say "${C_DIM}                    Build, install and service your fleet              ${C_RESET}"
+  say ""
+}
+
 need_cmd() {
   if ! command -v "$1" >/dev/null 2>&1; then
-    printf 'shipyard installer error: required command not found: %s\n' "$1" >&2
-    exit 1
+    fail "required command not found: $1"
   fi
 }
 
@@ -24,8 +78,7 @@ resolve_version() {
   VERSION="$(curl -fsSL "$api_url" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)"
 
   if [ -z "$VERSION" ]; then
-    printf 'shipyard installer error: unable to resolve the latest release version\n' >&2
-    exit 1
+    fail "unable to resolve the latest release version"
   fi
 }
 
@@ -36,8 +89,7 @@ detect_platform() {
   case "$os" in
     linux|darwin) ;;
     *)
-      printf 'shipyard installer error: unsupported operating system: %s\n' "$os" >&2
-      exit 1
+      fail "unsupported operating system: $os"
       ;;
   esac
 
@@ -45,8 +97,7 @@ detect_platform() {
     x86_64|amd64) arch="amd64" ;;
     aarch64|arm64) arch="arm64" ;;
     *)
-      printf 'shipyard installer error: unsupported architecture: %s\n' "$arch" >&2
-      exit 1
+      fail "unsupported architecture: $arch"
       ;;
   esac
 
@@ -60,30 +111,59 @@ download_url() {
   printf 'https://github.com/%s/%s/releases/download/%s/%s' "$OWNER" "$REPO" "$VERSION" "$archive"
 }
 
-main() {
-  need_cmd curl
-  need_cmd tar
-  need_cmd mktemp
+frame_for() {
+  index="$1"
+  case "$index" in
+    0) printf '      |\\\n  ~~~/|_\\~~~~' ;;
+    1) printf '       |\\\n  ~~~/|_\\ ~~~~' ;;
+    2) printf '        |\\\n  ~~~ /|_\\~~~~' ;;
+    3) printf '       |\\\n  ~~~~/|_\\ ~~~' ;;
+    *) printf '      |\\\n  ~~~/|_\\~~~~' ;;
+  esac
+}
 
-  resolve_version
-  detect_platform
+animate_pid() {
+  pid="$1"
+  message="$2"
+  frame=0
 
-  tmpdir="$(mktemp -d)"
-  trap 'rm -rf "$tmpdir"' EXIT INT TERM
+  while kill -0 "$pid" >/dev/null 2>&1; do
+    boat="$(frame_for "$frame")"
+    top_line=$(printf '%s' "$boat" | sed -n '1p')
+    bottom_line=$(printf '%s' "$boat" | sed -n '2p')
+    printf '\r%s%s%s %s' "$C_BLUE" "$top_line" "$C_RESET" "${C_BOLD}${message}${C_RESET}"
+    printf '\n\r%s%s%s' "$C_CYAN" "$bottom_line" "$C_RESET"
+    sleep 0.12
+    printf '\033[2A\r\033[K\r\033[K'
+    frame=$(( (frame + 1) % 5 ))
+  done
 
-  archive_path="$tmpdir/shipyard.tar.gz"
-  url="$(download_url)"
+  wait "$pid"
+  status=$?
+  printf '\033[2A\r\033[K\r\033[K'
+  return "$status"
+}
 
-  printf 'Installing Shipyard %s for %s/%s\n' "$VERSION" "$PLATFORM_OS" "$PLATFORM_ARCH"
-  printf 'Downloading %s\n' "$url"
+run_step() {
+  message="$1"
+  logfile="$2"
+  shift 2
 
-  curl -fsSL "$url" -o "$archive_path"
+  : > "$logfile"
+  "$@" >"$logfile" 2>&1 &
+  pid=$!
 
-  mkdir -p "$INSTALL_DIR"
-  tar -xzf "$archive_path" -C "$tmpdir"
+  if animate_pid "$pid" "$message"; then
+    success "$message"
+    return 0
+  fi
 
-  install -m 0755 "$tmpdir/shipyard" "$INSTALL_DIR/shipyard"
-  mkdir -p "$SHIPYARD_HOME"
+  say ""
+  fail "$message failed
+$(cat "$logfile")"
+}
+
+write_manifest() {
   cat > "$SHIPYARD_HOME/install.json" <<EOF
 {
   "version": "${VERSION#v}",
@@ -92,22 +172,66 @@ main() {
   "installed_at": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 }
 EOF
+}
 
-  printf 'Installed binary to %s/shipyard\n' "$INSTALL_DIR"
-  printf 'Created Shipyard home at %s\n' "$SHIPYARD_HOME"
+main() {
+  need_cmd curl
+  need_cmd tar
+  need_cmd mktemp
+  need_cmd install
+
+  banner
+
+  info "Resolving release"
+  resolve_version
+  detect_platform
+  success "Resolved ${C_BOLD}${VERSION}${C_RESET} for ${PLATFORM_OS}/${PLATFORM_ARCH}"
+
+  tmpdir="$(mktemp -d)"
+  trap 'rm -rf "$tmpdir"' EXIT INT TERM
+
+  archive_path="$tmpdir/shipyard.tar.gz"
+  download_log="$tmpdir/download.log"
+  extract_log="$tmpdir/extract.log"
+  install_log="$tmpdir/install.log"
+  url="$(download_url)"
+
+  say "${C_DIM}Release:${C_RESET}   $VERSION"
+  say "${C_DIM}Target:${C_RESET}    $PLATFORM_OS/$PLATFORM_ARCH"
+  say "${C_DIM}Binary:${C_RESET}    $INSTALL_DIR/shipyard"
+  say "${C_DIM}Home:${C_RESET}      $SHIPYARD_HOME"
+  say ""
+
+  run_step "Downloading release" "$download_log" curl -fsSL "$url" -o "$archive_path"
+
+  mkdir -p "$INSTALL_DIR"
+  run_step "Extracting package" "$extract_log" tar -xzf "$archive_path" -C "$tmpdir"
+
+  mkdir -p "$SHIPYARD_HOME"
+  run_step "Installing shipyard" "$install_log" install -m 0755 "$tmpdir/shipyard" "$INSTALL_DIR/shipyard"
+  write_manifest
+  success "Wrote install metadata to $SHIPYARD_HOME/install.json"
 
   if [ -x "$INSTALL_DIR/shipyard" ]; then
-    "$INSTALL_DIR/shipyard" --help >/dev/null
+    "$INSTALL_DIR/shipyard" --help >/dev/null 2>&1 || warn "Installed binary did not pass help validation"
   fi
 
   case ":$PATH:" in
-    *":$INSTALL_DIR:"*) ;;
-    *)
-      printf 'Warning: %s is not in PATH. Add it to use shipyard directly.\n' "$INSTALL_DIR"
-      ;;
+    *":$INSTALL_DIR:"*) path_ok=1 ;;
+    *) path_ok=0 ;;
   esac
 
-  printf 'Run: %s/shipyard help\n' "$INSTALL_DIR"
+  say ""
+  say "${C_GREEN}${C_BOLD}Shipyard installed successfully.${C_RESET}"
+  say ""
+  say "${C_BOLD}Next steps${C_RESET}"
+  say "  ${C_CYAN}1.${C_RESET} Run ${C_BOLD}$INSTALL_DIR/shipyard help${C_RESET}"
+  say "  ${C_CYAN}2.${C_RESET} Run ${C_BOLD}$INSTALL_DIR/shipyard version${C_RESET}"
+
+  if [ "$path_ok" -eq 0 ]; then
+    say ""
+    warn "$INSTALL_DIR is not in PATH. Use the full binary path or add it to your shell profile."
+  fi
 }
 
 main "$@"
