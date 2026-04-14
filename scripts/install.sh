@@ -114,11 +114,11 @@ download_url() {
 frame_for() {
   index="$1"
   case "$index" in
-    0) printf '      |\\\n  ~~~/|_\\~~~~' ;;
-    1) printf '       |\\\n  ~~~/|_\\ ~~~~' ;;
-    2) printf '        |\\\n  ~~~ /|_\\~~~~' ;;
-    3) printf '       |\\\n  ~~~~/|_\\ ~~~' ;;
-    *) printf '      |\\\n  ~~~/|_\\~~~~' ;;
+    0) printf '~ ~ ~  |\\__   ~ ~ ~' ;;
+    1) printf ' ~ ~ ~ |\\__  ~ ~ ~ ' ;;
+    2) printf '~ ~ ~  |\\__~ ~ ~   ' ;;
+    3) printf ' ~ ~ ~ |\\__ ~ ~ ~  ' ;;
+    *) printf '~ ~ ~  |\\__   ~ ~ ~' ;;
   esac
 }
 
@@ -129,18 +129,14 @@ animate_pid() {
 
   while kill -0 "$pid" >/dev/null 2>&1; do
     boat="$(frame_for "$frame")"
-    top_line=$(printf '%s' "$boat" | sed -n '1p')
-    bottom_line=$(printf '%s' "$boat" | sed -n '2p')
-    printf '\r%s%s%s %s' "$C_BLUE" "$top_line" "$C_RESET" "${C_BOLD}${message}${C_RESET}"
-    printf '\n\r%s%s%s' "$C_CYAN" "$bottom_line" "$C_RESET"
+    printf '\r\033[2K%s%s%s %s' "$C_CYAN" "$boat" "$C_RESET" "${C_BOLD}${message}${C_RESET}"
     sleep 0.12
-    printf '\033[2A\r\033[K\r\033[K'
     frame=$(( (frame + 1) % 5 ))
   done
 
   wait "$pid"
   status=$?
-  printf '\033[2A\r\033[K\r\033[K'
+  printf '\r\033[2K'
   return "$status"
 }
 
