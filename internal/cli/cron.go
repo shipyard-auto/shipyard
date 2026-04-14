@@ -17,9 +17,22 @@ func newCronCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "cron",
 		Short: "Manage Shipyard-owned cron jobs",
-		Long:  "List and manage Shipyard-owned cron jobs stored in ~/.shipyard/crons.json and synchronized to the user crontab.",
+		Long: strings.Join([]string{
+			"Create and manage Shipyard-owned cron jobs stored in ~/.shipyard/crons.json",
+			"and synchronized to the current user's crontab.",
+			"",
+			"Shipyard only manages jobs it created itself. External cron entries are",
+			"preserved and never imported automatically.",
+		}, "\n"),
+		Example: strings.Join([]string{
+			"shipyard cron list",
+			"shipyard cron add --name \"Heartbeat\" --schedule \"* * * * *\" --command \"/bin/sh -lc 'date >> \\\"$HOME/.shipyard/cron-heartbeat.log\\\"'\"",
+			"shipyard cron show AB12CD",
+			"shipyard cron update AB12CD --schedule \"*/5 * * * *\"",
+			"shipyard cron delete AB12CD",
+		}, "\n"),
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runCronList(cmd)
+			return cmd.Help()
 		},
 	}
 
@@ -36,6 +49,7 @@ func newCronListCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "list",
 		Short: "List Shipyard cron jobs",
+		Long:  "Render a table with the Shipyard-managed cron jobs known in ~/.shipyard/crons.json.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runCronList(cmd)
 		},
@@ -46,6 +60,7 @@ func newCronShowCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "show <id>",
 		Short: "Show one Shipyard cron job",
+		Long:  "Display the full metadata for a single Shipyard-managed cron job.",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			service, err := cron.NewService()
@@ -77,6 +92,16 @@ func newCronAddCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "add",
 		Short: "Create a Shipyard cron job",
+		Long: strings.Join([]string{
+			"Create a Shipyard-managed cron job and sync it to the current user's crontab.",
+			"",
+			"Provide fields with flags for quick usage or pass --file to load a JSON",
+			"definition from disk.",
+		}, "\n"),
+		Example: strings.Join([]string{
+			"shipyard cron add --name \"Backup\" --schedule \"0 * * * *\" --command \"/usr/local/bin/backup-home\"",
+			"shipyard cron add --file ./backup-cron.json",
+		}, "\n"),
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			service, err := cron.NewService()
 			if err != nil {
@@ -128,7 +153,16 @@ func newCronUpdateCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "update <id>",
 		Short: "Update a Shipyard cron job",
-		Args:  cobra.ExactArgs(1),
+		Long: strings.Join([]string{
+			"Update one Shipyard-managed cron job and rewrite the managed cron block",
+			"in the current user's crontab.",
+		}, "\n"),
+		Example: strings.Join([]string{
+			"shipyard cron update AB12CD --schedule \"*/15 * * * *\"",
+			"shipyard cron update AB12CD --enabled=false",
+			"shipyard cron update AB12CD --file ./patch.json",
+		}, "\n"),
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			service, err := cron.NewService()
 			if err != nil {
@@ -169,9 +203,11 @@ func newCronUpdateCmd() *cobra.Command {
 
 func newCronDeleteCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "delete <id>",
-		Short: "Delete a Shipyard cron job",
-		Args:  cobra.ExactArgs(1),
+		Use:     "delete <id>",
+		Short:   "Delete a Shipyard cron job",
+		Long:    "Remove a Shipyard-managed cron job from the local store and from the current user's crontab.",
+		Example: "shipyard cron delete AB12CD",
+		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			service, err := cron.NewService()
 			if err != nil {
