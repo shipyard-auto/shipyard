@@ -26,11 +26,11 @@ func NewRootCmd() *cobra.Command {
 	}
 
 	cmd.InitDefaultHelpFlag()
+	cmd.InitDefaultVersionFlag()
 	cmd.SetHelpFunc(func(command *cobra.Command, args []string) {
 		renderHelp(command.OutOrStdout(), command)
 	})
 	cmd.Version = app.Version
-	cmd.SetVersionTemplate("{{printf \"%s version %s\n\" .Name .Version}}")
 
 	cmd.AddCommand(newUninstallCmd())
 	cmd.AddCommand(newVersionCmd())
