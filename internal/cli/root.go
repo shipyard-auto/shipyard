@@ -64,15 +64,20 @@ func renderHelp(w io.Writer, cmd *cobra.Command) {
 		return
 	}
 
-	ui.Printf(w, "%s\n\n", ui.SectionTitle(cmd.CommandPath()))
+	ui.Printf(w, "%s\n", ui.SectionTitle(strings.ToUpper(cmd.CommandPath())))
+	ui.Printf(w, "%s\n\n", ui.Muted("Shipyard command reference"))
+
 	if cmd.Long != "" {
-		ui.Printf(w, "%s\n\n", cmd.Long)
+		for _, line := range strings.Split(strings.TrimSpace(cmd.Long), "\n") {
+			ui.Printf(w, "%s\n", line)
+		}
+		ui.Printf(w, "\n")
 	} else if cmd.Short != "" {
 		ui.Printf(w, "%s\n\n", cmd.Short)
 	}
 
 	ui.Printf(w, "%s\n", ui.SectionTitle("Usage"))
-	ui.Printf(w, "  %s\n", cmd.UseLine())
+	ui.Printf(w, "  %s\n", ui.Highlight(cmd.UseLine()))
 
 	if cmd.HasAvailableLocalFlags() {
 		ui.Printf(w, "\n%s\n", ui.SectionTitle("Flags"))
@@ -82,7 +87,19 @@ func renderHelp(w io.Writer, cmd *cobra.Command) {
 
 	if cmd.Example != "" {
 		ui.Printf(w, "\n%s\n", ui.SectionTitle("Examples"))
-		ui.Printf(w, "%s\n", cmd.Example)
+		for _, line := range strings.Split(strings.TrimSpace(cmd.Example), "\n") {
+			ui.Printf(w, "  %s\n", ui.Highlight(strings.TrimSpace(line)))
+		}
+	}
+
+	if cmd.HasAvailableSubCommands() {
+		ui.Printf(w, "\n%s\n", ui.SectionTitle("Available Commands"))
+		for _, sub := range cmd.Commands() {
+			if !sub.IsAvailableCommand() || sub.IsAdditionalHelpTopicCommand() {
+				continue
+			}
+			ui.Printf(w, "  %-12s %s\n", ui.Highlight(sub.Name()), sub.Short)
+		}
 	}
 }
 

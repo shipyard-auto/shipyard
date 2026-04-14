@@ -43,7 +43,7 @@ func (r FileRepository) Load() (Store, error) {
 	data, err := os.ReadFile(r.Path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			store := Store{Version: storeVersion, Jobs: []Job{}}
+			store := Store{Notice: storeNotice, Version: storeVersion, Jobs: []Job{}}
 			if err := r.Save(store); err != nil {
 				return Store{}, err
 			}
@@ -61,6 +61,9 @@ func (r FileRepository) Load() (Store, error) {
 	if store.Version == 0 {
 		store.Version = storeVersion
 	}
+	if store.Notice == "" {
+		store.Notice = storeNotice
+	}
 	if store.Jobs == nil {
 		store.Jobs = []Job{}
 	}
@@ -70,6 +73,7 @@ func (r FileRepository) Load() (Store, error) {
 
 func (r FileRepository) Save(store Store) error {
 	store.Version = storeVersion
+	store.Notice = storeNotice
 	if store.Jobs == nil {
 		store.Jobs = []Job{}
 	}
