@@ -5,6 +5,7 @@ import "time"
 const (
 	DefaultRetentionDays = 14
 	DefaultSourceCron    = "cron"
+	DefaultSourceService = "service"
 )
 
 type Config struct {

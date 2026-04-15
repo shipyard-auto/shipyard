@@ -29,6 +29,7 @@ Top-level commands:
 - `shipyard update`
 - `shipyard uninstall`
 - `shipyard cron ...`
+- `shipyard service ...`
 - `shipyard logs ...`
 
 `shipyard cron` currently supports:
@@ -51,6 +52,21 @@ Top-level commands:
 - `config`
 - `config set retention-days <n>`
 
+`shipyard service` currently supports:
+
+- `list`
+- `show`
+- `add`
+- `update`
+- `delete`
+- `enable`
+- `disable`
+- `start`
+- `stop`
+- `restart`
+- `status`
+- `config`
+
 ### `shipyard cron config`
 
 `shipyard cron config` opens an interactive full-screen control panel for Shipyard-managed cron jobs.
@@ -62,6 +78,12 @@ The wizard only manages jobs created by Shipyard and preserves external crontab 
 `shipyard logs config` opens an interactive logs control panel when running in a real terminal with no extra args.
 Use it to inspect sources, review recent events, tail live events, change retention, and prune old files.
 For scripts and automation, `shipyard logs config set retention-days <n>` remains the non-interactive path.
+
+### `shipyard service config`
+
+`shipyard service config` opens an interactive service control panel for Shipyard-managed user services.
+Use it for guided add, browse, update, lifecycle, enable/disable, status, and delete flows.
+The wizard only manages services created by Shipyard and preserves external units or launch agents.
 
 ## How Shipyard Works
 
@@ -100,6 +122,24 @@ Current model:
 
 Logs are normalized structured events. The storage format is intentionally source-neutral so future modules like `service` or `agent` can reuse the same event pipeline.
 
+### Service subsystem
+
+`shipyard service` is the local service/process management layer for user-scoped services.
+
+Key rules:
+
+- it manages only services created by Shipyard
+- it operates only in user scope
+- Linux uses `systemd --user`
+- macOS uses user `launchd` agents
+- local state is stored in `~/.shipyard/services.json`
+- service unit files are derived projections, not the source of truth
+
+Shipyard-managed units are identified by stable prefixes:
+
+- Linux: `shipyard-<ID>.service`
+- macOS: `com.shipyard.service.<ID>`
+
 ## Local State
 
 Shipyard currently uses `~/.shipyard/` as its local base directory.
@@ -108,6 +148,7 @@ Important files and directories:
 
 - `~/.shipyard/install.json`
 - `~/.shipyard/crons.json`
+- `~/.shipyard/services.json`
 - `~/.shipyard/logs.json`
 - `~/.shipyard/logs/`
 
@@ -154,7 +195,8 @@ The current foundation is:
 
 1. local CLI operations
 2. cron management
-3. structured local logs
+3. service management
+4. structured local logs
 
 The intended next layers are:
 
