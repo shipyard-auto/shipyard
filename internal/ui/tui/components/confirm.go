@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/shipyard-auto/shipyard/internal/ui/tui/theme"
 )
@@ -38,7 +39,7 @@ func (c Confirm) Update(msg tea.Msg) (Confirm, tea.Cmd) {
 		c.Resize(msg.Width, msg.Height)
 	case tea.KeyMsg:
 		switch msg.String() {
-		case "left", "right", "tab":
+		case "left", "right", "tab", "h", "l":
 			c.focus = 1 - c.focus
 		case "enter":
 			return c, func() tea.Msg { return ConfirmMsg{Accepted: c.focus == 0} }
@@ -50,18 +51,51 @@ func (c Confirm) Update(msg tea.Msg) (Confirm, tea.Cmd) {
 }
 
 func (c Confirm) View() string {
-	confirm := " Confirm "
-	cancel := " Cancel "
-	if c.focus == 0 {
-		confirm = c.theme.InputFocusedStyle.Render(confirm)
-		cancel = c.theme.InputStyle.Render(cancel)
-	} else {
-		confirm = c.theme.InputStyle.Render(confirm)
-		cancel = c.theme.InputFocusedStyle.Render(cancel)
-	}
+	confirm := c.renderButton("Confirm", c.focus == 0, c.dangerous)
+	cancel := c.renderButton("Cancel", c.focus == 1, false)
+	buttons := lipgloss.JoinHorizontal(lipgloss.Top, confirm, "  ", cancel)
+
 	return strings.Join([]string{
 		c.prompt,
 		"",
-		confirm + "  " + cancel,
+		buttons,
 	}, "\n")
+}
+
+func (c Confirm) renderButton(label string, focused bool, destructive bool) string {
+	prefix := "  "
+	if focused {
+		prefix = theme.GlyphSelected + " "
+	}
+	text := prefix + label + "  "
+
+	if !c.theme.ColorEnabled {
+		style := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Padding(0, 1)
+		if focused {
+			style = style.Bold(true)
+		}
+		return style.Render(text)
+	}
+
+	if focused {
+		bg := c.theme.Accent
+		if destructive && label == "Confirm" {
+			bg = c.theme.Danger
+		}
+		return lipgloss.NewStyle().
+			Bold(true).
+			Foreground(c.theme.TextInverse).
+			Background(bg).
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(bg).
+			Padding(0, 1).
+			Render(text)
+	}
+
+	return lipgloss.NewStyle().
+		Foreground(c.theme.Text).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(c.theme.Muted).
+		Padding(0, 1).
+		Render(text)
 }

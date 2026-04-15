@@ -14,7 +14,13 @@ func TestConfirmEmitsMessage(t *testing.T) {
 	if !strings.Contains(c.View(), "Delete?") {
 		t.Fatal("expected prompt")
 	}
+	if !strings.Contains(c.View(), "Cancel") || !strings.Contains(c.View(), "Confirm") {
+		t.Fatal("expected both buttons in view")
+	}
 	c, _ = c.Update(tea.KeyMsg{Type: tea.KeyLeft})
+	if !strings.Contains(c.View(), "▍ Confirm") {
+		t.Fatalf("expected focused confirm button, got %q", c.View())
+	}
 	_, cmd := c.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	msg := cmd().(ConfirmMsg)
 	if !msg.Accepted {
