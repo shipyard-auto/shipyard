@@ -47,7 +47,10 @@ func (s *deleteScreen) Footer() []components.KeyHint {
 	if s.done {
 		return []components.KeyHint{{Key: "enter", Label: "menu"}}
 	}
-	return []components.KeyHint{{Key: "enter", Label: "confirm"}}
+	if s.target == nil {
+		return []components.KeyHint{{Key: "↑↓", Label: "choose"}, {Key: "enter", Label: "select"}, {Key: "esc", Label: "back"}}
+	}
+	return []components.KeyHint{{Key: "←→", Label: "choose"}, {Key: "enter", Label: "select"}, {Key: "esc", Label: "back"}}
 }
 
 func (s *deleteScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
@@ -98,7 +101,12 @@ func (s *deleteScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 
 func (s *deleteScreen) View() string {
 	if s.done {
-		return s.theme.RenderSuccess("Cron job deleted successfully.")
+		return s.theme.RenderSuccess("Cron job deleted successfully.") + "\n\n" +
+			renderReview(s.theme, "Deleted job", [][2]string{
+				{"ID", s.target.ID},
+				{"Name", s.target.Name},
+				{"Schedule", s.target.Schedule},
+			}, nil)
 	}
 	if s.err != "" {
 		return s.theme.RenderError(s.err)

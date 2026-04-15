@@ -2,8 +2,8 @@ package logwiz
 
 import (
 	"io"
-	"sync"
 	"strings"
+	"sync"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -14,37 +14,56 @@ import (
 )
 
 type tailTickMsg time.Time
-type tailDoneMsg struct{ err error }
 
 type tailScreen struct {
-	theme     theme.Theme
-	service   LogsService
-	source    components.Input
-	entityID  components.Input
-	step      int
-	viewer    components.Viewer
-	hasEvents bool
-	stop      chan struct{}
-	lines     []string
-	writer    *tailWriter
+	theme      theme.Theme
+	service    LogsService
+	sourceMenu components.Menu
+	entityID   components.Input
+	levelMenu  components.Menu
+	step       int
+	field      int
+	viewer     components.Viewer
+	hasEvents  bool
+	stop       chan struct{}
+	lines      []string
+	writer     *tailWriter
 }
 
 func newTailScreen(th theme.Theme, service LogsService) Screen {
-	source := components.NewInput(th, "Source", "cron", nil)
-	source.SetValue(logs.DefaultSourceCron)
+	sourceMenu := components.NewMenu(th, []components.MenuItem{
+		{Title: "All sources", Description: "Tail every source", Key: ""},
+		{Title: "cron", Description: "Tail cron subsystem events", Key: logs.DefaultSourceCron},
+	})
+	sourceMenu.SetSelectedByKey(logs.DefaultSourceCron)
+	levelMenu := components.NewMenu(th, []components.MenuItem{
+		{Title: "All levels", Description: "Tail every level", Key: ""},
+		{Title: "info", Description: "Informational events", Key: "info"},
+		{Title: "warn", Description: "Warnings only", Key: "warn"},
+		{Title: "error", Description: "Errors only", Key: "error"},
+	})
 	entity := components.NewInput(th, "Entity ID", "AB12CD", nil)
-	return &tailScreen{theme: th, service: service, source: source, entityID: entity, viewer: components.NewViewer(th, "")}
+	return &tailScreen{
+		theme:      th,
+		service:    service,
+		sourceMenu: sourceMenu,
+		entityID:   entity,
+		levelMenu:  levelMenu,
+		viewer:     components.NewViewer(th, ""),
+	}
 }
 
-func (s *tailScreen) Init() tea.Cmd { return s.source.Init() }
+func (s *tailScreen) Init() tea.Cmd { return nil }
 func (s *tailScreen) Title() string { return "Tail Live Events" }
 func (s *tailScreen) Breadcrumb() []string { return []string{"logs", "tail"} }
+
 func (s *tailScreen) Footer() []components.KeyHint {
-	if s.step == 0 {
-		return []components.KeyHint{{Key: "enter", Label: "start"}}
+	if s.step < 3 {
+		return []components.KeyHint{{Key: "enter", Label: "next"}, {Key: "esc", Label: "back"}}
 	}
 	return []components.KeyHint{{Key: "esc", Label: "stop tailing"}}
 }
+
 func (s *tailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
@@ -55,8 +74,6 @@ func (s *tailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			}
 			return newMenuScreen(s.theme, s.service), nil
 		}
-	case tailDoneMsg:
-		return s, nil
 	case tailTickMsg:
 		if s.writer != nil {
 			for _, chunk := range s.writer.Drain() {
@@ -71,43 +88,56 @@ func (s *tailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		}
 		return s, tea.Tick(time.Second, func(t time.Time) tea.Msg { return tailTickMsg(t) })
 	}
-	if s.step == 0 {
-		cmd, submitted := s.source.Update(msg)
-		_ = cmd
-		if submitted {
-			s.step = 1
-			return s, s.entityID.Init()
-		}
-		if key, ok := msg.(tea.KeyMsg); ok && key.String() == "enter" {
+
+	switch s.step {
+	case 0:
+		menu, cmd := s.sourceMenu.Update(msg)
+		s.sourceMenu = menu
+		if cmd != nil {
 			s.step = 1
 			return s, s.entityID.Init()
 		}
 		return s, nil
-	}
-	if s.step == 1 {
-		_, submitted := s.entityID.Update(msg)
+	case 1:
+		cmd, submitted := s.entityID.Update(msg)
 		if submitted {
 			s.step = 2
+			return s, nil
+		}
+		return s, cmd
+	case 2:
+		menu, cmd := s.levelMenu.Update(msg)
+		s.levelMenu = menu
+		if cmd != nil {
+			s.step = 3
 			s.stop = make(chan struct{})
 			s.writer = &tailWriter{}
-			query := logs.Query{Source: strings.TrimSpace(s.source.Value()), Entity: strings.ToUpper(strings.TrimSpace(s.entityID.Value()))}
+			query := logs.Query{
+				Source: strings.TrimSpace(s.sourceMenu.Selected().Key),
+				Entity: strings.ToUpper(strings.TrimSpace(s.entityID.Value())),
+				Level:  strings.TrimSpace(s.levelMenu.Selected().Key),
+			}
 			return s, tea.Batch(
 				tea.Tick(time.Second, func(t time.Time) tea.Msg { return tailTickMsg(t) }),
 				startTailCmd(s.service, query, s.writer, s.stop),
 			)
 		}
 		return s, nil
+	default:
+		viewer, cmd := s.viewer.Update(msg)
+		s.viewer = viewer
+		return s, cmd
 	}
-	viewer, cmd := s.viewer.Update(msg)
-	s.viewer = viewer
-	return s, cmd
 }
+
 func (s *tailScreen) View() string {
 	switch s.step {
 	case 0:
-		return s.source.View()
+		return strings.Join([]string{s.theme.LabelStyle.Render("Source"), s.sourceMenu.View()}, "\n\n")
 	case 1:
 		return s.entityID.View()
+	case 2:
+		return strings.Join([]string{s.theme.LabelStyle.Render("Level"), s.levelMenu.View()}, "\n\n")
 	default:
 		if !s.hasEvents {
 			empty := components.NewEmpty(s.theme, components.EmptyProps{Icon: "⋯", Title: "Waiting for events…", Hint: "[esc] stop tailing"})

@@ -37,6 +37,7 @@ func NewRootCmd() *cobra.Command {
 	cmd.AddCommand(newLogsCmd())
 	cmd.AddCommand(newUpdateCmd())
 	cmd.AddCommand(newVersionCmd())
+	cmd.AddCommand(newAboutCmd())
 	cmd.SetHelpCommand(&cobra.Command{
 		Use:   "help [command]",
 		Short: "Show help for Shipyard commands",

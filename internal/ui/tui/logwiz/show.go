@@ -14,30 +14,36 @@ import (
 )
 
 type showScreen struct {
-	theme     theme.Theme
-	service   LogsService
-	source    components.Input
-	entityID  components.Input
-	level     components.Input
-	limit     components.Input
-	filter    components.Input
-	step      int
-	field     int
-	viewer    components.Viewer
-	events    []logs.Event
-	filtering bool
-	prefill   string
+	theme      theme.Theme
+	service    LogsService
+	sourceMenu components.Menu
+	entityID   components.Input
+	levelMenu  components.Menu
+	limit      components.Input
+	filter     components.Input
+	step       int
+	field      int
+	viewer     components.Viewer
+	events     []logs.Event
+	filtering  bool
 }
 
 func newShowScreen(th theme.Theme, service LogsService, source string) Screen {
-	src := components.NewInput(th, "Source", "cron or empty", nil)
-	src.SetValue(source)
+	sourceMenu := components.NewMenu(th, []components.MenuItem{
+		{Title: "All sources", Description: "Show events from every source", Key: ""},
+		{Title: "cron", Description: "Show cron subsystem events", Key: logs.DefaultSourceCron},
+	})
+	if source != "" {
+		sourceMenu.SetSelectedByKey(source)
+	}
+	levelMenu := components.NewMenu(th, []components.MenuItem{
+		{Title: "All levels", Description: "Include every level", Key: ""},
+		{Title: "info", Description: "Informational events", Key: "info"},
+		{Title: "warn", Description: "Warnings only", Key: "warn"},
+		{Title: "error", Description: "Errors only", Key: "error"},
+	})
 	id := components.NewInput(th, "Entity ID", "AB12CD", nil)
-	level := components.NewInput(th, "Level", "info|warn|error", nil)
 	limit := components.NewInput(th, "Limit", "50", func(v string) error {
-		if strings.TrimSpace(v) == "" {
-			return nil
-		}
 		n, err := strconv.Atoi(strings.TrimSpace(v))
 		if err != nil || n < 1 || n > 500 {
 			return fmt.Errorf("limit must be between 1 and 500")
@@ -46,59 +52,94 @@ func newShowScreen(th theme.Theme, service LogsService, source string) Screen {
 	})
 	limit.SetValue("50")
 	filter := components.NewInput(th, "Filter", "substring", nil)
-	return &showScreen{theme: th, service: service, source: src, entityID: id, level: level, limit: limit, filter: filter, viewer: components.NewViewer(th, ""), prefill: source}
+	return &showScreen{
+		theme:      th,
+		service:    service,
+		sourceMenu: sourceMenu,
+		entityID:   id,
+		levelMenu:  levelMenu,
+		limit:      limit,
+		filter:     filter,
+		viewer:     components.NewViewer(th, ""),
+	}
 }
 
-func (s *showScreen) Init() tea.Cmd { return s.source.Init() }
+func (s *showScreen) Init() tea.Cmd { return nil }
 func (s *showScreen) Title() string { return "Show Recent Events" }
 func (s *showScreen) Breadcrumb() []string { return []string{"logs", "show"} }
+
 func (s *showScreen) Footer() []components.KeyHint {
 	if s.step == 0 {
-		return []components.KeyHint{{Key: "enter", Label: "next"}}
+		return []components.KeyHint{{Key: "enter", Label: "next"}, {Key: "esc", Label: "back"}}
 	}
-	return []components.KeyHint{{Key: "↑↓", Label: "scroll"}, {Key: "/", Label: "filter"}}
+	if s.filtering {
+		return []components.KeyHint{{Key: "enter", Label: "apply"}, {Key: "esc", Label: "close filter"}}
+	}
+	return []components.KeyHint{{Key: "↑↓", Label: "scroll"}, {Key: "/", Label: "filter"}, {Key: "esc", Label: "change filters"}}
 }
 
 func (s *showScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	if key, ok := msg.(tea.KeyMsg); ok {
-		if key.String() == "esc" {
+		switch key.String() {
+		case "esc":
+			if s.filtering {
+				s.filtering = false
+				return s, nil
+			}
 			if s.step == 1 {
 				s.step = 0
 				return s, nil
 			}
 			return newMenuScreen(s.theme, s.service), nil
-		}
-		if s.step == 1 && key.String() == "/" {
-			s.filtering = true
-			return s, s.filter.Init()
+		case "/":
+			if s.step == 1 {
+				s.filtering = true
+				return s, s.filter.Init()
+			}
 		}
 	}
+
 	if s.step == 0 {
-		inputs := []*components.Input{&s.source, &s.entityID, &s.level, &s.limit}
-		cmd, submitted := inputs[s.field].Update(msg)
-		if submitted {
-			if s.field == len(inputs)-1 {
-				limit := 50
-				if strings.TrimSpace(s.limit.Value()) != "" {
-					limit, _ = strconv.Atoi(strings.TrimSpace(s.limit.Value()))
-				}
-				events, _ := s.service.Query(logs.Query{
-					Source: strings.TrimSpace(s.source.Value()),
+		switch s.field {
+		case 0:
+			menu, cmd := s.sourceMenu.Update(msg)
+			s.sourceMenu = menu
+			if cmd != nil {
+				s.field = 1
+				return s, s.entityID.Init()
+			}
+		case 1:
+			cmd, submitted := s.entityID.Update(msg)
+			if submitted {
+				s.field = 2
+				return s, nil
+			}
+			return s, cmd
+		case 2:
+			menu, cmd := s.levelMenu.Update(msg)
+			s.levelMenu = menu
+			if cmd != nil {
+				s.field = 3
+				return s, s.limit.Init()
+			}
+		case 3:
+			cmd, submitted := s.limit.Update(msg)
+			if submitted {
+				s.events, _ = s.service.Query(logs.Query{
+					Source: strings.TrimSpace(s.sourceMenu.Selected().Key),
 					Entity: strings.ToUpper(strings.TrimSpace(s.entityID.Value())),
-					Level:  strings.TrimSpace(s.level.Value()),
-					Limit:  limit,
+					Level:  strings.TrimSpace(s.levelMenu.Selected().Key),
+					Limit:  parseLimitOrDefault(s.limit.Value(), 50),
 				})
-				s.events = events
-				s.viewer.SetContent(renderEvents(events, ""))
+				s.viewer.SetContent(renderEvents(s.events, ""))
 				s.step = 1
 				return s, nil
 			}
-			s.field++
-			inputs[s.field].Focus()
-			return s, inputs[s.field].Init()
+			return s, cmd
 		}
-		return s, cmd
+		return s, nil
 	}
+
 	if s.filtering {
 		_, submitted := s.filter.Update(msg)
 		s.viewer.SetContent(renderEvents(s.events, s.filter.Value()))
@@ -107,6 +148,7 @@ func (s *showScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		}
 		return s, nil
 	}
+
 	viewer, cmd := s.viewer.Update(msg)
 	s.viewer = viewer
 	return s, cmd
@@ -114,8 +156,17 @@ func (s *showScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 
 func (s *showScreen) View() string {
 	if s.step == 0 {
-		return strings.Join([]string{s.source.View(), "", s.entityID.View(), "", s.level.View(), "", s.limit.View()}, "\n")
+		sections := []string{
+			s.theme.LabelStyle.Render("Source"),
+			s.sourceMenu.View(),
+			s.entityID.View(),
+			s.theme.LabelStyle.Render("Level"),
+			s.levelMenu.View(),
+			s.limit.View(),
+		}
+		return strings.Join(sections, "\n\n")
 	}
+
 	content := s.viewer.View()
 	if strings.TrimSpace(content) == "" {
 		empty := components.NewEmpty(s.theme, components.EmptyProps{Icon: "⎋", Title: "No log events match these filters.", Hint: "[esc] change filters"})
@@ -125,6 +176,14 @@ func (s *showScreen) View() string {
 		return s.filter.View() + "\n\n" + content
 	}
 	return content
+}
+
+func parseLimitOrDefault(v string, fallback int) int {
+	n, err := strconv.Atoi(strings.TrimSpace(v))
+	if err != nil || n < 1 {
+		return fallback
+	}
+	return n
 }
 
 func renderEvents(events []logs.Event, substr string) string {

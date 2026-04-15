@@ -86,6 +86,25 @@ func (m *Menu) ensureSelectable() {
 	m.index = 0
 }
 
+func (m *Menu) SetSelectedByKey(key string) {
+	for i, item := range m.items {
+		if item.Key == key {
+			m.index = i
+			if item.Disabled {
+				m.ensureSelectable()
+			}
+			return
+		}
+	}
+}
+
+func (m Menu) Selected() MenuItem {
+	if len(m.items) == 0 {
+		return MenuItem{}
+	}
+	return m.items[m.index]
+}
+
 func (m Menu) View() string {
 	if len(m.items) == 0 {
 		return ""

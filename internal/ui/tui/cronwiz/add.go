@@ -25,6 +25,8 @@ type addScreen struct {
 	command      components.Input
 	presetMenu   components.Menu
 	enableMenu   components.Menu
+	review       components.Confirm
+	spinner      components.Spinner
 	step         int
 	useCustom    bool
 	nameValue    string
@@ -34,6 +36,7 @@ type addScreen struct {
 	enabled      bool
 	err          string
 	created      *cron.Job
+	submitting   bool
 }
 
 func newAddScreen(th theme.Theme, service CronService, preset *cron.Job) Screen {
@@ -62,17 +65,21 @@ func newAddScreen(th theme.Theme, service CronService, preset *cron.Job) Screen 
 		{Title: "Yes", Description: "Create the job enabled", Key: "yes"},
 		{Title: "No", Description: "Save the job disabled", Key: "no"},
 	})
+	review := components.NewConfirm(th, "Confirm creation or go back to edit.", false)
+	spinner := components.NewSpinner(th, "Creating cron job…")
 
 	return &addScreen{
-		theme:      th,
-		service:    service,
-		name:       name,
+		theme:       th,
+		service:     service,
+		name:        name,
 		description: description,
-		custom:     custom,
-		command:    command,
-		presetMenu: components.NewMenu(th, presets),
-		enableMenu: enable,
-		enabled:    true,
+		custom:      custom,
+		command:     command,
+		presetMenu:  components.NewMenu(th, presets),
+		enableMenu:  enable,
+		review:      review,
+		spinner:     spinner,
+		enabled:     true,
 	}
 }
 
@@ -86,10 +93,15 @@ func (s *addScreen) Footer() []components.KeyHint {
 	switch {
 	case s.created != nil:
 		return []components.KeyHint{{Key: "enter", Label: "return to menu"}}
+	case s.submitting:
+		return []components.KeyHint{{Key: "esc", Label: "cancel"}}
 	case s.step == 4:
 		return []components.KeyHint{{Key: "↑↓", Label: "choose"}, {Key: "enter", Label: "select"}}
 	case s.step == 5:
-		return []components.KeyHint{{Key: "enter", Label: "confirm"}, {Key: "esc", Label: "edit"}}
+		if s.err != "" {
+			return []components.KeyHint{{Key: "r", Label: "retry"}, {Key: "esc", Label: "cancel"}}
+		}
+		return []components.KeyHint{{Key: "←→", Label: "choose"}, {Key: "enter", Label: "select"}}
 	default:
 		return []components.KeyHint{{Key: "enter", Label: "next"}}
 	}
@@ -98,6 +110,7 @@ func (s *addScreen) Footer() []components.KeyHint {
 func (s *addScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch msg := msg.(type) {
 	case addSubmitMsg:
+		s.submitting = false
 		if msg.err != nil {
 			s.err = msg.err.Error()
 			return s, nil
@@ -106,18 +119,28 @@ func (s *addScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		s.err = ""
 		return s, nil
 	case tea.KeyMsg:
+		if s.submitting && msg.String() == "esc" {
+			s.submitting = false
+			s.err = "creation cancelled"
+			return s, nil
+		}
 		if msg.String() == "esc" {
 			if s.created != nil {
 				return newMenuScreen(s.theme, s.service), nil
 			}
 			if s.step == 5 {
-				s.step = 0
+				s.step = 4
 				return s, nil
 			}
 			return newMenuScreen(s.theme, s.service), nil
 		}
 		if s.created != nil && msg.String() == "enter" {
 			return newMenuScreen(s.theme, s.service), nil
+		}
+		if s.step == 5 && s.err != "" && msg.String() == "r" {
+			s.err = ""
+			s.submitting = true
+			return s, s.submit()
 		}
 	}
 
@@ -179,18 +202,22 @@ func (s *addScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		}
 		return s, nil
 	case 5:
-		if key, ok := msg.(tea.KeyMsg); ok && key.String() == "enter" {
-			input := cron.JobInput{
-				Name:        strptr(s.nameValue),
-				Description: strptr(s.descValue),
-				Schedule:    strptr(s.schedule),
-				Command:     strptr(s.commandValue),
-				Enabled:     boolptr(s.enabled),
+		if s.submitting {
+			spinner, cmd := s.spinner.Update(msg)
+			s.spinner = spinner
+			return s, cmd
+		}
+		review, cmd := s.review.Update(msg)
+		s.review = review
+		if cmd != nil {
+			decision := cmd().(components.ConfirmMsg)
+			if !decision.Accepted {
+				s.step = 4
+				return s, nil
 			}
-			return s, func() tea.Msg {
-				job, err := s.service.Add(input)
-				return addSubmitMsg{job: job, err: err}
-			}
+			s.err = ""
+			s.submitting = true
+			return s, s.submit()
 		}
 	}
 	return s, nil
@@ -234,11 +261,30 @@ func (s *addScreen) View() string {
 			{"Command", s.commandValue},
 			{"Enabled", fmt.Sprintf("%t", s.enabled)},
 		}, nil))
+		if s.submitting {
+			parts = append(parts, s.spinner.View())
+		} else {
+			parts = append(parts, s.review.View())
+		}
 	}
 	if s.err != "" {
 		parts = append(parts, "", s.theme.RenderError(s.err))
 	}
 	return strings.Join(parts, "\n\n")
+}
+
+func (s *addScreen) submit() tea.Cmd {
+	input := cron.JobInput{
+		Name:        strptr(s.nameValue),
+		Description: strptr(s.descValue),
+		Schedule:    strptr(s.schedule),
+		Command:     strptr(s.commandValue),
+		Enabled:     boolptr(s.enabled),
+	}
+	return func() tea.Msg {
+		job, err := s.service.Add(input)
+		return addSubmitMsg{job: job, err: err}
+	}
 }
 
 func stepLabel(step int) string {

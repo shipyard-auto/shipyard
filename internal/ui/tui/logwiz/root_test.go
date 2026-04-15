@@ -73,8 +73,19 @@ func TestTailScreenShowsIdleState(t *testing.T) {
 	screen := newTailScreen(theme.New(), svc)
 	screen, _ = screen.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	screen, _ = screen.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	screen, _ = screen.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if !strings.Contains(screen.View(), "Waiting for events") {
 		t.Fatalf("expected idle state before tick, got %q", screen.View())
+	}
+}
+
+func TestPruneScreenShowsNothingToPrune(t *testing.T) {
+	svc := &fakeLogsService{cfg: logs.Config{RetentionDays: 14}}
+	screen := newPruneScreen(theme.New(), svc)
+	screen, _ = screen.Update(tea.KeyMsg{Type: tea.KeyLeft})
+	screen, _ = screen.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if !strings.Contains(screen.View(), "Nothing to prune.") {
+		t.Fatalf("expected nothing-to-prune state, got %q", screen.View())
 	}
 }
 
