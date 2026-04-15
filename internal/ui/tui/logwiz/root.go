@@ -1,6 +1,7 @@
 package logwiz
 
 import (
+	"io"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -16,6 +17,7 @@ type LogsService interface {
 	SetRetentionDays(days int) (logs.Config, error)
 	ListSources() ([]logs.SourceSummary, error)
 	Query(query logs.Query) ([]logs.Event, error)
+	Tail(query logs.Query, out io.Writer, stop <-chan struct{}) error
 	Prune() (logs.PruneResult, error)
 }
 
@@ -36,6 +38,7 @@ type Root struct {
 	footer  components.Footer
 	width   int
 	height  int
+	summary string
 }
 
 func NewRoot(service LogsService) *Root {
@@ -61,6 +64,7 @@ func (r *Root) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	next, cmd := r.screen.Update(msg)
 	if next != nil {
 		r.screen = next
+		r.summary = screenSummary(next)
 		r.syncChrome()
 	}
 	return r, cmd
@@ -80,4 +84,22 @@ func (r *Root) View() string {
 func (r *Root) syncChrome() {
 	r.header = components.NewHeader(r.theme, r.screen.Title(), r.screen.Breadcrumb())
 	r.footer = components.NewFooter(r.theme, r.screen.Footer(), len(r.screen.Breadcrumb()) == 0)
+}
+
+func (r *Root) Summary() string {
+	return r.summary
+}
+
+func screenSummary(screen Screen) string {
+	switch s := screen.(type) {
+	case *retentionScreen:
+		if s.done {
+			return "Updated logs retention to " + strings.TrimSpace(s.input.Value()) + " days"
+		}
+	case *pruneScreen:
+		if s.done && s.body != "" {
+			return strings.ReplaceAll(s.body, "\n", " ")
+		}
+	}
+	return ""
 }

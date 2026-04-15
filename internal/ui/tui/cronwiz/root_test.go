@@ -1,11 +1,14 @@
 package cronwiz
 
 import (
+	"bytes"
+	"io"
 	"strings"
 	"testing"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/exp/teatest"
 
 	"github.com/shipyard-auto/shipyard/internal/cron"
 	"github.com/shipyard-auto/shipyard/internal/ui/tui/theme"
@@ -101,4 +104,41 @@ func TestListScreenEmptyState(t *testing.T) {
 	if !strings.Contains(screen.View(), "No cron jobs to browse.") {
 		t.Fatalf("expected empty state, got %q", screen.View())
 	}
+}
+
+func TestRootWithTeaTestAddFlow(t *testing.T) {
+	svc := &fakeCronService{}
+	tm := teatest.NewTestModel(t, NewRoot(svc), teatest.WithInitialTermSize(100, 30))
+	t.Cleanup(func() { _ = tm.Quit() })
+
+	teatest.WaitFor(t, tm.Output(), func(b []byte) bool {
+		return bytes.Contains(b, []byte("Add new cron job"))
+	})
+
+	tm.Send(tea.KeyMsg{Type: tea.KeyEnter})
+	teatest.WaitFor(t, tm.Output(), func(b []byte) bool {
+		return bytes.Contains(b, []byte("Job name"))
+	})
+
+	tm.Type("Heartbeat")
+	tm.Send(tea.KeyMsg{Type: tea.KeyEnter})
+	tm.Send(tea.KeyMsg{Type: tea.KeyEnter})
+	tm.Send(tea.KeyMsg{Type: tea.KeyEnter})
+	tm.Type("/bin/echo ok")
+	tm.Send(tea.KeyMsg{Type: tea.KeyEnter})
+	tm.Send(tea.KeyMsg{Type: tea.KeyEnter})
+	tm.Send(tea.KeyMsg{Type: tea.KeyEnter})
+
+	teatest.WaitFor(t, tm.Output(), func(b []byte) bool {
+		return bytes.Contains(b, []byte("created successfully"))
+	})
+}
+
+func readAll(tb testing.TB, r io.Reader) []byte {
+	tb.Helper()
+	b, err := io.ReadAll(r)
+	if err != nil {
+		tb.Fatal(err)
+	}
+	return b
 }

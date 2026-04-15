@@ -54,6 +54,7 @@ func (r *Root) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	next, cmd := r.screen.Update(msg)
 	if next != nil {
 		r.screen = next
+		r.summary = screenSummary(next)
 		r.syncChrome()
 	}
 	return r, cmd
@@ -87,4 +88,26 @@ func (r *Root) syncChrome() {
 
 func (r *Root) setSummary(summary string) {
 	r.summary = summary
+}
+
+func screenSummary(screen Screen) string {
+	switch s := screen.(type) {
+	case *addScreen:
+		if s.created != nil {
+			return "Created cron job " + s.created.ID
+		}
+	case *updateScreen:
+		if s.updated != nil {
+			return "Updated cron job " + s.updated.ID
+		}
+	case *deleteScreen:
+		if s.done && s.target != nil && s.err == "" {
+			return "Deleted cron job " + s.target.ID
+		}
+	case *runScreen:
+		if s.done && s.target != nil {
+			return "Ran cron job " + s.target.ID
+		}
+	}
+	return ""
 }

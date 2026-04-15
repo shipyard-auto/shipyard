@@ -1,6 +1,8 @@
 package logwiz
 
 import (
+	"io"
+	"sync"
 	"strings"
 	"time"
 
@@ -12,6 +14,7 @@ import (
 )
 
 type tailTickMsg time.Time
+type tailDoneMsg struct{ err error }
 
 type tailScreen struct {
 	theme     theme.Theme
@@ -20,8 +23,10 @@ type tailScreen struct {
 	entityID  components.Input
 	step      int
 	viewer    components.Viewer
-	lastTick  time.Time
 	hasEvents bool
+	stop      chan struct{}
+	lines     []string
+	writer    *tailWriter
 }
 
 func newTailScreen(th theme.Theme, service LogsService) Screen {
@@ -44,18 +49,26 @@ func (s *tailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		if msg.String() == "esc" {
+			if s.stop != nil {
+				close(s.stop)
+				s.stop = nil
+			}
 			return newMenuScreen(s.theme, s.service), nil
 		}
+	case tailDoneMsg:
+		return s, nil
 	case tailTickMsg:
-		events, _ := s.service.Query(logs.Query{Source: strings.TrimSpace(s.source.Value()), Entity: strings.ToUpper(strings.TrimSpace(s.entityID.Value())), Limit: 100})
-		lines := []string{}
-		for _, event := range events {
-			lines = append(lines, renderEvents([]logs.Event{event}, ""))
+		if s.writer != nil {
+			for _, chunk := range s.writer.Drain() {
+				chunk = strings.TrimSpace(chunk)
+				if chunk == "" {
+					continue
+				}
+				s.hasEvents = true
+				s.lines = append(s.lines, strings.Split(chunk, "\n")...)
+			}
+			s.viewer.SetContent(strings.Join(s.lines, "\n"))
 		}
-		if len(lines) > 0 {
-			s.hasEvents = true
-		}
-		s.viewer.SetContent(strings.Join(lines, "\n"))
 		return s, tea.Tick(time.Second, func(t time.Time) tea.Msg { return tailTickMsg(t) })
 	}
 	if s.step == 0 {
@@ -75,7 +88,13 @@ func (s *tailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		_, submitted := s.entityID.Update(msg)
 		if submitted {
 			s.step = 2
-			return s, tea.Tick(time.Second, func(t time.Time) tea.Msg { return tailTickMsg(t) })
+			s.stop = make(chan struct{})
+			s.writer = &tailWriter{}
+			query := logs.Query{Source: strings.TrimSpace(s.source.Value()), Entity: strings.ToUpper(strings.TrimSpace(s.entityID.Value()))}
+			return s, tea.Batch(
+				tea.Tick(time.Second, func(t time.Time) tea.Msg { return tailTickMsg(t) }),
+				startTailCmd(s.service, query, s.writer, s.stop),
+			)
 		}
 		return s, nil
 	}
@@ -97,3 +116,34 @@ func (s *tailScreen) View() string {
 		return s.theme.RenderSuccess("● live") + "\n\n" + s.viewer.View()
 	}
 }
+
+func startTailCmd(service LogsService, query logs.Query, writer io.Writer, stop <-chan struct{}) tea.Cmd {
+	return func() tea.Msg {
+		go func() {
+			_ = service.Tail(query, writer, stop)
+		}()
+		return nil
+	}
+}
+
+type tailWriter struct {
+	mu      sync.Mutex
+	pending []string
+}
+
+func (w *tailWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.pending = append(w.pending, string(p))
+	return len(p), nil
+}
+
+func (w *tailWriter) Drain() []string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	out := append([]string{}, w.pending...)
+	w.pending = nil
+	return out
+}
+
+var _ io.Writer = (*tailWriter)(nil)

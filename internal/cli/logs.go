@@ -175,8 +175,12 @@ func newLogsConfigCmd() *cobra.Command {
 				if err != nil {
 					return err
 				}
-				if _, err := tea.NewProgram(logwiz.NewRoot(service), tea.WithAltScreen()).Run(); err != nil {
+				model, err := tea.NewProgram(logwiz.NewRoot(service), tea.WithAltScreen()).Run()
+				if err != nil {
 					return err
+				}
+				if finished, ok := model.(*logwiz.Root); ok && strings.TrimSpace(finished.Summary()) != "" {
+					ui.Printf(cmd.OutOrStdout(), "%s\n", ui.Emphasis(finished.Summary()))
 				}
 				return nil
 			}

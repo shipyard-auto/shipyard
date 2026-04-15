@@ -1,11 +1,14 @@
 package logwiz
 
 import (
+	"bytes"
+	"io"
 	"strings"
 	"testing"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/exp/teatest"
 
 	"github.com/shipyard-auto/shipyard/internal/logs"
 	"github.com/shipyard-auto/shipyard/internal/ui/tui/theme"
@@ -22,6 +25,13 @@ func (f *fakeLogsService) LoadConfig() (logs.Config, error)               { if f
 func (f *fakeLogsService) SetRetentionDays(days int) (logs.Config, error) { f.cfg.RetentionDays = days; return f.cfg, nil }
 func (f *fakeLogsService) ListSources() ([]logs.SourceSummary, error)     { return append([]logs.SourceSummary{}, f.sources...), nil }
 func (f *fakeLogsService) Query(query logs.Query) ([]logs.Event, error)   { return append([]logs.Event{}, f.events...), nil }
+func (f *fakeLogsService) Tail(query logs.Query, out io.Writer, stop <-chan struct{}) error {
+	for _, event := range f.events {
+		_, _ = io.WriteString(out, renderEvents([]logs.Event{event}, "")+"\n")
+	}
+	<-stop
+	return nil
+}
 func (f *fakeLogsService) Prune() (logs.PruneResult, error)               { return f.prune, nil }
 
 func TestLogsRootMenuEmptyState(t *testing.T) {
@@ -66,4 +76,12 @@ func TestTailScreenShowsIdleState(t *testing.T) {
 	if !strings.Contains(screen.View(), "Waiting for events") {
 		t.Fatalf("expected idle state before tick, got %q", screen.View())
 	}
+}
+
+func TestLogsRootWithTeaTestEmptyState(t *testing.T) {
+	tm := teatest.NewTestModel(t, NewRoot(&fakeLogsService{}), teatest.WithInitialTermSize(100, 30))
+	t.Cleanup(func() { _ = tm.Quit() })
+	teatest.WaitFor(t, tm.Output(), func(b []byte) bool {
+		return bytes.Contains(b, []byte("No logs yet."))
+	})
 }

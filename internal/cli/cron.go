@@ -64,8 +64,12 @@ func newCronConfigCmd() *cobra.Command {
 				return err
 			}
 			root := cronwiz.NewRoot(service)
-			if _, err := tea.NewProgram(root, tea.WithAltScreen()).Run(); err != nil {
+			model, err := tea.NewProgram(root, tea.WithAltScreen()).Run()
+			if err != nil {
 				return err
+			}
+			if finished, ok := model.(*cronwiz.Root); ok && strings.TrimSpace(finished.Summary()) != "" {
+				ui.Printf(cmd.OutOrStdout(), "%s\n", ui.Emphasis(finished.Summary()))
 			}
 			return nil
 		},

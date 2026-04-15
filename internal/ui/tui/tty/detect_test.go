@@ -2,7 +2,6 @@ package tty
 
 import (
 	"bytes"
-	"strings"
 	"testing"
 )
 
@@ -16,7 +15,8 @@ func TestRequireTTYReturnsErrorForNonTTY(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected non-interactive error")
 	}
-	if !strings.Contains(stderr.String(), "This command requires an interactive terminal.") {
-		t.Fatalf("expected user-facing message, got %q", stderr.String())
+	want := "This command requires an interactive terminal.\nUse the non-interactive commands instead, for example:\n  shipyard cron add --name ... --schedule ... --command ...\n"
+	if stderr.String() != want {
+		t.Fatalf("expected exact message %q, got %q", want, stderr.String())
 	}
 }
