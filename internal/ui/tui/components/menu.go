@@ -110,12 +110,13 @@ func (m Menu) View() string {
 		if item.Badge != "" {
 			badgeStyle := lipgloss.NewStyle().
 				Padding(0, 1).
-				Foreground(m.theme.Text).
-				Background(m.theme.SurfaceAlt)
+				Foreground(m.theme.Muted).
+				Border(lipgloss.NormalBorder()).
+				BorderForeground(m.theme.SurfaceAlt)
 			if item.Disabled {
-				badgeStyle = badgeStyle.Foreground(m.theme.Muted)
+				badgeStyle = badgeStyle.Foreground(m.theme.Muted).Faint(true)
 			} else if i == m.index {
-				badgeStyle = badgeStyle.Foreground(m.theme.TextInverse).Background(m.theme.Accent)
+				badgeStyle = badgeStyle.Foreground(m.theme.Accent).BorderForeground(m.theme.Accent).Bold(true)
 			}
 			badge = badgeStyle.Render(item.Badge)
 		}
