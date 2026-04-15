@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/xml"
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 )
@@ -21,6 +22,7 @@ func launchdPlistName(id string) string {
 }
 
 func renderSystemdUnit(record ServiceRecord) string {
+	record = withDefaultEnvironment(record, "")
 	lines := []string{
 		"# Managed by Shipyard - do not edit manually.",
 		fmt.Sprintf("# id=%s", record.ID),
@@ -31,6 +33,8 @@ func renderSystemdUnit(record ServiceRecord) string {
 		"Type=simple",
 		fmt.Sprintf("ExecStart=/bin/sh -lc '%s'", escapeShellSingleQuoted(record.Command)),
 		fmt.Sprintf("Restart=%s", map[bool]string{true: "on-failure", false: "no"}[record.AutoRestart]),
+		fmt.Sprintf("StandardOutput=append:%s", serviceStdoutPath(record.ID)),
+		fmt.Sprintf("StandardError=append:%s", serviceStderrPath(record.ID)),
 	}
 	if record.WorkingDir != "" {
 		lines = append(lines, "WorkingDirectory="+record.WorkingDir)
@@ -43,6 +47,7 @@ func renderSystemdUnit(record ServiceRecord) string {
 }
 
 func renderLaunchdPlist(record ServiceRecord) string {
+	record = withDefaultEnvironment(record, "")
 	var buf bytes.Buffer
 	buf.WriteString(xml.Header)
 	buf.WriteString(`<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">` + "\n")
@@ -74,8 +79,8 @@ func renderLaunchdPlist(record ServiceRecord) string {
 		}
 		buf.WriteString("  </dict>\n")
 	}
-	writePlistKeyString(&buf, "StandardOutPath", fmt.Sprintf("/tmp/shipyard-%s.out.log", record.ID))
-	writePlistKeyString(&buf, "StandardErrorPath", fmt.Sprintf("/tmp/shipyard-%s.err.log", record.ID))
+	writePlistKeyString(&buf, "StandardOutPath", serviceStdoutPath(record.ID))
+	writePlistKeyString(&buf, "StandardErrorPath", serviceStderrPath(record.ID))
 	buf.WriteString("</dict>\n</plist>\n")
 	return buf.String()
 }
@@ -89,6 +94,25 @@ func renderDescription(record ServiceRecord) string {
 
 func escapeShellSingleQuoted(value string) string {
 	return strings.ReplaceAll(value, `'`, `'\''`)
+}
+
+func withDefaultEnvironment(record ServiceRecord, homeDir string) ServiceRecord {
+	record.Environment = cloneEnvironment(record.Environment)
+	if record.Environment == nil {
+		record.Environment = map[string]string{}
+	}
+	if strings.TrimSpace(homeDir) != "" {
+		record.Environment["HOME"] = homeDir
+	}
+	return record
+}
+
+func serviceStdoutPath(id string) string {
+	return filepath.Join("/tmp", fmt.Sprintf("shipyard-%s.out.log", strings.ToUpper(strings.TrimSpace(id))))
+}
+
+func serviceStderrPath(id string) string {
+	return filepath.Join("/tmp", fmt.Sprintf("shipyard-%s.err.log", strings.ToUpper(strings.TrimSpace(id))))
 }
 
 func sortedEnvironmentEntries(environment map[string]string) []string {

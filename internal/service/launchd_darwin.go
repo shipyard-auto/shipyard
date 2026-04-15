@@ -13,8 +13,9 @@ import (
 )
 
 type launchdManager struct {
-	exec     func(name string, args ...string) *exec.Cmd
-	uid      int
+	exec      func(name string, args ...string) *exec.Cmd
+	uid       int
+	homeDir   string
 	agentsDir string
 }
 
@@ -26,6 +27,7 @@ func newLaunchdManager() (Manager, error) {
 	return &launchdManager{
 		exec:      exec.Command,
 		uid:       os.Getuid(),
+		homeDir:   homeDir,
 		agentsDir: filepath.Join(homeDir, "Library", "LaunchAgents"),
 	}, nil
 }
@@ -42,14 +44,12 @@ func (m *launchdManager) Sync(desired []ServiceRecord) error {
 		label := launchdLabel(record.ID)
 		path := filepath.Join(m.agentsDir, name)
 		_, _ = m.run("launchctl", "bootout", m.domain()+"/"+label)
-		if err := os.WriteFile(path, []byte(renderLaunchdPlist(record)), 0o644); err != nil {
+		rendered := renderLaunchdPlist(withDefaultEnvironment(record, m.homeDir))
+		if err := os.WriteFile(path, []byte(rendered), 0o644); err != nil {
 			return fmt.Errorf("write launchd plist: %w", err)
 		}
 		if record.Enabled {
-			if _, err := m.run("launchctl", "bootstrap", m.domain(), path); err != nil {
-				return err
-			}
-			if _, err := m.run("launchctl", "enable", m.domain()+"/"+label); err != nil {
+			if err := m.load(path, label); err != nil {
 				return err
 			}
 		}
@@ -93,12 +93,7 @@ func (m *launchdManager) Restart(id string) error {
 }
 
 func (m *launchdManager) Enable(id string) error {
-	_, err := m.run("launchctl", "enable", m.domain()+"/"+launchdLabel(id))
-	if err != nil {
-		return err
-	}
-	_, err = m.run("launchctl", "bootstrap", m.domain(), filepath.Join(m.agentsDir, launchdPlistName(id)))
-	return err
+	return m.load(filepath.Join(m.agentsDir, launchdPlistName(id)), launchdLabel(id))
 }
 
 func (m *launchdManager) Disable(id string) error {
@@ -149,6 +144,15 @@ func (m *launchdManager) domain() string {
 	return fmt.Sprintf("gui/%d", m.uid)
 }
 
+func (m *launchdManager) load(path, label string) error {
+	_, _ = m.run("launchctl", "bootout", m.domain()+"/"+label)
+	if _, err := m.run("launchctl", "bootstrap", m.domain(), path); err != nil {
+		return err
+	}
+	_, err := m.run("launchctl", "enable", m.domain()+"/"+label)
+	return err
+}
+
 func (m *launchdManager) run(name string, args ...string) (string, error) {
 	cmd := m.exec(name, args...)
 	var stderr bytes.Buffer
@@ -165,4 +169,3 @@ func (m *launchdManager) run(name string, args ...string) (string, error) {
 }
 
 var _ Manager = (*launchdManager)(nil)
-

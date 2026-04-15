@@ -41,7 +41,8 @@ func (m *systemdManager) Sync(desired []ServiceRecord) error {
 		name := systemdUnitName(record.ID)
 		desiredNames[name] = record
 		path := filepath.Join(m.unitDir, name)
-		if err := os.WriteFile(path, []byte(renderSystemdUnit(record)), 0o644); err != nil {
+		rendered := renderSystemdUnit(withDefaultEnvironment(record, m.homeDir))
+		if err := os.WriteFile(path, []byte(rendered), 0o644); err != nil {
 			return fmt.Errorf("write systemd unit: %w", err)
 		}
 	}
@@ -68,11 +69,26 @@ func (m *systemdManager) Reload() error {
 	return err
 }
 
-func (m *systemdManager) Start(id string) error   { _, err := m.run("systemctl", "--user", "start", systemdUnitName(id)); return err }
-func (m *systemdManager) Stop(id string) error    { _, err := m.run("systemctl", "--user", "stop", systemdUnitName(id)); return err }
-func (m *systemdManager) Restart(id string) error { _, err := m.run("systemctl", "--user", "restart", systemdUnitName(id)); return err }
-func (m *systemdManager) Enable(id string) error  { _, err := m.run("systemctl", "--user", "enable", systemdUnitName(id)); return err }
-func (m *systemdManager) Disable(id string) error { _, err := m.run("systemctl", "--user", "disable", systemdUnitName(id)); return err }
+func (m *systemdManager) Start(id string) error {
+	_, err := m.run("systemctl", "--user", "start", systemdUnitName(id))
+	return err
+}
+func (m *systemdManager) Stop(id string) error {
+	_, err := m.run("systemctl", "--user", "stop", systemdUnitName(id))
+	return err
+}
+func (m *systemdManager) Restart(id string) error {
+	_, err := m.run("systemctl", "--user", "restart", systemdUnitName(id))
+	return err
+}
+func (m *systemdManager) Enable(id string) error {
+	_, err := m.run("systemctl", "--user", "enable", systemdUnitName(id))
+	return err
+}
+func (m *systemdManager) Disable(id string) error {
+	_, err := m.run("systemctl", "--user", "disable", systemdUnitName(id))
+	return err
+}
 
 func (m *systemdManager) Remove(id string) error {
 	_ = m.Disable(id)
