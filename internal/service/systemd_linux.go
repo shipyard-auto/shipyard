@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"strconv"
 	"strings"
 )
@@ -136,4 +135,3 @@ func (m *systemdManager) run(name string, args ...string) (string, error) {
 }
 
 var _ Manager = (*systemdManager)(nil)
-
