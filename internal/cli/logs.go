@@ -6,10 +6,13 @@ import (
 	"strings"
 	"text/tabwriter"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
 
 	"github.com/shipyard-auto/shipyard/internal/logs"
 	"github.com/shipyard-auto/shipyard/internal/ui"
+	"github.com/shipyard-auto/shipyard/internal/ui/tui/logwiz"
+	tuitype "github.com/shipyard-auto/shipyard/internal/ui/tui/tty"
 )
 
 func newLogsCmd() *cobra.Command {
@@ -166,7 +169,17 @@ func newLogsConfigCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "config",
 		Short: "Show or update logs configuration",
-		RunE: func(cmd *cobra.Command, _ []string) error {
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) == 0 && tuitype.IsInteractive(tuitype.StdinFD()) {
+				service, err := logs.NewService()
+				if err != nil {
+					return err
+				}
+				if _, err := tea.NewProgram(logwiz.NewRoot(service), tea.WithAltScreen()).Run(); err != nil {
+					return err
+				}
+				return nil
+			}
 			service, err := logs.NewService()
 			if err != nil {
 				return err

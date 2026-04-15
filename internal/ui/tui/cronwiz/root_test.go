@@ -1,0 +1,104 @@
+package cronwiz
+
+import (
+	"strings"
+	"testing"
+	"time"
+
+	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/shipyard-auto/shipyard/internal/cron"
+	"github.com/shipyard-auto/shipyard/internal/ui/tui/theme"
+)
+
+type fakeCronService struct {
+	jobs    []cron.Job
+	added   []cron.JobInput
+	updated []struct {
+		ID    string
+		Input cron.JobInput
+	}
+	deleted []string
+	ran     []string
+}
+
+func (f *fakeCronService) List() ([]cron.Job, error)                          { return append([]cron.Job{}, f.jobs...), nil }
+func (f *fakeCronService) Get(id string) (cron.Job, error)                    { for _, j := range f.jobs { if j.ID == id { return j, nil } }; return cron.Job{}, cron.ErrJobNotFound }
+func (f *fakeCronService) Add(input cron.JobInput) (cron.Job, error)          { f.added = append(f.added, input); j := cron.Job{ID: "AB12CD", Name: *input.Name, Schedule: *input.Schedule, Command: *input.Command, Enabled: *input.Enabled, CreatedAt: time.Now(), UpdatedAt: time.Now()}; f.jobs = append(f.jobs, j); return j, nil }
+func (f *fakeCronService) Update(id string, input cron.JobInput) (cron.Job, error) { f.updated = append(f.updated, struct{ID string; Input cron.JobInput}{id, input}); return f.Get(id) }
+func (f *fakeCronService) Enable(id string) (cron.Job, error)                 { return f.Get(id) }
+func (f *fakeCronService) Disable(id string) (cron.Job, error)                { return f.Get(id) }
+func (f *fakeCronService) Run(id string) (cron.Job, string, error)            { f.ran = append(f.ran, id); j, err := f.Get(id); return j, "ok", err }
+func (f *fakeCronService) Delete(id string) error                             { f.deleted = append(f.deleted, id); return nil }
+
+func sendText[T interface{ Update(tea.Msg) (Screen, tea.Cmd) }](t *testing.T, screen Screen, text string) Screen {
+	t.Helper()
+	for _, r := range text {
+		next, _ := screen.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		screen = next
+	}
+	return screen
+}
+
+func TestRootBackNavigationFlow(t *testing.T) {
+	svc := &fakeCronService{}
+	root := NewRoot(svc)
+	if !strings.Contains(root.View(), "Cron Control Panel") {
+		t.Fatalf("expected main menu, got %q", root.View())
+	}
+	_, cmd := root.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd != nil {
+		_ = cmd
+	}
+	if !strings.Contains(root.View(), "Job name") {
+		t.Fatalf("expected add screen after enter, got %q", root.View())
+	}
+	_, _ = root.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if !strings.Contains(root.View(), "Cron Control Panel") {
+		t.Fatalf("expected back to menu, got %q", root.View())
+	}
+}
+
+func TestAddScreenHappyPath(t *testing.T) {
+	svc := &fakeCronService{}
+	screen := newAddScreen(theme.New(), svc, nil)
+	for _, r := range "Heartbeat" {
+		screen, _ = screen.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	screen, _ = screen.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	screen, _ = screen.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	screen, _ = screen.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	for _, r := range "/bin/echo ok" {
+		screen, _ = screen.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	screen, _ = screen.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	screen, _ = screen.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	screen, cmd := screen.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("expected add submit command")
+	}
+	screen, _ = screen.Update(cmd())
+	if len(svc.added) != 1 {
+		t.Fatalf("expected one add call, got %d", len(svc.added))
+	}
+	if !strings.Contains(screen.View(), "created successfully") {
+		t.Fatalf("expected success view, got %q", screen.View())
+	}
+}
+
+func TestAddScreenValidationStaysOnStep(t *testing.T) {
+	svc := &fakeCronService{}
+	screen := newAddScreen(theme.New(), svc, nil)
+	screen, _ = screen.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if !strings.Contains(screen.View(), "name is required") {
+		t.Fatalf("expected validation error, got %q", screen.View())
+	}
+}
+
+func TestListScreenEmptyState(t *testing.T) {
+	svc := &fakeCronService{}
+	screen := newListScreen(theme.New(), svc)
+	if !strings.Contains(screen.View(), "No cron jobs to browse.") {
+		t.Fatalf("expected empty state, got %q", screen.View())
+	}
+}

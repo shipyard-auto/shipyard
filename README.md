@@ -1,70 +1,168 @@
 # Shipyard
 
-CLI em Go para distribuir e operar o ecossistema Shipyard a partir do terminal.
+`shipyard` is a standalone Go CLI for local automation and OS-integrated operations on Linux and macOS.
 
-## Objetivo
+This project is intentionally local-first. The current focus is:
 
-O `shipyard` deve ser o ponto de entrada instalável para operações locais e remotas, com foco em:
+- installing, updating, and uninstalling the CLI
+- managing Shipyard-owned cron jobs for the current user
+- storing structured local logs for Shipyard operations
 
-- instalação simples via shell bootstrap
-- experiência profissional de CLI com subcomandos previsíveis
-- gestão de componentes auxiliares como `gateway`
-- validação de ambiente, status, upgrade e troubleshooting
+## Fast Context
 
-## Responsabilidades
+If you are another engineer or an AI entering this repository, the quickest accurate model is:
 
-O CLI em Go deve cuidar de:
+- entrypoint: [`cmd/shipyard/main.go`](./cmd/shipyard/main.go)
+- root command wiring: [`internal/cli/root.go`](./internal/cli/root.go)
+- main implemented subsystem: [`internal/cron`](./internal/cron)
+- reusable observability foundation: [`internal/logs`](./internal/logs)
+- terminal rendering/help styling: [`internal/ui`](./internal/ui)
+- release source of truth: [`VERSION`](./VERSION)
 
-- parsing de comandos e flags
-- instalação e upgrade do binário
-- download de releases versionadas
-- bootstrap de componentes auxiliares
-- escrita e validação de arquivos de configuração
-- integração com `systemd`, cron e processos locais
-- checks de saúde e diagnósticos
+The CLI already has real OS integration. `cron` commands modify the current user's crontab. `logs` writes JSONL event files under `~/.shipyard/logs/`.
 
-## Limites
+## Implemented Commands
 
-O CLI não deve concentrar a lógica complexa do orquestrador.
+Top-level commands:
 
-O `gateway` pode continuar em Python, desde que o CLI seja responsável por:
+- `shipyard version`
+- `shipyard update`
+- `shipyard uninstall`
+- `shipyard cron ...`
+- `shipyard logs ...`
 
-- instalar uma versão explícita do projeto
-- preparar `venv` e dependências
-- provisionar config e diretórios
-- registrar e operar serviço local
-- expor comandos como `install`, `status`, `logs`, `upgrade` e `uninstall`
+`shipyard cron` currently supports:
 
-## Linha de comandos inicial
+- `list`
+- `show`
+- `add`
+- `update`
+- `delete`
+- `enable`
+- `disable`
+- `run`
+
+`shipyard logs` currently supports:
+
+- `list`
+- `show`
+- `tail`
+- `prune`
+- `config`
+- `config set retention-days <n>`
+
+### `shipyard cron config`
+
+`shipyard cron config` opens an interactive full-screen control panel for Shipyard-managed cron jobs.
+Use it for guided add, browse, update, enable, disable, run, and delete flows.
+The wizard only manages jobs created by Shipyard and preserves external crontab entries.
+
+### `shipyard logs config`
+
+`shipyard logs config` opens an interactive logs control panel when running in a real terminal with no extra args.
+Use it to inspect sources, review recent events, tail live events, change retention, and prune old files.
+For scripts and automation, `shipyard logs config set retention-days <n>` remains the non-interactive path.
+
+## How Shipyard Works
+
+### CLI structure
+
+- `cmd/shipyard`: binary entrypoint
+- `internal/cli`: command definitions and help rendering
+- `internal/ui`: splash/help formatting helpers
+
+### Cron subsystem
+
+`shipyard cron` is the main OS-facing feature today.
+
+Key rules:
+
+- it manages only jobs created by Shipyard
+- it operates on the current user's crontab only
+- it preserves external cron entries
+- it does not import non-Shipyard jobs automatically
+- local state is stored in `~/.shipyard/crons.json`
+
+Shipyard-managed jobs are rendered into the crontab with Shipyard markers so they can be updated or removed safely without touching unrelated entries.
+
+### Logs subsystem
+
+`shipyard logs` is the foundation for future observability across cron, services, and later agent runtimes.
+
+Current model:
+
+- config file: `~/.shipyard/logs.json`
+- log root: `~/.shipyard/logs/`
+- file format: JSONL
+- layout: `~/.shipyard/logs/<source>/YYYY-MM-DD.jsonl`
+- initial source: `cron`
+- default retention: `14` days
+
+Logs are normalized structured events. The storage format is intentionally source-neutral so future modules like `service` or `agent` can reuse the same event pipeline.
+
+## Local State
+
+Shipyard currently uses `~/.shipyard/` as its local base directory.
+
+Important files and directories:
+
+- `~/.shipyard/install.json`
+- `~/.shipyard/crons.json`
+- `~/.shipyard/logs.json`
+- `~/.shipyard/logs/`
+
+Important behavior:
+
+- local directories are auto-created when needed
+- logs auto-initialize on first write
+- `crons.json` is Shipyard state, not a user-facing manual config surface
+
+## Build And Validation
+
+Primary toolchain target:
+
+- Go `1.26.2`
+
+Useful commands:
 
 ```bash
-shipyard doctor
-shipyard version
-shipyard cron add
-shipyard cron list
-shipyard gateway install
-shipyard gateway status
-shipyard gateway upgrade
-shipyard gateway uninstall
-shipyard agent add
-shipyard agent list
+GOTOOLCHAIN=go1.26.2 go test ./...
+GOTOOLCHAIN=go1.26.2 go build ./cmd/shipyard
 ```
 
-## Direção técnica
+## Release Model
 
-- linguagem: Go
-- versão base de toolchain: Go 1.26.2
-- distribuição: binário único por plataforma
-- instalador: shell script mínimo, com a lógica principal no binário
-- framework CLI sugerido: `cobra`
-- config sugerida: `~/.config/shipyard/config.yaml`
-- diretório de dados sugerido: `~/.local/share/shipyard/`
-- logs sugeridos: `~/.local/state/shipyard/`
+- release version is read from [`VERSION`](./VERSION)
+- GitHub Actions publishes releases from `main`
+- tags use `v<version>`, for example `v0.13`
+- version bumps are manual and intentional
 
-## Princípios
+## Active Engineering Rules
 
-- preferir idempotência em instalações e upgrades
-- evitar lógica crítica em shell script
-- sempre suportar modo não interativo quando possível
-- tratar Linux como alvo principal, sem impedir suporte posterior a macOS
-- instalar componentes por release/tag, não por `main`
+These constraints are already reflected in the codebase and should stay true:
+
+- keep shell scripts minimal; core behavior belongs in Go
+- keep business logic in `internal/`
+- keep OS boundaries explicit and easy to test
+- preserve non-Shipyard system state
+- prefer structured local state over hidden behavior
+- prefer modular subsystems that future services can plug into
+
+## Near-Term Product Direction
+
+The current foundation is:
+
+1. local CLI operations
+2. cron management
+3. structured local logs
+
+The intended next layers are:
+
+1. service/process management
+2. richer observability
+3. agent and subagent runtime features
+
+## Repo-Specific Notes
+
+- [`AGENTS.md`](../AGENTS.md) defines repo-specific operating constraints for coding agents working from the project root.
+- This repository is the standalone `shipyard` project. Do not assume it is a subdirectory of another Go module when editing code or release workflow files.

@@ -7,10 +7,13 @@ import (
 	"strings"
 	"text/tabwriter"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
 
 	"github.com/shipyard-auto/shipyard/internal/cron"
 	"github.com/shipyard-auto/shipyard/internal/ui"
+	"github.com/shipyard-auto/shipyard/internal/ui/tui/cronwiz"
+	tuitype "github.com/shipyard-auto/shipyard/internal/ui/tui/tty"
 )
 
 func newCronCmd() *cobra.Command {
@@ -30,6 +33,7 @@ func newCronCmd() *cobra.Command {
 	}
 
 	cmd.AddCommand(newCronListCmd())
+	cmd.AddCommand(newCronConfigCmd())
 	cmd.AddCommand(newCronShowCmd())
 	cmd.AddCommand(newCronAddCmd())
 	cmd.AddCommand(newCronUpdateCmd())
@@ -39,6 +43,33 @@ func newCronCmd() *cobra.Command {
 	cmd.AddCommand(newCronDeleteCmd())
 
 	return cmd
+}
+
+func newCronConfigCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "config",
+		Short: "Interactive cron control panel",
+		Long: strings.Join([]string{
+			"Open the interactive Shipyard cron control panel.",
+			"",
+			"Use this wizard for keyboard-driven cron management. For scripting and CI,",
+			"keep using the flag-based commands such as `shipyard cron add`.",
+		}, "\n"),
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if err := tuitype.RequireTTY(cmd.OutOrStdout(), cmd.ErrOrStderr()); err != nil {
+				return err
+			}
+			service, err := cron.NewService()
+			if err != nil {
+				return err
+			}
+			root := cronwiz.NewRoot(service)
+			if _, err := tea.NewProgram(root, tea.WithAltScreen()).Run(); err != nil {
+				return err
+			}
+			return nil
+		},
+	}
 }
 
 func newCronListCmd() *cobra.Command {
