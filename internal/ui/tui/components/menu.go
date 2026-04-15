@@ -1,9 +1,11 @@
 package components
 
 import (
+	"fmt"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/shipyard-auto/shipyard/internal/ui/tui/theme"
 )
@@ -92,26 +94,50 @@ func (m Menu) View() string {
 	for i, item := range m.items {
 		left := "  "
 		style := m.theme.MenuItemStyle
-		descStyle := m.theme.SubtitleStyle
 		if i == m.index && !item.Disabled {
 			left = theme.GlyphSelected + " "
 			style = m.theme.MenuItemSelectedStyle
-			descStyle = descStyle.Foreground(m.theme.Accent)
 		}
-		title := item.Title
-		if item.Badge != "" {
-			title += " [" + item.Badge + "]"
-		}
+
+		titleText := item.Title
 		if item.Disabled {
-			title = m.theme.SubtitleStyle.Render(title)
+			titleText = m.theme.SubtitleStyle.Render(titleText)
 		} else {
-			title = style.Render(title)
+			titleText = style.Render(titleText)
 		}
-		line := strings.Repeat(" ", theme.MenuIndent) + left + title
+
+		badge := ""
+		if item.Badge != "" {
+			badgeStyle := lipgloss.NewStyle().
+				Padding(0, 1).
+				Foreground(m.theme.Text).
+				Background(m.theme.SurfaceAlt)
+			if item.Disabled {
+				badgeStyle = badgeStyle.Foreground(m.theme.Muted)
+			} else if i == m.index {
+				badgeStyle = badgeStyle.Foreground(m.theme.TextInverse).Background(m.theme.Accent)
+			}
+			badge = badgeStyle.Render(item.Badge)
+		}
+
+		line := strings.Repeat(" ", theme.MenuIndent) + left
+		if badge != "" {
+			line += lipgloss.JoinHorizontal(lipgloss.Left, titleText, "  ", badge)
+		} else {
+			line += titleText
+		}
 		if item.Description != "" {
+			descStyle := m.theme.SubtitleStyle
+			if i == m.index && !item.Disabled {
+				descStyle = descStyle.Foreground(m.theme.Accent)
+			}
 			line += "\n" + strings.Repeat(" ", theme.MenuIndent+4) + descStyle.Render(item.Description)
 		}
 		lines = append(lines, line)
 	}
 	return strings.Join(lines, "\n")
+}
+
+func (m Menu) DebugString() string {
+	return fmt.Sprintf("items=%d index=%d", len(m.items), m.index)
 }

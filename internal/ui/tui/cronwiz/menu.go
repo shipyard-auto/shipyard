@@ -42,13 +42,13 @@ func (s *menuScreen) refresh() {
 	}
 
 	items := []components.MenuItem{
-		{Title: "Add new cron job", Description: "+", Key: "add"},
-		{Title: "Browse jobs", Description: "≡", Badge: countBadge(len(jobs), "empty"), Disabled: len(jobs) == 0, Key: "browse"},
-		{Title: "Update a job", Disabled: len(jobs) == 0, Key: "update"},
+		{Title: "Add new cron job", Description: "Create a new Shipyard-managed cron job.", Key: "add"},
+		{Title: "Browse jobs", Description: "Inspect existing jobs and open details.", Badge: countBadge(len(jobs), "empty"), Disabled: len(jobs) == 0, Key: "browse"},
+		{Title: "Update a job", Description: "Edit the configuration of an existing job.", Disabled: len(jobs) == 0, Key: "update"},
 		{Title: "Enable jobs", Disabled: disabled == 0, Badge: fmt.Sprintf("%d", disabled), Key: "enable"},
 		{Title: "Disable jobs", Disabled: enabled == 0, Badge: fmt.Sprintf("%d", enabled), Key: "disable"},
-		{Title: "Run a job now", Disabled: len(jobs) == 0, Key: "run"},
-		{Title: "Delete a job", Disabled: len(jobs) == 0, Key: "delete"},
+		{Title: "Run a job now", Description: "Execute a job immediately from the wizard.", Disabled: len(jobs) == 0, Key: "run"},
+		{Title: "Delete a job", Description: "Remove a job from Shipyard and the user crontab.", Disabled: len(jobs) == 0, Key: "delete"},
 		{Title: "Exit", Key: "exit"},
 	}
 	s.menu = components.NewMenu(s.theme, items)
@@ -56,7 +56,7 @@ func (s *menuScreen) refresh() {
 		empty := components.NewEmpty(s.theme, components.EmptyProps{
 			Icon:        "⛵",
 			Title:       "No cron jobs yet — start by adding one.",
-			Description: "",
+			Description: "Shipyard only manages jobs it creates itself.",
 			Hint:        "Choose Add new cron job to begin.",
 		})
 		s.empty = &empty

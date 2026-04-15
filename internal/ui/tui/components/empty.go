@@ -38,9 +38,13 @@ func (e Empty) Update(msg tea.Msg) (Empty, tea.Cmd) {
 }
 
 func (e Empty) View() string {
+	icon := e.props.Icon
+	if strings.TrimSpace(icon) == "" {
+		icon = "⛵"
+	}
 	lines := []string{
-		e.theme.SubtitleStyle.Render("⎯ ⎯ ⎯"),
-		e.theme.TitleStyle.Render(e.props.Icon),
+		e.theme.SubtitleStyle.Render("────────"),
+		e.theme.TitleStyle.Render(icon),
 		e.theme.ValueStyle.Render(e.props.Title),
 	}
 	if e.props.Description != "" {
@@ -49,7 +53,7 @@ func (e Empty) View() string {
 	if e.props.Hint != "" {
 		lines = append(lines, e.theme.RenderHint(e.props.Hint))
 	}
-	block := strings.Join(lines, "\n")
+	block := lipgloss.NewStyle().Padding(0, 0, 1, 0).Render(strings.Join(lines, "\n"))
 	if e.width > 0 {
 		return lipgloss.PlaceHorizontal(e.width, lipgloss.Center, block)
 	}

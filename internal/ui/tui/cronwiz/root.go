@@ -81,7 +81,8 @@ func (r *Root) Summary() string {
 
 func (r *Root) syncChrome() {
 	r.header = components.NewHeader(r.theme, r.screen.Title(), r.screen.Breadcrumb())
-	r.footer = components.NewFooter(r.theme, r.screen.Footer(), len(r.screen.Breadcrumb()) == 0)
+	_, isMenu := r.screen.(*menuScreen)
+	r.footer = components.NewFooter(r.theme, r.screen.Footer(), isMenu)
 }
 
 func (r *Root) setSummary(summary string) {
