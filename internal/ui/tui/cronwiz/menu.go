@@ -18,6 +18,7 @@ type menuScreen struct {
 	empty   *components.Empty
 	jobs    []cron.Job
 	err     error
+	width   int
 }
 
 func newMenuScreen(th theme.Theme, service CronService) Screen {
@@ -43,33 +44,76 @@ func (s *menuScreen) refresh() {
 
 	items := []components.MenuItem{
 		{Title: "Add new cron job", Description: "Create a new Shipyard-managed cron job.", Key: "add"},
-		{Title: "Browse jobs", Description: "Inspect existing jobs and open details.", Badge: countBadge(len(jobs), "empty"), Disabled: len(jobs) == 0, Key: "browse"},
-		{Title: "Update a job", Description: "Edit the configuration of an existing job.", Disabled: len(jobs) == 0, Key: "update"},
-		{Title: "Enable jobs", Disabled: disabled == 0, Badge: fmt.Sprintf("%d", disabled), Key: "enable"},
-		{Title: "Disable jobs", Disabled: enabled == 0, Badge: fmt.Sprintf("%d", enabled), Key: "disable"},
-		{Title: "Run a job now", Description: "Execute a job immediately from the wizard.", Disabled: len(jobs) == 0, Key: "run"},
-		{Title: "Delete a job", Description: "Remove a job from Shipyard and the user crontab.", Disabled: len(jobs) == 0, Key: "delete"},
-		{Title: "Exit", Key: "exit"},
+		{
+			Title:       "Browse jobs",
+			Description: "Inspect existing jobs and open details.",
+			Badge:       countBadge(len(jobs)),
+			Disabled:    len(jobs) == 0,
+			Key:         "browse",
+		},
+		{
+			Title:       "Update a job",
+			Description: "Edit the configuration of an existing job.",
+			Disabled:    len(jobs) == 0,
+			Key:         "update",
+		},
+		{
+			Title:        "Enable jobs",
+			Description:  "Re-enable disabled cron jobs.",
+			Disabled:     disabled == 0,
+			Badge:        fmt.Sprintf("%d", disabled),
+			BadgeVariant: badgeVariantForCount(disabled, "warning"),
+			Key:          "enable",
+		},
+		{
+			Title:        "Disable jobs",
+			Description:  "Pause enabled cron jobs without deleting them.",
+			Disabled:     enabled == 0,
+			Badge:        fmt.Sprintf("%d", enabled),
+			BadgeVariant: badgeVariantForCount(enabled, "success"),
+			Key:          "disable",
+		},
+		{
+			Title:       "Run a job now",
+			Description: "Execute a job immediately from the wizard.",
+			Disabled:    len(jobs) == 0,
+			Key:         "run",
+		},
+		{
+			Title:       "Delete a job",
+			Description: "Remove a job from Shipyard and the user crontab.",
+			Disabled:    len(jobs) == 0,
+			Key:         "delete",
+		},
+		{Title: "Exit", Description: "Leave the cron control panel.", Key: "exit"},
 	}
-	s.menu = components.NewMenu(s.theme, items)
+	s.menu = components.NewMenu(s.theme, items).SetWidth(s.width)
+
 	if len(jobs) == 0 {
 		empty := components.NewEmpty(s.theme, components.EmptyProps{
-			Icon:        "⛵",
-			Title:       "No cron jobs yet — start by adding one.",
+			Icon:        "⚓",
+			Title:       "No cron jobs yet",
 			Description: "Shipyard only manages jobs it creates itself.",
 			Hint:        "Choose Add new cron job to begin.",
-		})
+		}).SetWidth(s.width)
 		s.empty = &empty
 	} else {
 		s.empty = nil
 	}
 }
 
-func countBadge(count int, empty string) string {
+func countBadge(count int) string {
 	if count == 0 {
-		return empty
+		return "empty"
 	}
 	return fmt.Sprintf("%d", count)
+}
+
+func badgeVariantForCount(count int, nonZero string) string {
+	if count == 0 {
+		return "muted"
+	}
+	return nonZero
 }
 
 func (s *menuScreen) Init() tea.Cmd { return nil }
@@ -86,6 +130,14 @@ func (s *menuScreen) Footer() []components.KeyHint {
 }
 
 func (s *menuScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
+	if resize, ok := msg.(tea.WindowSizeMsg); ok {
+		s.width = resize.Width
+		s.menu = s.menu.SetWidth(resize.Width)
+		if s.empty != nil {
+			updated := s.empty.SetWidth(resize.Width)
+			s.empty = &updated
+		}
+	}
 	if msg, ok := msg.(tea.KeyMsg); ok && msg.String() == "esc" {
 		return s, nil
 	}

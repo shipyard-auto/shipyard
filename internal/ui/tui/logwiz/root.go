@@ -60,6 +60,9 @@ func (r *Root) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	if size, ok := msg.(tea.WindowSizeMsg); ok {
 		r.width, r.height = size.Width, size.Height
+		contentWidth := r.theme.ContentWidth(r.width)
+		r.header = r.header.SetWidth(contentWidth)
+		r.footer = r.footer.SetWidth(contentWidth)
 	}
 	next, cmd := r.screen.Update(msg)
 	if next != nil {
@@ -71,6 +74,7 @@ func (r *Root) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (r *Root) View() string {
+	width := r.theme.ContentWidth(r.width)
 	body := strings.Join([]string{
 		r.header.View(),
 		"",
@@ -78,12 +82,16 @@ func (r *Root) View() string {
 		"",
 		r.footer.View(),
 	}, "\n")
-	return lipgloss.NewStyle().Padding(1, 2).Width(r.theme.ContentWidth(r.width)).Render(body)
+	return lipgloss.NewStyle().
+		Padding(1, theme.PageGutter).
+		Width(width + theme.PageGutter*2).
+		Render(body)
 }
 
 func (r *Root) syncChrome() {
-	r.header = components.NewHeader(r.theme, r.screen.Title(), r.screen.Breadcrumb())
-	r.footer = components.NewFooter(r.theme, r.screen.Footer(), len(r.screen.Breadcrumb()) == 0)
+	contentWidth := r.theme.ContentWidth(r.width)
+	r.header = components.NewHeader(r.theme, r.screen.Title(), r.screen.Breadcrumb()).SetWidth(contentWidth)
+	r.footer = components.NewFooter(r.theme, r.screen.Footer(), len(r.screen.Breadcrumb()) == 0).SetWidth(contentWidth)
 }
 
 func (r *Root) Summary() string {

@@ -28,11 +28,14 @@ func NewEmpty(th theme.Theme, props EmptyProps) Empty {
 
 func (e Empty) Init() tea.Cmd { return nil }
 
-func (e *Empty) Resize(width, _ int) { e.width = width }
+func (e Empty) SetWidth(width int) Empty {
+	e.width = width
+	return e
+}
 
 func (e Empty) Update(msg tea.Msg) (Empty, tea.Cmd) {
 	if resize, ok := msg.(tea.WindowSizeMsg); ok {
-		e.Resize(resize.Width, resize.Height)
+		e.width = resize.Width
 	}
 	return e, nil
 }
@@ -42,20 +45,35 @@ func (e Empty) View() string {
 	if strings.TrimSpace(icon) == "" {
 		icon = "⛵"
 	}
+
+	iconStyle := lipgloss.NewStyle().Foreground(e.theme.Accent).Bold(true)
+	titleStyle := e.theme.ValueStyle.Foreground(e.theme.Text)
+	descStyle := e.theme.SubtitleStyle
+	hintStyle := e.theme.HintStyle
+
 	lines := []string{
-		e.theme.SubtitleStyle.Render("────────"),
-		e.theme.TitleStyle.Render(icon),
-		e.theme.ValueStyle.Render(e.props.Title),
+		iconStyle.Render(icon),
+		"",
+		titleStyle.Render(e.props.Title),
 	}
 	if e.props.Description != "" {
-		lines = append(lines, e.theme.SubtitleStyle.Render(e.props.Description))
+		lines = append(lines, descStyle.Render(e.props.Description))
 	}
 	if e.props.Hint != "" {
-		lines = append(lines, e.theme.RenderHint(e.props.Hint))
+		lines = append(lines, "", hintStyle.Render(theme.GlyphArrow+" "+e.props.Hint))
 	}
-	block := lipgloss.NewStyle().Padding(0, 0, 1, 0).Render(strings.Join(lines, "\n"))
+
+	block := lipgloss.JoinVertical(lipgloss.Center, lines...)
+
+	// Frame the empty state in a subtle rounded panel for clear visual grouping.
+	panel := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(e.theme.SurfaceAlt).
+		Padding(1, 4).
+		Render(block)
+
 	if e.width > 0 {
-		return lipgloss.PlaceHorizontal(e.width, lipgloss.Center, block)
+		return lipgloss.PlaceHorizontal(e.width, lipgloss.Center, panel)
 	}
-	return block
+	return panel
 }

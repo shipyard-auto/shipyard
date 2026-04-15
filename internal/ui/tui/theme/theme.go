@@ -3,6 +3,7 @@ package theme
 import (
 	"math"
 	"os"
+	"strings"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
@@ -16,10 +17,14 @@ const (
 	GlyphSelected     = "▍"
 	GlyphBoxChecked   = "●"
 	GlyphBoxUnchecked = "○"
+	GlyphDot          = "·"
+	GlyphLine         = "─"
 
 	MenuIndent = 2
 	GapSmall   = 1
 	GapMedium  = 2
+
+	PageGutter = 2
 )
 
 var GlyphSpinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
@@ -65,16 +70,16 @@ func New() Theme {
 
 	t := Theme{
 		ColorEnabled: !noColor,
-		Primary:      lipgloss.AdaptiveColor{Light: "#124E89", Dark: "#3A7DCE"},
-		Accent:       lipgloss.AdaptiveColor{Light: "#0087A8", Dark: "#35D4FF"},
-		Success:      lipgloss.AdaptiveColor{Light: "#0D7A43", Dark: "#43D17D"},
-		Warning:      lipgloss.AdaptiveColor{Light: "#A65F00", Dark: "#FFB347"},
-		Danger:       lipgloss.AdaptiveColor{Light: "#B31B1B", Dark: "#FF6B6B"},
-		Muted:        lipgloss.AdaptiveColor{Light: "#6F7782", Dark: "#8B949E"},
-		Surface:      lipgloss.AdaptiveColor{Light: "#F7F9FC", Dark: "#1C232D"},
-		SurfaceAlt:   lipgloss.AdaptiveColor{Light: "#EDF2F7", Dark: "#232C38"},
-		Text:         lipgloss.AdaptiveColor{Light: "#102A43", Dark: "#F2F5F9"},
-		TextInverse:  lipgloss.AdaptiveColor{Light: "#FFFFFF", Dark: "#0F1720"},
+		Primary:      lipgloss.AdaptiveColor{Light: "#1E40AF", Dark: "#60A5FA"},
+		Accent:       lipgloss.AdaptiveColor{Light: "#0891B2", Dark: "#22D3EE"},
+		Success:      lipgloss.AdaptiveColor{Light: "#047857", Dark: "#34D399"},
+		Warning:      lipgloss.AdaptiveColor{Light: "#B45309", Dark: "#FBBF24"},
+		Danger:       lipgloss.AdaptiveColor{Light: "#B91C1C", Dark: "#F87171"},
+		Muted:        lipgloss.AdaptiveColor{Light: "#64748B", Dark: "#94A3B8"},
+		Surface:      lipgloss.AdaptiveColor{Light: "#F8FAFC", Dark: "#0F172A"},
+		SurfaceAlt:   lipgloss.AdaptiveColor{Light: "#E2E8F0", Dark: "#1E293B"},
+		Text:         lipgloss.AdaptiveColor{Light: "#0F172A", Dark: "#F1F5F9"},
+		TextInverse:  lipgloss.AdaptiveColor{Light: "#FFFFFF", Dark: "#0B1220"},
 	}
 
 	if noColor {
@@ -99,13 +104,13 @@ func New() Theme {
 	t.TitleStyle = lipgloss.NewStyle().Bold(true).Padding(0, 1).Foreground(t.Primary)
 	t.SubtitleStyle = lipgloss.NewStyle().Italic(true).Foreground(t.Muted)
 	t.BreadcrumbStyle = lipgloss.NewStyle().Foreground(t.Muted)
-	t.PanelStyle = lipgloss.NewStyle().Foreground(t.Text).Background(t.Surface).Border(lipgloss.RoundedBorder()).BorderForeground(t.Primary).Padding(1, 2)
-	t.FocusedPanelStyle = lipgloss.NewStyle().Foreground(t.Text).Background(t.Surface).Border(lipgloss.RoundedBorder()).BorderForeground(t.Accent).Padding(1, 2)
+	t.PanelStyle = lipgloss.NewStyle().Foreground(t.Text).Border(lipgloss.RoundedBorder()).BorderForeground(t.Primary).Padding(1, 2)
+	t.FocusedPanelStyle = lipgloss.NewStyle().Foreground(t.Text).Border(lipgloss.RoundedBorder()).BorderForeground(t.Accent).Padding(1, 2)
 	t.MenuItemStyle = lipgloss.NewStyle().Foreground(t.Text)
-	t.MenuItemSelectedStyle = lipgloss.NewStyle().Foreground(t.Text).Bold(true)
-	t.InputStyle = lipgloss.NewStyle().Foreground(t.Text).Border(lipgloss.RoundedBorder()).BorderForeground(t.Primary).Padding(0, 1)
+	t.MenuItemSelectedStyle = lipgloss.NewStyle().Foreground(t.Accent).Bold(true)
+	t.InputStyle = lipgloss.NewStyle().Foreground(t.Text).Border(lipgloss.RoundedBorder()).BorderForeground(t.Muted).Padding(0, 1)
 	t.InputFocusedStyle = lipgloss.NewStyle().Foreground(t.Text).Border(lipgloss.RoundedBorder()).BorderForeground(t.Accent).Padding(0, 1)
-	t.LabelStyle = lipgloss.NewStyle().Foreground(t.Muted).Bold(true)
+	t.LabelStyle = lipgloss.NewStyle().Foreground(t.Muted)
 	t.ValueStyle = lipgloss.NewStyle().Foreground(t.Text).Bold(true)
 	t.ErrorStyle = lipgloss.NewStyle().Foreground(t.Danger)
 	t.HintStyle = lipgloss.NewStyle().Foreground(t.Muted)
@@ -143,13 +148,67 @@ func (t Theme) RenderSuccess(text string) string {
 }
 
 func (t Theme) RenderKeyHint(key, label string) string {
-	style := t.KeyHintStyle
 	if t.ColorEnabled {
 		return lipgloss.JoinHorizontal(lipgloss.Left,
 			lipgloss.NewStyle().Foreground(t.Accent).Bold(true).Render("["+key+"]"),
 			" ",
-			style.Render(label),
+			t.KeyHintStyle.Render(label),
 		)
 	}
 	return "[" + key + "] " + label
+}
+
+// Pill renders a borderless badge ` text ` with background tint.
+// Variants: "muted" (default), "accent", "success", "warning", "danger".
+func (t Theme) Pill(text, variant string) string {
+	if !t.ColorEnabled {
+		return "[" + text + "]"
+	}
+	style := lipgloss.NewStyle().
+		Padding(0, 1).
+		Foreground(t.TextInverse).
+		Bold(true)
+
+	switch variant {
+	case "accent":
+		style = style.Background(t.Accent)
+	case "success":
+		style = style.Background(t.Success)
+	case "warning":
+		style = style.Background(t.Warning)
+	case "danger":
+		style = style.Background(t.Danger)
+	default:
+		style = style.Background(t.Muted)
+	}
+	return style.Render(text)
+}
+
+// Divider renders a horizontal rule.
+func (t Theme) Divider(width int) string {
+	if width <= 0 {
+		width = 40
+	}
+	line := strings.Repeat(GlyphLine, width)
+	if !t.ColorEnabled {
+		return line
+	}
+	return lipgloss.NewStyle().Foreground(t.SurfaceAlt).Render(line)
+}
+
+// Brand renders the compact `⛵ SHIPYARD` brand mark.
+func (t Theme) Brand() string {
+	if !t.ColorEnabled {
+		return "⛵ SHIPYARD"
+	}
+	return lipgloss.JoinHorizontal(lipgloss.Center,
+		lipgloss.NewStyle().Foreground(t.Accent).Render("⛵"),
+		" ",
+		lipgloss.NewStyle().Foreground(t.Primary).Bold(true).Render("SHIPYARD"),
+	)
+}
+
+// PageFrame wraps content in the standard page chrome (gutter padding).
+func (t Theme) PageFrame() lipgloss.Style {
+	return lipgloss.NewStyle().Padding(1, PageGutter)
 }

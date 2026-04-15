@@ -15,7 +15,10 @@ type MenuItem struct {
 	Description string
 	Disabled    bool
 	Badge       string
-	Key         string
+	// BadgeVariant: "muted" (default), "accent", "success", "warning", "danger".
+	// When empty, the menu auto-selects accent for the focused row, muted otherwise.
+	BadgeVariant string
+	Key          string
 }
 
 type MenuSelectedMsg struct {
@@ -38,17 +41,20 @@ func NewMenu(th theme.Theme, items []MenuItem) Menu {
 
 func (m Menu) Init() tea.Cmd { return nil }
 
-func (m Menu) Resize(width, _ int) { m.width = width }
+func (m Menu) SetWidth(width int) Menu {
+	m.width = width
+	return m
+}
 
 func (m Menu) Update(msg tea.Msg) (Menu, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		m.Resize(msg.Width, msg.Height)
+		m.width = msg.Width
 	case tea.KeyMsg:
 		switch msg.String() {
-		case "up":
+		case "up", "k":
 			m.move(-1)
-		case "down":
+		case "down", "j":
 			m.move(1)
 		case "enter":
 			if len(m.items) == 0 || m.items[m.index].Disabled {
@@ -105,59 +111,99 @@ func (m Menu) Selected() MenuItem {
 	return m.items[m.index]
 }
 
+// rowWidth returns the inner width available for a menu row.
+func (m Menu) rowWidth() int {
+	if m.width <= 0 {
+		return 60
+	}
+	w := m.width - theme.MenuIndent*2
+	if w < 30 {
+		w = 30
+	}
+	return w
+}
+
 func (m Menu) View() string {
 	if len(m.items) == 0 {
 		return ""
 	}
-	lines := make([]string, 0, len(m.items))
+
+	rowWidth := m.rowWidth()
+	indent := strings.Repeat(" ", theme.MenuIndent)
+	descIndent := strings.Repeat(" ", theme.MenuIndent+3)
+
+	rows := make([]string, 0, len(m.items)*2)
+
 	for i, item := range m.items {
-		left := "  "
-		style := m.theme.MenuItemStyle
-		if i == m.index && !item.Disabled {
-			left = theme.GlyphSelected + " "
-			style = m.theme.MenuItemSelectedStyle
+		isSelected := i == m.index && !item.Disabled
+
+		// Selection indicator (left edge).
+		marker := "  "
+		if isSelected {
+			marker = lipgloss.NewStyle().
+				Foreground(m.theme.Accent).
+				Bold(true).
+				Render(theme.GlyphSelected) + " "
 		}
 
-		titleText := item.Title
+		// Title styling.
+		titleStyle := m.theme.MenuItemStyle
 		if item.Disabled {
-			titleText = m.theme.SubtitleStyle.Render(titleText)
-		} else {
-			titleText = style.Render(titleText)
+			titleStyle = m.theme.SubtitleStyle.Italic(false)
+		} else if isSelected {
+			titleStyle = m.theme.MenuItemSelectedStyle
 		}
+		title := titleStyle.Render(item.Title)
 
+		// Badge as pill (single line, no border).
 		badge := ""
 		if item.Badge != "" {
-			badgeStyle := lipgloss.NewStyle().
-				Padding(0, 1).
-				Foreground(m.theme.Muted).
-				Border(lipgloss.NormalBorder()).
-				BorderForeground(m.theme.SurfaceAlt)
-			if item.Disabled {
-				badgeStyle = badgeStyle.Foreground(m.theme.Muted).Faint(true)
-			} else if i == m.index {
-				badgeStyle = badgeStyle.Foreground(m.theme.Accent).BorderForeground(m.theme.Accent).Bold(true)
+			variant := item.BadgeVariant
+			if variant == "" {
+				if item.Disabled {
+					variant = "muted"
+				} else if isSelected {
+					variant = "accent"
+				} else {
+					variant = "muted"
+				}
 			}
-			badge = badgeStyle.Render(item.Badge)
+			badge = m.theme.Pill(item.Badge, variant)
 		}
 
-		line := strings.Repeat(" ", theme.MenuIndent) + left
+		// Compose left + right with right alignment.
+		leftBlock := marker + title
+		var titleRow string
 		if badge != "" {
-			line += lipgloss.JoinHorizontal(lipgloss.Left, titleText, "  ", badge)
+			gap := rowWidth - lipgloss.Width(leftBlock) - lipgloss.Width(badge)
+			if gap < 2 {
+				gap = 2
+			}
+			titleRow = leftBlock + strings.Repeat(" ", gap) + badge
 		} else {
-			line += titleText
+			titleRow = leftBlock
 		}
+		titleRow = indent + titleRow
+
+		rows = append(rows, titleRow)
+
 		if item.Description != "" {
 			descStyle := m.theme.SubtitleStyle
-			if i == m.index && !item.Disabled {
-				descStyle = descStyle.Foreground(m.theme.Accent)
+			if isSelected {
+				descStyle = lipgloss.NewStyle().Foreground(m.theme.Muted)
 			}
-			line += "\n" + strings.Repeat(" ", theme.MenuIndent+4) + descStyle.Render(item.Description)
+			rows = append(rows, descIndent+descStyle.Render(item.Description))
 		}
-		lines = append(lines, line)
+
+		// Subtle spacing between items.
+		if i < len(m.items)-1 {
+			rows = append(rows, "")
+		}
 	}
-	return strings.Join(lines, "\n")
+
+	return strings.Join(rows, "\n")
 }
 
 func (m Menu) DebugString() string {
-	return fmt.Sprintf("items=%d index=%d", len(m.items), m.index)
+	return fmt.Sprintf("items=%d index=%d width=%d", len(m.items), m.index, m.width)
 }

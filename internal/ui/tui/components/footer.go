@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/shipyard-auto/shipyard/internal/ui/tui/theme"
 )
@@ -23,13 +24,14 @@ func (f Footer) Init() tea.Cmd { return nil }
 
 func (f Footer) Update(msg tea.Msg) (Footer, tea.Cmd) {
 	if resize, ok := msg.(tea.WindowSizeMsg); ok {
-		f.Resize(resize.Width, resize.Height)
+		f.width = resize.Width
 	}
 	return f, nil
 }
 
-func (f *Footer) Resize(width, _ int) {
+func (f Footer) SetWidth(width int) Footer {
 	f.width = width
+	return f
 }
 
 func (f Footer) View() string {
@@ -43,5 +45,19 @@ func (f Footer) View() string {
 	for _, hint := range hints {
 		parts = append(parts, f.theme.RenderKeyHint(hint.Key, hint.Label))
 	}
-	return strings.Join(parts, "  ")
+	hintRow := strings.Join(parts, "   ")
+
+	dividerWidth := f.width
+	if dividerWidth <= 0 {
+		dividerWidth = lipgloss.Width(hintRow)
+	}
+	if dividerWidth <= 0 {
+		return hintRow
+	}
+
+	return lipgloss.JoinVertical(
+		lipgloss.Left,
+		f.theme.Divider(dividerWidth),
+		hintRow,
+	)
 }

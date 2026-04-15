@@ -43,6 +43,9 @@ func (r *Root) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		r.width = msg.Width
 		r.height = msg.Height
+		contentWidth := r.theme.ContentWidth(r.width)
+		r.header = r.header.SetWidth(contentWidth)
+		r.footer = r.footer.SetWidth(contentWidth)
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "ctrl+c", "q":
@@ -73,7 +76,10 @@ func (r *Root) View() string {
 		"",
 		r.footer.View(),
 	}, "\n")
-	return lipgloss.NewStyle().Padding(1, 2).Width(width).Render(content)
+	return lipgloss.NewStyle().
+		Padding(1, theme.PageGutter).
+		Width(width + theme.PageGutter*2).
+		Render(content)
 }
 
 func (r *Root) Summary() string {
@@ -81,9 +87,10 @@ func (r *Root) Summary() string {
 }
 
 func (r *Root) syncChrome() {
-	r.header = components.NewHeader(r.theme, r.screen.Title(), r.screen.Breadcrumb())
+	contentWidth := r.theme.ContentWidth(r.width)
+	r.header = components.NewHeader(r.theme, r.screen.Title(), r.screen.Breadcrumb()).SetWidth(contentWidth)
 	_, isMenu := r.screen.(*menuScreen)
-	r.footer = components.NewFooter(r.theme, r.screen.Footer(), isMenu)
+	r.footer = components.NewFooter(r.theme, r.screen.Footer(), isMenu).SetWidth(contentWidth)
 }
 
 func (r *Root) setSummary(summary string) {
