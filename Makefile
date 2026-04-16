@@ -1,15 +1,21 @@
 APP_NAME := shipyard
+FAIRWAY_NAME := shipyard-fairway
 DIST_DIR := dist
 VERSION ?= $(shell cat VERSION)
 COMMIT ?= dev
 BUILD_DATE ?= $(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
 LDFLAGS := -X github.com/shipyard-auto/shipyard/internal/app.Version=$(VERSION) -X github.com/shipyard-auto/shipyard/internal/app.Commit=$(COMMIT) -X github.com/shipyard-auto/shipyard/internal/app.BuildDate=$(BUILD_DATE)
+FAIRWAY_LDFLAGS := -X github.com/shipyard-auto/shipyard/addons/fairway/internal/app.Version=$(VERSION) -X github.com/shipyard-auto/shipyard/addons/fairway/internal/app.Commit=$(COMMIT) -X github.com/shipyard-auto/shipyard/addons/fairway/internal/app.BuildDate=$(BUILD_DATE)
 
-.PHONY: build test fmt tidy clean dist package
+.PHONY: build build-fairway test fmt tidy clean dist package
 
 build:
 	mkdir -p $(DIST_DIR)
 	go build -ldflags "$(LDFLAGS)" -o $(DIST_DIR)/$(APP_NAME) ./cmd/shipyard
+
+build-fairway:
+	mkdir -p $(DIST_DIR)
+	go build -ldflags "$(FAIRWAY_LDFLAGS)" -o $(DIST_DIR)/$(FAIRWAY_NAME) ./addons/fairway/cmd/...
 
 test:
 	go test ./...
