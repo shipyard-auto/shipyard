@@ -67,7 +67,7 @@ main() {
 
   (
     cd "$tmpdir"
-    shasum -a 256 -c "$manifest_name" >/dev/null
+    grep "  ${artifact_name}$" "$manifest_name" | shasum -a 256 -c >/dev/null
   ) || fail "checksum validation failed for $artifact_name"
 
   tar -xzf "$tmpdir/$artifact_name" -C "$tmpdir"
