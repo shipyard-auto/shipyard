@@ -11,6 +11,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	yardlogs "github.com/shipyard-auto/shipyard/internal/logs"
 )
 
 type fakeExecutor struct {
@@ -57,18 +59,23 @@ func TestNewServer(t *testing.T) {
 
 func TestServerHandler(t *testing.T) {
 	t.Run("routeNotFound_returns404", func(t *testing.T) {
+		logger := &fakeEventLogger{}
 		srv := mustNewTestServer(t, baseServerConfig(), fakeExecutor{execute: func(context.Context, Route, *http.Request) (Result, error) {
 			return Result{}, nil
-		}})
+		}}, logger)
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodGet, "http://example.com/missing", nil)
 		srv.Handler().ServeHTTP(rec, req)
 		if rec.Code != http.StatusNotFound {
 			t.Fatalf("status = %d, want 404", rec.Code)
 		}
+		if got := logger.lastEvent().Event; got != "fairway_route_not_found" {
+			t.Fatalf("last event = %q, want fairway_route_not_found", got)
+		}
 	})
 
 	t.Run("authFailure_returns401", func(t *testing.T) {
+		logger := &fakeEventLogger{}
 		cfg := baseServerConfig()
 		cfg.Routes = []Route{{
 			Path:   "/hooks/github",
@@ -78,12 +85,15 @@ func TestServerHandler(t *testing.T) {
 		srv := mustNewTestServer(t, cfg, fakeExecutor{execute: func(context.Context, Route, *http.Request) (Result, error) {
 			t.Fatal("executor should not be called")
 			return Result{}, nil
-		}})
+		}}, logger)
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodGet, "http://example.com/hooks/github", nil)
 		srv.Handler().ServeHTTP(rec, req)
 		if rec.Code != http.StatusUnauthorized {
 			t.Fatalf("status = %d, want 401", rec.Code)
+		}
+		if got := logger.lastEvent().Event; got != "fairway_auth_failed" {
+			t.Fatalf("last event = %q, want fairway_auth_failed", got)
 		}
 	})
 
@@ -97,7 +107,7 @@ func TestServerHandler(t *testing.T) {
 		srv := mustNewTestServer(t, cfg, fakeExecutor{execute: func(context.Context, Route, *http.Request) (Result, error) {
 			t.Fatal("executor should not be called")
 			return Result{}, nil
-		}})
+		}}, &fakeEventLogger{})
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodGet, "http://example.com/internal/events", nil)
 		req.RemoteAddr = "8.8.8.8:12345"
@@ -108,13 +118,14 @@ func TestServerHandler(t *testing.T) {
 	})
 
 	t.Run("executorResult_passesThroughStatusBodyAndHeaders", func(t *testing.T) {
+		logger := &fakeEventLogger{}
 		srv := mustNewTestServer(t, baseServerConfig(), fakeExecutor{execute: func(context.Context, Route, *http.Request) (Result, error) {
 			return Result{
 				HTTPStatus: http.StatusAccepted,
 				Body:       []byte("ok"),
 				Header:     http.Header{"X-Test": []string{"1"}},
 			}, nil
-		}})
+		}}, logger)
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodGet, "http://example.com/hooks/github", nil)
 		req.Header.Set("Authorization", "Bearer secret")
@@ -128,12 +139,20 @@ func TestServerHandler(t *testing.T) {
 		if rec.Header().Get("X-Test") != "1" {
 			t.Fatalf("header X-Test = %q, want 1", rec.Header().Get("X-Test"))
 		}
+		event := logger.lastEvent()
+		if event.Event != "fairway_request_handled" {
+			t.Fatalf("last event = %q, want fairway_request_handled", event.Event)
+		}
+		if got := event.Data["status"]; got != http.StatusAccepted {
+			t.Fatalf("logged status = %#v, want %d", got, http.StatusAccepted)
+		}
 	})
 
 	t.Run("executorError_returns500", func(t *testing.T) {
+		logger := &fakeEventLogger{}
 		srv := mustNewTestServer(t, baseServerConfig(), fakeExecutor{execute: func(context.Context, Route, *http.Request) (Result, error) {
 			return Result{}, errors.New("boom")
-		}})
+		}}, logger)
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodGet, "http://example.com/hooks/github", nil)
 		req.Header.Set("Authorization", "Bearer secret")
@@ -141,12 +160,15 @@ func TestServerHandler(t *testing.T) {
 		if rec.Code != http.StatusInternalServerError {
 			t.Fatalf("status = %d, want 500", rec.Code)
 		}
+		if got := logger.lastEvent().Event; got != "fairway_action_failed" {
+			t.Fatalf("last event = %q, want fairway_action_failed", got)
+		}
 	})
 
 	t.Run("exactPathOnly_trailingSlashDistinct", func(t *testing.T) {
 		srv := mustNewTestServer(t, baseServerConfig(), fakeExecutor{execute: func(context.Context, Route, *http.Request) (Result, error) {
 			return Result{}, nil
-		}})
+		}}, &fakeEventLogger{})
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodGet, "http://example.com/hooks/github/", nil)
 		req.Header.Set("Authorization", "Bearer secret")
@@ -166,7 +188,7 @@ func TestServerHandler(t *testing.T) {
 				t.Fatalf("body = %q, want payload", string(body))
 			}
 			return Result{HTTPStatus: http.StatusOK}, nil
-		}})
+		}}, &fakeEventLogger{})
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodPost, "http://example.com/hooks/github", strings.NewReader("payload"))
 		req.Header.Set("Authorization", "Bearer secret")
@@ -206,10 +228,10 @@ func TestServerLifecycle(t *testing.T) {
 	}
 }
 
-func mustNewTestServer(t *testing.T, cfg Config, exec fakeExecutor) *Server {
+func mustNewTestServer(t *testing.T, cfg Config, exec fakeExecutor, logger EventLogger) *Server {
 	t.Helper()
 	router := NewRouterWithConfig(&fakeRepository{}, cfg)
-	srv, err := NewServer(ServerConfig{Router: router, Executor: exec})
+	srv, err := NewServer(ServerConfig{Router: router, Executor: exec, Logger: logger})
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -258,6 +280,27 @@ func (f *fakeListener) Close() error {
 
 func (f *fakeListener) Addr() net.Addr {
 	return f.addr
+}
+
+type fakeEventLogger struct {
+	mu     sync.Mutex
+	events []yardlogs.Event
+}
+
+func (f *fakeEventLogger) Write(event yardlogs.Event) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.events = append(f.events, event)
+	return nil
+}
+
+func (f *fakeEventLogger) lastEvent() yardlogs.Event {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.events) == 0 {
+		return yardlogs.Event{}
+	}
+	return f.events[len(f.events)-1]
 }
 
 type fakeAddr string

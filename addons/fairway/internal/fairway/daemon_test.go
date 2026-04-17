@@ -104,11 +104,13 @@ func TestDaemonRunLifecycle(t *testing.T) {
 		httpServer := newFakeHTTPDaemon()
 		socketServer := newFakeSocketDaemon()
 		pidfile := &fakePIDFile{path: filepath.Join(t.TempDir(), "fairway.pid")}
+		logger := &fakeEventLogger{}
 
 		daemon, err := newDaemon(httpServer, socketServer, pidfile, socketPath, 250*time.Millisecond)
 		if err != nil {
 			t.Fatalf("newDaemon() error = %v", err)
 		}
+		daemon.logger = logger
 
 		ctx, cancel := context.WithCancel(context.Background())
 		done := make(chan error, 1)
@@ -135,6 +137,12 @@ func TestDaemonRunLifecycle(t *testing.T) {
 		}
 		if !socketServer.shutdownCalled {
 			t.Fatal("socket shutdown not called")
+		}
+		if got := logger.events[0].Event; got != "fairway_daemon_started" {
+			t.Fatalf("first event = %q, want fairway_daemon_started", got)
+		}
+		if got := logger.events[len(logger.events)-1].Event; got != "fairway_daemon_stopped" {
+			t.Fatalf("last event = %q, want fairway_daemon_stopped", got)
 		}
 	})
 
