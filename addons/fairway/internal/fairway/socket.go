@@ -26,6 +26,7 @@ type SocketServerConfig struct {
 	Router           *Router
 	Version          string
 	HandshakeTimeout time.Duration
+	Status           statusProvider
 }
 
 // SocketServer serves JSON-RPC 2.0 requests over an NDJSON socket stream.
@@ -33,6 +34,7 @@ type SocketServer struct {
 	router           *Router
 	version          string
 	handshakeTimeout time.Duration
+	status           statusProvider
 
 	mu       sync.RWMutex
 	listener net.Listener
@@ -71,13 +73,6 @@ type routeReplaceParams struct {
 	Route Route `json:"route"`
 }
 
-type statusResult struct {
-	Version    string `json:"version"`
-	Bind       string `json:"bind"`
-	Port       int    `json:"port"`
-	RouteCount int    `json:"routeCount"`
-}
-
 // NewSocketServer constructs the Fairway JSON-RPC socket server.
 func NewSocketServer(cfg SocketServerConfig) (*SocketServer, error) {
 	if cfg.Router == nil {
@@ -93,6 +88,7 @@ func NewSocketServer(cfg SocketServerConfig) (*SocketServer, error) {
 		router:           cfg.Router,
 		version:          cfg.Version,
 		handshakeTimeout: cfg.HandshakeTimeout,
+		status:           cfg.Status,
 		errCh:            make(chan error, 1),
 	}, nil
 }
@@ -284,17 +280,26 @@ func (s *SocketServer) dispatch(req rpcRequest) rpcResponse {
 		}
 		response.Result = params.Route
 	case "status":
-		cfg := s.router.Config()
-		response.Result = statusResult{
-			Version:    s.version,
-			Bind:       cfg.Bind,
-			Port:       cfg.Port,
-			RouteCount: len(cfg.Routes),
-		}
+		response.Result = s.statusSnapshot()
 	default:
 		response.Error = &rpcError{Code: errCodeMethodNotFound, Message: "method not found"}
 	}
 	return response
+}
+
+func (s *SocketServer) statusSnapshot() StatusSnapshot {
+	if s.status != nil {
+		return s.status.Status()
+	}
+
+	cfg := s.router.Config()
+	return StatusSnapshot{
+		Version:    s.version,
+		Bind:       cfg.Bind,
+		Port:       cfg.Port,
+		RouteCount: len(cfg.Routes),
+		PID:        os.Getpid(),
+	}
 }
 
 func readRPCRequest(reader *bufio.Reader) (rpcRequest, rpcRequest, error) {

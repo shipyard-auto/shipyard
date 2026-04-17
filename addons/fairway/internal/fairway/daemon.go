@@ -45,6 +45,7 @@ type Daemon struct {
 	http    httpDaemon
 	socket  socketDaemon
 	pidfile pidfileLock
+	status  *runtimeStatus
 
 	socketPath      string
 	shutdownTimeout time.Duration
@@ -88,6 +89,7 @@ func NewDaemon(cfg BootstrapConfig) (*Daemon, error) {
 	}
 
 	runtimeConfig := router.Config()
+	status := newRuntimeStatus(runtimeConfig, cfg.Version, configPath, socketPath, pidfilePath)
 	executor := NewExecutor(ExecutorConfig{
 		ShipyardBinary: cfg.ShipyardBinary,
 		MaxInFlight:    runtimeConfig.MaxInFlight,
@@ -104,12 +106,18 @@ func NewDaemon(cfg BootstrapConfig) (*Daemon, error) {
 	socketServer, err := NewSocketServer(SocketServerConfig{
 		Router:  router,
 		Version: cfg.Version,
+		Status:  status,
 	})
 	if err != nil {
 		return nil, err
 	}
 
-	return newDaemon(httpServer, socketServer, NewPIDFile(pidfilePath), socketPath, cfg.ShutdownTimeout)
+	daemon, err := newDaemon(httpServer, socketServer, NewPIDFile(pidfilePath), socketPath, cfg.ShutdownTimeout)
+	if err != nil {
+		return nil, err
+	}
+	daemon.status = status
+	return daemon, nil
 }
 
 func newDaemon(httpServer httpDaemon, socketServer socketDaemon, pidfile pidfileLock, socketPath string, shutdownTimeout time.Duration) (*Daemon, error) {
@@ -186,6 +194,9 @@ func (d *Daemon) start() error {
 	}
 
 	d.started = true
+	if d.status != nil {
+		d.status.MarkStarted(time.Now())
+	}
 	return nil
 }
 
@@ -194,6 +205,9 @@ func (d *Daemon) shutdown() error {
 		return nil
 	}
 	d.started = false
+	if d.status != nil {
+		d.status.MarkStopped()
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), d.shutdownTimeout)
 	defer cancel()
@@ -212,6 +226,14 @@ func (d *Daemon) shutdown() error {
 		shutdownErr = errors.Join(shutdownErr, err)
 	}
 	return shutdownErr
+}
+
+// Status returns the last known daemon runtime snapshot.
+func (d *Daemon) Status() StatusSnapshot {
+	if d.status == nil {
+		return StatusSnapshot{}
+	}
+	return d.status.Status()
 }
 
 func prepareSocketPath(path string) error {
