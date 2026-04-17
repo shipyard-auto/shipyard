@@ -49,6 +49,7 @@ type Daemon struct {
 	socket  socketDaemon
 	pidfile pidfileLock
 	status  *runtimeStatus
+	stats   *runtimeStats
 	logger  EventLogger
 
 	socketPath      string
@@ -94,6 +95,7 @@ func NewDaemon(cfg BootstrapConfig) (*Daemon, error) {
 
 	runtimeConfig := router.Config()
 	status := newRuntimeStatus(runtimeConfig, cfg.Version, configPath, socketPath, pidfilePath)
+	stats := newRuntimeStats()
 	logger := cfg.Logger
 	if logger == nil {
 		var err error
@@ -111,6 +113,7 @@ func NewDaemon(cfg BootstrapConfig) (*Daemon, error) {
 		Router:   router,
 		Executor: executor,
 		Logger:   logger,
+		Stats:    stats,
 	})
 	if err != nil {
 		return nil, err
@@ -120,6 +123,7 @@ func NewDaemon(cfg BootstrapConfig) (*Daemon, error) {
 		Router:  router,
 		Version: cfg.Version,
 		Status:  status,
+		Stats:   stats,
 	})
 	if err != nil {
 		return nil, err
@@ -130,6 +134,7 @@ func NewDaemon(cfg BootstrapConfig) (*Daemon, error) {
 		return nil, err
 	}
 	daemon.status = status
+	daemon.stats = stats
 	daemon.logger = logger
 	return daemon, nil
 }
@@ -250,6 +255,14 @@ func (d *Daemon) Status() StatusSnapshot {
 		return StatusSnapshot{}
 	}
 	return d.status.Status()
+}
+
+// Stats returns the current daemon runtime counters snapshot.
+func (d *Daemon) Stats() StatsSnapshot {
+	if d.stats == nil {
+		return StatsSnapshot{}
+	}
+	return d.stats.Stats()
 }
 
 func (d *Daemon) logEvent(level, eventName, message string, data map[string]any) {

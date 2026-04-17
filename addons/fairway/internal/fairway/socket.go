@@ -27,6 +27,7 @@ type SocketServerConfig struct {
 	Version          string
 	HandshakeTimeout time.Duration
 	Status           statusProvider
+	Stats            statsProvider
 }
 
 // SocketServer serves JSON-RPC 2.0 requests over an NDJSON socket stream.
@@ -35,6 +36,7 @@ type SocketServer struct {
 	version          string
 	handshakeTimeout time.Duration
 	status           statusProvider
+	stats            statsProvider
 
 	mu       sync.RWMutex
 	listener net.Listener
@@ -89,6 +91,7 @@ func NewSocketServer(cfg SocketServerConfig) (*SocketServer, error) {
 		version:          cfg.Version,
 		handshakeTimeout: cfg.HandshakeTimeout,
 		status:           cfg.Status,
+		stats:            cfg.Stats,
 		errCh:            make(chan error, 1),
 	}, nil
 }
@@ -281,6 +284,8 @@ func (s *SocketServer) dispatch(req rpcRequest) rpcResponse {
 		response.Result = params.Route
 	case "status":
 		response.Result = s.statusSnapshot()
+	case "stats":
+		response.Result = s.statsSnapshot()
 	default:
 		response.Error = &rpcError{Code: errCodeMethodNotFound, Message: "method not found"}
 	}
@@ -300,6 +305,13 @@ func (s *SocketServer) statusSnapshot() StatusSnapshot {
 		RouteCount: len(cfg.Routes),
 		PID:        os.Getpid(),
 	}
+}
+
+func (s *SocketServer) statsSnapshot() StatsSnapshot {
+	if s.stats != nil {
+		return s.stats.Stats()
+	}
+	return StatsSnapshot{}
 }
 
 func readRPCRequest(reader *bufio.Reader) (rpcRequest, rpcRequest, error) {

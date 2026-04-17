@@ -17,6 +17,7 @@ type ServerConfig struct {
 	Router            *Router
 	Executor          Executor
 	Logger            EventLogger
+	Stats             *runtimeStats
 	Now               func() time.Time
 	ReadHeaderTimeout time.Duration
 	Listen            func(network, address string) (net.Listener, error)
@@ -27,6 +28,7 @@ type Server struct {
 	router   *Router
 	executor Executor
 	logger   EventLogger
+	stats    *runtimeStats
 	now      func() time.Time
 
 	server *http.Server
@@ -65,6 +67,7 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 		router:   cfg.Router,
 		executor: cfg.Executor,
 		logger:   cfg.Logger,
+		stats:    cfg.Stats,
 		now:      cfg.Now,
 		listen:   cfg.Listen,
 		errCh:    make(chan error, 1),
@@ -81,8 +84,15 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 func (s *Server) Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := s.now()
+		if s.stats != nil {
+			s.stats.Begin(start)
+			defer s.stats.End()
+		}
 		route, ok := s.router.Match(r.URL.Path)
 		if !ok {
+			if s.stats != nil {
+				s.stats.RecordRouteNotFound(http.StatusNotFound)
+			}
 			s.logRequest("warn", "fairway_route_not_found", "No Fairway route matched the incoming request", Route{}, r, http.StatusNotFound, Result{}, nil, start)
 			http.NotFound(w, r)
 			return
@@ -90,15 +100,24 @@ func (s *Server) Handler() http.Handler {
 
 		authenticator, err := NewAuthenticator(route.Auth)
 		if err != nil {
+			if s.stats != nil {
+				s.stats.RecordActionFailure(http.StatusInternalServerError)
+			}
 			s.logRequest("error", "fairway_auth_config_failed", "Failed to configure Fairway route authenticator", route, r, http.StatusInternalServerError, Result{}, err, start)
 			http.Error(w, "failed to configure authenticator", http.StatusInternalServerError)
 			return
 		}
 		if err := authenticator.Verify(r); err != nil {
 			if authErr, ok := IsAuth(err); ok {
+				if s.stats != nil {
+					s.stats.RecordAuthFailure(authErr.Status)
+				}
 				s.logRequest("warn", "fairway_auth_failed", "Fairway request authentication failed", route, r, authErr.Status, Result{}, err, start)
 				http.Error(w, authErr.Reason, authErr.Status)
 				return
+			}
+			if s.stats != nil {
+				s.stats.RecordAuthFailure(http.StatusInternalServerError)
 			}
 			s.logRequest("error", "fairway_auth_failed", "Fairway request authentication failed", route, r, http.StatusInternalServerError, Result{}, err, start)
 			http.Error(w, "authentication failed", http.StatusInternalServerError)
@@ -107,6 +126,9 @@ func (s *Server) Handler() http.Handler {
 
 		result, err := s.executor.Execute(r.Context(), route, r)
 		if err != nil {
+			if s.stats != nil {
+				s.stats.RecordActionFailure(http.StatusInternalServerError)
+			}
 			s.logRequest("error", "fairway_action_failed", "Fairway route action execution failed", route, r, http.StatusInternalServerError, Result{}, err, start)
 			http.Error(w, "failed to execute route", http.StatusInternalServerError)
 			return
@@ -121,6 +143,9 @@ func (s *Server) Handler() http.Handler {
 		status := result.HTTPStatus
 		if status == 0 {
 			status = http.StatusOK
+		}
+		if s.stats != nil {
+			s.stats.RecordHandled(status)
 		}
 		s.logRequest("info", "fairway_request_handled", "Fairway request handled", route, r, status, result, nil, start)
 		w.WriteHeader(status)
