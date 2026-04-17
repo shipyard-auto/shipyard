@@ -1,6 +1,7 @@
 package fairwaywiz
 
 import (
+	"fmt"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -112,7 +113,7 @@ func (s *formScreen) Footer() []components.KeyHint {
 	if s.submitting {
 		return []components.KeyHint{{Key: "esc", Label: "cancel submit"}}
 	}
-	return []components.KeyHint{{Key: "tab", Label: "next"}, {Key: "shift+tab", Label: "prev"}, {Key: "↑↓", Label: "change"}, {Key: "enter", Label: "confirm"}, {Key: "esc", Label: "cancel"}}
+	return []components.KeyHint{{Key: "enter", Label: "next"}, {Key: "shift+tab", Label: "back"}, {Key: "↑↓", Label: "choose"}, {Key: "esc", Label: "cancel"}}
 }
 func (s *formScreen) State() state { return stateForm }
 
@@ -138,21 +139,29 @@ func (s *formScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "esc":
+			return newListScreen(s.theme, s.client), loadRoutesCmd(s.client)
+		case "tab":
+			if s.done == nil && s.focus != fieldSubmit {
+				s.focus = s.nextField()
+				s.syncFocus()
+			}
+			return s, nil
+		case "shift+tab":
+			if s.done == nil {
+				s.focus = s.prevField()
+				s.syncFocus()
+			}
+			return s, nil
+		case "enter":
 			if s.done != nil {
 				return newListScreen(s.theme, s.client), loadRoutesCmd(s.client)
 			}
-			return newListScreen(s.theme, s.client), loadRoutesCmd(s.client)
-		case "tab":
-			s.focus = s.nextField()
-			s.syncFocus()
-			return s, nil
-		case "shift+tab":
-			s.focus = s.prevField()
-			s.syncFocus()
-			return s, nil
-		}
-		if s.done != nil && msg.String() == "enter" {
-			return newListScreen(s.theme, s.client), loadRoutesCmd(s.client)
+			if s.isTextField(s.focus) {
+				s.err = ""
+				s.focus = s.nextField()
+				s.syncFocus()
+				return s, nil
+			}
 		}
 	}
 	if s.done != nil {
@@ -219,25 +228,164 @@ func (s *formScreen) View() string {
 		}
 		return s.theme.RenderSuccess(headline) + "\n\n" + routeDetail(s.theme, *s.done)
 	}
+
+	fields := s.visibleFields()
+	stepIdx := 0
+	for i, f := range fields {
+		if f == s.focus {
+			stepIdx = i
+			break
+		}
+	}
+
 	parts := []string{
-		s.theme.SubtitleStyle.Render("Build fairway routes without memorizing flag combinations."),
-		"",
-		s.renderField("Path", s.focus == fieldPath, s.path.View()),
-		s.renderField("Auth type", s.focus == fieldAuthType, s.authType.View()),
+		s.theme.SubtitleStyle.Render(fmt.Sprintf("Step %d of %d — %s", stepIdx+1, len(fields), s.stepLabel(s.focus))),
 	}
-	if body := s.authSection(); body != "" {
-		parts = append(parts, body)
+	if summary := s.priorSummary(fields[:stepIdx]); summary != "" {
+		parts = append(parts, summary)
 	}
-	parts = append(parts, s.renderField("Action", s.focus == fieldActionType, s.actionType.View()))
-	if body := s.actionSection(); body != "" {
-		parts = append(parts, body)
-	}
-	parts = append(parts, s.renderField("Timeout", s.focus == fieldTimeout, s.timeout.View()))
-	parts = append(parts, s.submitPanel())
+	parts = append(parts, s.renderCurrentStep())
 	if s.err != "" {
 		parts = append(parts, s.theme.RenderError(s.err))
 	}
 	return strings.Join(parts, "\n\n")
+}
+
+func (s *formScreen) renderCurrentStep() string {
+	switch s.focus {
+	case fieldPath:
+		return s.renderField("Path", true, s.path.View())
+	case fieldAuthType:
+		return s.renderField("Auth type", true, s.authType.View())
+	case fieldAuthSecret:
+		label := "Bearer secret"
+		if fairwayctl.AuthType(s.authType.Selected().Key) == fairwayctl.AuthToken {
+			s.authSecret.SetHint("Expected token value.")
+			label = "Token value"
+		} else {
+			s.authSecret.SetHint("Shared bearer secret expected in Authorization.")
+		}
+		return s.renderField(label, true, s.authSecret.View())
+	case fieldAuthLookup:
+		s.authLookup.SetHint("Use header name or query:parameter.")
+		return s.renderField("Header or query", true, s.authLookup.View())
+	case fieldActionType:
+		return s.renderField("Action", true, s.actionType.View())
+	case fieldActionTarget:
+		label := "Action target"
+		switch fairwayctl.ActionType(s.actionType.Selected().Key) {
+		case fairwayctl.ActionMessageSend:
+			s.actionTgt.SetHint("Optional logical target for the message.")
+			label = "Message target"
+		case fairwayctl.ActionHTTPForward:
+			s.actionTgt.SetHint("Destination URL starting with http:// or https://.")
+			label = "Forward URL"
+		default:
+			s.actionTgt.SetHint("Shipyard object ID or target name.")
+		}
+		return s.renderField(label, true, s.actionTgt.View())
+	case fieldActionMeta:
+		label := "Provider"
+		if fairwayctl.ActionType(s.actionType.Selected().Key) == fairwayctl.ActionHTTPForward {
+			s.actionMeta.SetHint("Optional HTTP method override, for example POST.")
+			label = "Method"
+		} else {
+			s.actionMeta.SetHint("Optional provider override.")
+		}
+		return s.renderField(label, true, s.actionMeta.View())
+	case fieldTimeout:
+		return s.renderField("Timeout", true, s.timeout.View())
+	case fieldSubmit:
+		return s.submitPanel()
+	}
+	return ""
+}
+
+func (s *formScreen) stepLabel(f formField) string {
+	switch f {
+	case fieldPath:
+		return "Path"
+	case fieldAuthType:
+		return "Auth type"
+	case fieldAuthSecret:
+		if fairwayctl.AuthType(s.authType.Selected().Key) == fairwayctl.AuthToken {
+			return "Token value"
+		}
+		return "Bearer secret"
+	case fieldAuthLookup:
+		return "Header or query"
+	case fieldActionType:
+		return "Action"
+	case fieldActionTarget:
+		switch fairwayctl.ActionType(s.actionType.Selected().Key) {
+		case fairwayctl.ActionMessageSend:
+			return "Message target"
+		case fairwayctl.ActionHTTPForward:
+			return "Forward URL"
+		default:
+			return "Action target"
+		}
+	case fieldActionMeta:
+		if fairwayctl.ActionType(s.actionType.Selected().Key) == fairwayctl.ActionHTTPForward {
+			return "Method"
+		}
+		return "Provider"
+	case fieldTimeout:
+		return "Timeout"
+	case fieldSubmit:
+		return "Review & confirm"
+	}
+	return ""
+}
+
+func (s *formScreen) priorSummary(done []formField) string {
+	if len(done) == 0 {
+		return ""
+	}
+	lines := make([]string, 0, len(done))
+	for _, f := range done {
+		value := s.fieldValue(f)
+		if value == "" {
+			value = s.theme.RenderHint("(empty)")
+		} else {
+			value = s.theme.ValueStyle.Render(value)
+		}
+		lines = append(lines, s.theme.LabelStyle.Render(s.stepLabel(f)+":")+" "+value)
+	}
+	return s.theme.PanelStyle.Render(strings.Join(lines, "\n"))
+}
+
+func (s *formScreen) fieldValue(f formField) string {
+	switch f {
+	case fieldPath:
+		return strings.TrimSpace(s.path.Value())
+	case fieldAuthType:
+		return s.authType.Selected().Title
+	case fieldAuthSecret:
+		if strings.TrimSpace(s.authSecret.Value()) == "" {
+			return ""
+		}
+		return "••••••••"
+	case fieldAuthLookup:
+		return strings.TrimSpace(s.authLookup.Value())
+	case fieldActionType:
+		return s.actionType.Selected().Title
+	case fieldActionTarget:
+		return strings.TrimSpace(s.actionTgt.Value())
+	case fieldActionMeta:
+		return strings.TrimSpace(s.actionMeta.Value())
+	case fieldTimeout:
+		return strings.TrimSpace(s.timeout.Value())
+	}
+	return ""
+}
+
+func (s *formScreen) isTextField(f formField) bool {
+	switch f {
+	case fieldPath, fieldAuthSecret, fieldAuthLookup, fieldActionTarget, fieldActionMeta, fieldTimeout:
+		return true
+	}
+	return false
 }
 
 func (s *formScreen) renderField(label string, focused bool, body string) string {
@@ -291,11 +439,25 @@ func (s *formScreen) actionSection() string {
 }
 
 func (s *formScreen) submitPanel() string {
+	fields := s.visibleFields()
+	review := fields[:len(fields)-1]
+	lines := make([]string, 0, len(review)+1)
+	lines = append(lines, s.theme.ValueStyle.Render("Review"))
+	for _, f := range review {
+		value := s.fieldValue(f)
+		if value == "" {
+			value = s.theme.RenderHint("(empty)")
+		} else {
+			value = s.theme.ValueStyle.Render(value)
+		}
+		lines = append(lines, s.theme.LabelStyle.Render(s.stepLabel(f)+":")+" "+value)
+	}
 	label := "Press Enter to create route"
 	if s.mode == modeEdit {
 		label = "Press Enter to save route"
 	}
-	body := s.theme.RenderHint(label)
+	lines = append(lines, "", s.theme.RenderHint(label))
+	body := strings.Join(lines, "\n")
 	if s.focus == fieldSubmit {
 		return s.theme.FocusedPanelStyle.Render(body)
 	}
@@ -326,7 +488,10 @@ func (s *formScreen) nextField() formField {
 	order := s.visibleFields()
 	for i, field := range order {
 		if field == s.focus {
-			return order[(i+1)%len(order)]
+			if i+1 >= len(order) {
+				return order[len(order)-1]
+			}
+			return order[i+1]
 		}
 	}
 	return fieldPath
@@ -336,7 +501,10 @@ func (s *formScreen) prevField() formField {
 	order := s.visibleFields()
 	for i, field := range order {
 		if field == s.focus {
-			return order[(i-1+len(order))%len(order)]
+			if i == 0 {
+				return order[0]
+			}
+			return order[i-1]
 		}
 	}
 	return fieldPath

@@ -336,7 +336,7 @@ func TestRoot_snapshotFormScreen(t *testing.T) {
 
 	tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
 	teatest.WaitFor(t, tm.Output(), func(b []byte) bool {
-		return bytes.Contains(b, []byte("Press Enter to create route"))
+		return bytes.Contains(b, []byte("Step 1 of"))
 	})
 }
 
