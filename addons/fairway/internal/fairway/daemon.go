@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	yardlogs "github.com/shipyard-auto/shipyard/internal/logs"
 )
 
 const defaultShutdownTimeout = 5 * time.Second
@@ -18,6 +20,7 @@ type BootstrapConfig struct {
 	SocketPath      string
 	PIDFilePath     string
 	ShipyardBinary  string
+	Logger          EventLogger
 	Version         string
 	ShutdownTimeout time.Duration
 }
@@ -46,6 +49,7 @@ type Daemon struct {
 	socket  socketDaemon
 	pidfile pidfileLock
 	status  *runtimeStatus
+	logger  EventLogger
 
 	socketPath      string
 	shutdownTimeout time.Duration
@@ -90,6 +94,14 @@ func NewDaemon(cfg BootstrapConfig) (*Daemon, error) {
 
 	runtimeConfig := router.Config()
 	status := newRuntimeStatus(runtimeConfig, cfg.Version, configPath, socketPath, pidfilePath)
+	logger := cfg.Logger
+	if logger == nil {
+		var err error
+		logger, err = NewLogger()
+		if err != nil {
+			return nil, err
+		}
+	}
 	executor := NewExecutor(ExecutorConfig{
 		ShipyardBinary: cfg.ShipyardBinary,
 		MaxInFlight:    runtimeConfig.MaxInFlight,
@@ -98,6 +110,7 @@ func NewDaemon(cfg BootstrapConfig) (*Daemon, error) {
 	httpServer, err := NewServer(ServerConfig{
 		Router:   router,
 		Executor: executor,
+		Logger:   logger,
 	})
 	if err != nil {
 		return nil, err
@@ -117,6 +130,7 @@ func NewDaemon(cfg BootstrapConfig) (*Daemon, error) {
 		return nil, err
 	}
 	daemon.status = status
+	daemon.logger = logger
 	return daemon, nil
 }
 
@@ -197,6 +211,7 @@ func (d *Daemon) start() error {
 	if d.status != nil {
 		d.status.MarkStarted(time.Now())
 	}
+	d.logEvent("info", "fairway_daemon_started", "Fairway daemon started", nil)
 	return nil
 }
 
@@ -208,6 +223,7 @@ func (d *Daemon) shutdown() error {
 	if d.status != nil {
 		d.status.MarkStopped()
 	}
+	d.logEvent("info", "fairway_daemon_stopped", "Fairway daemon stopped", nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), d.shutdownTimeout)
 	defer cancel()
@@ -234,6 +250,43 @@ func (d *Daemon) Status() StatusSnapshot {
 		return StatusSnapshot{}
 	}
 	return d.status.Status()
+}
+
+func (d *Daemon) logEvent(level, eventName, message string, data map[string]any) {
+	if d.logger == nil {
+		return
+	}
+
+	snapshot := d.Status()
+	if data == nil {
+		data = map[string]any{}
+	}
+	if snapshot.SocketPath != "" {
+		data["socketPath"] = snapshot.SocketPath
+	}
+	if snapshot.PIDFilePath != "" {
+		data["pidFilePath"] = snapshot.PIDFilePath
+	}
+	if snapshot.ConfigPath != "" {
+		data["configPath"] = snapshot.ConfigPath
+	}
+	if snapshot.Port != 0 {
+		data["port"] = snapshot.Port
+	}
+	if snapshot.Bind != "" {
+		data["bind"] = snapshot.Bind
+	}
+
+	_ = d.logger.Write(yardlogs.Event{
+		Source:     fairwayLogSource,
+		Level:      level,
+		Event:      eventName,
+		Message:    message,
+		EntityType: "daemon",
+		EntityID:   "fairway",
+		EntityName: "fairway",
+		Data:       data,
+	})
 }
 
 func prepareSocketPath(path string) error {
