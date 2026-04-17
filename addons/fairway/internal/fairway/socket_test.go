@@ -174,6 +174,9 @@ func TestSocketServerMethods(t *testing.T) {
 		if !strings.Contains(string(statusRaw), `"routeCount":2`) {
 			t.Fatalf("status = %s, want routeCount 2", string(statusRaw))
 		}
+		if !strings.Contains(string(statusRaw), `"pid":`) {
+			t.Fatalf("status = %s, want pid field", string(statusRaw))
+		}
 
 		writeLine(t, client, `{"jsonrpc":"2.0","id":"3","method":"route.replace","params":{"route":{"path":"/hooks/new","auth":{"type":"bearer","token":"secret"},"action":{"type":"cron.run","target":"job-3"}}}}`)
 		replaceResp := readResponse(t, client)
@@ -235,6 +238,54 @@ func TestSocketServerMethods(t *testing.T) {
 		)
 		if response.Error == nil || response.Error.Code != errCodeInvalidParams {
 			t.Fatalf("response = %#v, want invalid params", response)
+		}
+	})
+
+	t.Run("statusUsesInjectedProvider", func(t *testing.T) {
+		server, err := NewSocketServer(SocketServerConfig{
+			Router:  NewRouterWithConfig(&fakeRepository{}, baseSocketRouterConfig()),
+			Version: "0.22",
+			Status: staticStatusProvider{
+				snapshot: StatusSnapshot{
+					Version:     "9.9.9",
+					Bind:        "127.0.0.2",
+					Port:        4242,
+					RouteCount:  7,
+					PID:         12345,
+					ConfigPath:  "/tmp/routes.json",
+					SocketPath:  "/tmp/fairway.sock",
+					PIDFilePath: "/tmp/fairway.pid",
+					StartedAt:   time.Date(2026, 4, 17, 1, 40, 0, 0, time.UTC),
+				},
+			},
+		})
+		if err != nil {
+			t.Fatalf("NewSocketServer() error = %v", err)
+		}
+
+		response := rpcRoundTrip(t, server,
+			`{"jsonrpc":"2.0","id":"0","method":"handshake","params":{"version":"0.22"}}`,
+			`{"jsonrpc":"2.0","id":"1","method":"status","params":{}}`,
+		)
+		if response.Error != nil {
+			t.Fatalf("response = %#v, want success", response)
+		}
+
+		raw, _ := json.Marshal(response.Result)
+		text := string(raw)
+		for _, needle := range []string{
+			`"version":"9.9.9"`,
+			`"bind":"127.0.0.2"`,
+			`"port":4242`,
+			`"routeCount":7`,
+			`"pid":12345`,
+			`"configPath":"/tmp/routes.json"`,
+			`"socketPath":"/tmp/fairway.sock"`,
+			`"pidFilePath":"/tmp/fairway.pid"`,
+		} {
+			if !strings.Contains(text, needle) {
+				t.Fatalf("status = %s, want %s", text, needle)
+			}
 		}
 	})
 }
@@ -331,6 +382,14 @@ func mustNewSocketServer(t *testing.T, cfg Config, version string) *SocketServer
 		t.Fatalf("NewSocketServer() error = %v", err)
 	}
 	return server
+}
+
+type staticStatusProvider struct {
+	snapshot StatusSnapshot
+}
+
+func (s staticStatusProvider) Status() StatusSnapshot {
+	return s.snapshot
 }
 
 func baseSocketRouterConfig() Config {
