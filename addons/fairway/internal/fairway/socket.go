@@ -4,10 +4,8 @@ import (
 	"bufio"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net"
 	"os"
-	"path/filepath"
 	"sync"
 	"time"
 )
@@ -101,14 +99,7 @@ func NewSocketServer(cfg SocketServerConfig) (*SocketServer, error) {
 
 // DefaultSocketPath returns the default Fairway control socket location.
 func DefaultSocketPath() (string, error) {
-	if shipyardHome := os.Getenv("SHIPYARD_HOME"); shipyardHome != "" {
-		return filepath.Join(shipyardHome, "run", "fairway.sock"), nil
-	}
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("resolve user home dir: %w", err)
-	}
-	return filepath.Join(homeDir, ".shipyard", "run", "fairway.sock"), nil
+	return defaultRuntimePath("fairway.sock")
 }
 
 // Start listens on the provided Unix socket path and serves requests asynchronously.
