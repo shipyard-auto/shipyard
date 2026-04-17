@@ -29,7 +29,7 @@ assert_file() {
 
 assert_exec_0755() {
   [ -x "$1" ] || fail "expected executable file: $1"
-  mode="$(stat -f '%Lp' "$1" 2>/dev/null || stat -c '%a' "$1")"
+  mode="$(stat --format='%a' "$1" 2>/dev/null || stat -f '%Lp' "$1")"
   [ "$mode" = "755" ] || fail "expected mode 755 for $1, got $mode"
 }
 
