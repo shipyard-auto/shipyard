@@ -37,6 +37,13 @@ func TestNewDaemon(t *testing.T) {
 		if daemon.pidfile.Path() != filepath.Join(root, "run", "fairway.pid") {
 			t.Fatalf("pidfile path = %q", daemon.pidfile.Path())
 		}
+		status := daemon.Status()
+		if status.ConfigPath != repo.Path() {
+			t.Fatalf("status.ConfigPath = %q, want %q", status.ConfigPath, repo.Path())
+		}
+		if status.SocketPath != filepath.Join(root, "run", "fairway.sock") {
+			t.Fatalf("status.SocketPath = %q", status.SocketPath)
+		}
 	})
 
 	t.Run("FailsWhenConfigIsInvalid", func(t *testing.T) {
@@ -55,6 +62,39 @@ func TestNewDaemon(t *testing.T) {
 			t.Fatal("NewDaemon() error = nil, want error")
 		}
 	})
+}
+
+func TestRuntimeStatus(t *testing.T) {
+	cfg := Config{
+		SchemaVersion: SchemaVersion,
+		Port:          DefaultPort,
+		Bind:          DefaultBind,
+		Routes: []Route{
+			{Path: "/hooks/a", Auth: Auth{Type: AuthLocalOnly}, Action: Action{Type: ActionMessageSend}},
+			{Path: "/hooks/b", Auth: Auth{Type: AuthLocalOnly}, Action: Action{Type: ActionTelegramHandle}},
+		},
+	}
+
+	status := newRuntimeStatus(cfg, "1.2.3", "/tmp/routes.json", "/tmp/fairway.sock", "/tmp/fairway.pid")
+	snapshot := status.Status()
+	if snapshot.RouteCount != 2 {
+		t.Fatalf("RouteCount = %d, want 2", snapshot.RouteCount)
+	}
+	if snapshot.PID != os.Getpid() {
+		t.Fatalf("PID = %d, want %d", snapshot.PID, os.Getpid())
+	}
+
+	startedAt := time.Date(2026, 4, 17, 1, 45, 0, 0, time.FixedZone("x", -3*3600))
+	status.MarkStarted(startedAt)
+	snapshot = status.Status()
+	if snapshot.StartedAt != startedAt.UTC() {
+		t.Fatalf("StartedAt = %s, want %s", snapshot.StartedAt, startedAt.UTC())
+	}
+
+	status.MarkStopped()
+	if got := status.Status().StartedAt; !got.IsZero() {
+		t.Fatalf("StartedAt after stop = %s, want zero", got)
+	}
 }
 
 func TestDaemonRunLifecycle(t *testing.T) {
