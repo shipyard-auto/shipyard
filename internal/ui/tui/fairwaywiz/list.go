@@ -71,14 +71,17 @@ func (s *listScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		case "esc":
 			return newMenuScreen(s.theme, s.client), nil
 		case "n":
-			return newFormScreen(s.theme, s.client, nil), nil
+			next := newFormScreen(s.theme, s.client, nil)
+			return next, next.Init()
 		case "e":
 			if route := s.selectedRoute(); route != nil {
-				return newFormScreen(s.theme, s.client, route), nil
+				next := newFormScreen(s.theme, s.client, route)
+				return next, next.Init()
 			}
 		case "d":
 			if route := s.selectedRoute(); route != nil {
-				return newDeleteScreen(s.theme, s.client, *route), nil
+				next := newDeleteScreen(s.theme, s.client, *route)
+				return next, next.Init()
 			}
 		}
 	}

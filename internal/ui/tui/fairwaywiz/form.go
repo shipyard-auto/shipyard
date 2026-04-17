@@ -168,6 +168,8 @@ func (s *formScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		s.authType = menu
 		if cmd != nil {
 			s.err = ""
+			s.focus = s.nextField()
+			s.syncFocus()
 		}
 		return s, nil
 	case fieldAuthSecret:
@@ -181,6 +183,8 @@ func (s *formScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		s.actionType = menu
 		if cmd != nil {
 			s.err = ""
+			s.focus = s.nextField()
+			s.syncFocus()
 		}
 		return s, nil
 	case fieldActionTarget:

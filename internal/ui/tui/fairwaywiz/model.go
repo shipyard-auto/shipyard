@@ -41,17 +41,23 @@ func (r *Root) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		r.syncChrome()
 	case tea.KeyMsg:
 		switch msg.String() {
-		case "ctrl+c", "q":
+		case "ctrl+c":
 			r.quitting = true
 			return r, tea.Quit
 		}
 	}
 	next, cmd := r.screen.Update(msg)
 	if next != nil {
+		changed := next != r.screen
 		r.screen = next
 		r.state = next.State()
 		r.summary = summaryForScreen(next)
 		r.syncChrome()
+		if changed && (r.width > 0 || r.height > 0) {
+			w, h := r.width, r.height
+			sizeCmd := func() tea.Msg { return tea.WindowSizeMsg{Width: w, Height: h} }
+			cmd = tea.Batch(cmd, sizeCmd)
+		}
 	}
 	return r, cmd
 }
