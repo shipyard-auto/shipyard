@@ -175,8 +175,8 @@ func newServiceStatusCmd() *cobra.Command {
 func newServiceAddCmd() *cobra.Command {
 	var (
 		name, description, command, workingDir, filePath string
-		env                                                []string
-		autoRestart, enabled                               bool
+		env                                              []string
+		autoRestart, enabled                             bool
 	)
 	cmd := &cobra.Command{
 		Use:   "add",
@@ -233,8 +233,8 @@ func newServiceAddCmd() *cobra.Command {
 func newServiceUpdateCmd() *cobra.Command {
 	var (
 		name, description, command, workingDir, filePath string
-		env                                                []string
-		autoRestart, enabled                               bool
+		env                                              []string
+		autoRestart, enabled                             bool
 	)
 	cmd := &cobra.Command{
 		Use:   "update <id>",
@@ -325,11 +325,21 @@ func newServiceDeleteCmd() *cobra.Command {
 	return cmd
 }
 
-func newServiceEnableCmd() *cobra.Command  { return newServiceLifecycleCmd("enable", "Enable a Shipyard service", "Enable a Shipyard-managed service at login.", func(s svcpkg.Service, id string) (svcpkg.ServiceRecord, error) { return s.Enable(id) }) }
-func newServiceDisableCmd() *cobra.Command { return newServiceLifecycleCmd("disable", "Disable a Shipyard service", "Disable a Shipyard-managed service at login.", func(s svcpkg.Service, id string) (svcpkg.ServiceRecord, error) { return s.Disable(id) }) }
-func newServiceStartCmd() *cobra.Command   { return newServiceLifecycleCmd("start", "Start a Shipyard service", "Start a Shipyard-managed service immediately.", func(s svcpkg.Service, id string) (svcpkg.ServiceRecord, error) { return s.Start(id) }) }
-func newServiceStopCmd() *cobra.Command    { return newServiceLifecycleCmd("stop", "Stop a Shipyard service", "Stop a Shipyard-managed service immediately.", func(s svcpkg.Service, id string) (svcpkg.ServiceRecord, error) { return s.Stop(id) }) }
-func newServiceRestartCmd() *cobra.Command { return newServiceLifecycleCmd("restart", "Restart a Shipyard service", "Restart a Shipyard-managed service immediately.", func(s svcpkg.Service, id string) (svcpkg.ServiceRecord, error) { return s.Restart(id) }) }
+func newServiceEnableCmd() *cobra.Command {
+	return newServiceLifecycleCmd("enable", "Enable a Shipyard service", "Enable a Shipyard-managed service at login.", func(s svcpkg.Service, id string) (svcpkg.ServiceRecord, error) { return s.Enable(id) })
+}
+func newServiceDisableCmd() *cobra.Command {
+	return newServiceLifecycleCmd("disable", "Disable a Shipyard service", "Disable a Shipyard-managed service at login.", func(s svcpkg.Service, id string) (svcpkg.ServiceRecord, error) { return s.Disable(id) })
+}
+func newServiceStartCmd() *cobra.Command {
+	return newServiceLifecycleCmd("start", "Start a Shipyard service", "Start a Shipyard-managed service immediately.", func(s svcpkg.Service, id string) (svcpkg.ServiceRecord, error) { return s.Start(id) })
+}
+func newServiceStopCmd() *cobra.Command {
+	return newServiceLifecycleCmd("stop", "Stop a Shipyard service", "Stop a Shipyard-managed service immediately.", func(s svcpkg.Service, id string) (svcpkg.ServiceRecord, error) { return s.Stop(id) })
+}
+func newServiceRestartCmd() *cobra.Command {
+	return newServiceLifecycleCmd("restart", "Restart a Shipyard service", "Restart a Shipyard-managed service immediately.", func(s svcpkg.Service, id string) (svcpkg.ServiceRecord, error) { return s.Restart(id) })
+}
 
 func newServiceLifecycleCmd(use, short, long string, action func(s svcpkg.Service, id string) (svcpkg.ServiceRecord, error)) *cobra.Command {
 	return &cobra.Command{

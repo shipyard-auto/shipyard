@@ -81,4 +81,3 @@ func validateServiceFields(name, description, command, workingDir string, enviro
 	}
 	return nil
 }
-

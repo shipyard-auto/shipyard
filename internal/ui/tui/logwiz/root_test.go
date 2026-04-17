@@ -21,10 +21,22 @@ type fakeLogsService struct {
 	prune   logs.PruneResult
 }
 
-func (f *fakeLogsService) LoadConfig() (logs.Config, error)               { if f.cfg.RetentionDays == 0 { f.cfg.RetentionDays = 14 }; return f.cfg, nil }
-func (f *fakeLogsService) SetRetentionDays(days int) (logs.Config, error) { f.cfg.RetentionDays = days; return f.cfg, nil }
-func (f *fakeLogsService) ListSources() ([]logs.SourceSummary, error)     { return append([]logs.SourceSummary{}, f.sources...), nil }
-func (f *fakeLogsService) Query(query logs.Query) ([]logs.Event, error)   { return append([]logs.Event{}, f.events...), nil }
+func (f *fakeLogsService) LoadConfig() (logs.Config, error) {
+	if f.cfg.RetentionDays == 0 {
+		f.cfg.RetentionDays = 14
+	}
+	return f.cfg, nil
+}
+func (f *fakeLogsService) SetRetentionDays(days int) (logs.Config, error) {
+	f.cfg.RetentionDays = days
+	return f.cfg, nil
+}
+func (f *fakeLogsService) ListSources() ([]logs.SourceSummary, error) {
+	return append([]logs.SourceSummary{}, f.sources...), nil
+}
+func (f *fakeLogsService) Query(query logs.Query) ([]logs.Event, error) {
+	return append([]logs.Event{}, f.events...), nil
+}
 func (f *fakeLogsService) Tail(query logs.Query, out io.Writer, stop <-chan struct{}) error {
 	for _, event := range f.events {
 		_, _ = io.WriteString(out, renderEvents([]logs.Event{event}, "")+"\n")
@@ -32,7 +44,7 @@ func (f *fakeLogsService) Tail(query logs.Query, out io.Writer, stop <-chan stru
 	<-stop
 	return nil
 }
-func (f *fakeLogsService) Prune() (logs.PruneResult, error)               { return f.prune, nil }
+func (f *fakeLogsService) Prune() (logs.PruneResult, error) { return f.prune, nil }
 
 func TestLogsRootMenuEmptyState(t *testing.T) {
 	root := NewRoot(&fakeLogsService{})

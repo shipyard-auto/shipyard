@@ -47,4 +47,3 @@ func TestFileRepositoryRoundTrip(t *testing.T) {
 		t.Fatal("expected trailing newline")
 	}
 }
-

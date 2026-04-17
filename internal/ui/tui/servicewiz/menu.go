@@ -73,8 +73,8 @@ func countBadge(count int) string {
 	return fmt.Sprintf("%d", count)
 }
 
-func (s *menuScreen) Init() tea.Cmd { return nil }
-func (s *menuScreen) Title() string { return "Service Control Panel" }
+func (s *menuScreen) Init() tea.Cmd        { return nil }
+func (s *menuScreen) Title() string        { return "Service Control Panel" }
 func (s *menuScreen) Breadcrumb() []string { return []string{"service"} }
 func (s *menuScreen) Footer() []components.KeyHint {
 	return []components.KeyHint{{Key: "↑↓", Label: "navigate"}, {Key: "enter", Label: "select"}}

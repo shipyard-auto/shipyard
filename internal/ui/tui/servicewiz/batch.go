@@ -43,11 +43,21 @@ type batchScreen struct {
 	spinner    components.Spinner
 }
 
-func newStartScreen(th theme.Theme, service ServiceAPI) Screen   { return newBatchScreen(th, service, batchStart) }
-func newStopScreen(th theme.Theme, service ServiceAPI) Screen    { return newBatchScreen(th, service, batchStop) }
-func newRestartScreen(th theme.Theme, service ServiceAPI) Screen { return newBatchScreen(th, service, batchRestart) }
-func newEnableScreen(th theme.Theme, service ServiceAPI) Screen  { return newBatchScreen(th, service, batchEnable) }
-func newDisableScreen(th theme.Theme, service ServiceAPI) Screen { return newBatchScreen(th, service, batchDisable) }
+func newStartScreen(th theme.Theme, service ServiceAPI) Screen {
+	return newBatchScreen(th, service, batchStart)
+}
+func newStopScreen(th theme.Theme, service ServiceAPI) Screen {
+	return newBatchScreen(th, service, batchStop)
+}
+func newRestartScreen(th theme.Theme, service ServiceAPI) Screen {
+	return newBatchScreen(th, service, batchRestart)
+}
+func newEnableScreen(th theme.Theme, service ServiceAPI) Screen {
+	return newBatchScreen(th, service, batchEnable)
+}
+func newDisableScreen(th theme.Theme, service ServiceAPI) Screen {
+	return newBatchScreen(th, service, batchDisable)
+}
 
 func newBatchScreen(th theme.Theme, service ServiceAPI, kind batchKind) Screen {
 	s := &batchScreen{
@@ -98,8 +108,8 @@ func (s *batchScreen) refresh() {
 	s.empty = nil
 }
 
-func (s *batchScreen) Init() tea.Cmd { return nil }
-func (s *batchScreen) Title() string { return s.title }
+func (s *batchScreen) Init() tea.Cmd        { return nil }
+func (s *batchScreen) Title() string        { return s.title }
 func (s *batchScreen) Breadcrumb() []string { return s.breadcrumb }
 func (s *batchScreen) Footer() []components.KeyHint {
 	if s.running {

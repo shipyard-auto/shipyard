@@ -51,16 +51,31 @@ func (m *fakeManager) Sync(desired []ServiceRecord) error {
 	return m.syncErr
 }
 func (m *fakeManager) Reload() error { m.calls = append(m.calls, "reload"); return m.reloadErr }
-func (m *fakeManager) Start(id string) error { m.calls = append(m.calls, "start:"+id); return m.startErr }
+func (m *fakeManager) Start(id string) error {
+	m.calls = append(m.calls, "start:"+id)
+	return m.startErr
+}
 func (m *fakeManager) Stop(id string) error { m.calls = append(m.calls, "stop:"+id); return m.stopErr }
-func (m *fakeManager) Restart(id string) error { m.calls = append(m.calls, "restart:"+id); return m.restartErr }
+func (m *fakeManager) Restart(id string) error {
+	m.calls = append(m.calls, "restart:"+id)
+	return m.restartErr
+}
 func (m *fakeManager) Status(id string) (RuntimeStatus, error) {
 	m.calls = append(m.calls, "status:"+id)
 	return m.statuses[id], nil
 }
-func (m *fakeManager) Enable(id string) error { m.calls = append(m.calls, "enable:"+id); return m.enableErr }
-func (m *fakeManager) Disable(id string) error { m.calls = append(m.calls, "disable:"+id); return m.disableErr }
-func (m *fakeManager) Remove(id string) error { m.calls = append(m.calls, "remove:"+id); return m.removeErr }
+func (m *fakeManager) Enable(id string) error {
+	m.calls = append(m.calls, "enable:"+id)
+	return m.enableErr
+}
+func (m *fakeManager) Disable(id string) error {
+	m.calls = append(m.calls, "disable:"+id)
+	return m.disableErr
+}
+func (m *fakeManager) Remove(id string) error {
+	m.calls = append(m.calls, "remove:"+id)
+	return m.removeErr
+}
 
 type fakeIDGen struct {
 	id  string

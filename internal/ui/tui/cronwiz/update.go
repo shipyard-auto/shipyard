@@ -69,8 +69,8 @@ func (s *updateScreen) seed(job cron.Job) {
 	s.add = screen
 }
 
-func (s *updateScreen) Init() tea.Cmd { return nil }
-func (s *updateScreen) Title() string { return "Update Cron Job" }
+func (s *updateScreen) Init() tea.Cmd        { return nil }
+func (s *updateScreen) Title() string        { return "Update Cron Job" }
 func (s *updateScreen) Breadcrumb() []string { return []string{"cron", "update"} }
 
 func (s *updateScreen) Footer() []components.KeyHint {

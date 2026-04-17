@@ -80,8 +80,8 @@ func newAddScreen(th theme.Theme, service ServiceAPI, _ *svcpkg.ServiceRecord) S
 	}
 }
 
-func (s *addScreen) Init() tea.Cmd { return s.name.Init() }
-func (s *addScreen) Title() string { return "Add Service" }
+func (s *addScreen) Init() tea.Cmd        { return s.name.Init() }
+func (s *addScreen) Title() string        { return "Add Service" }
 func (s *addScreen) Breadcrumb() []string { return []string{"service", "add"} }
 func (s *addScreen) Footer() []components.KeyHint {
 	switch {

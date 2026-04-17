@@ -85,4 +85,3 @@ func (r FileRepository) Save(store Store) error {
 	}
 	return nil
 }
-

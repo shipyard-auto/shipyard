@@ -26,10 +26,12 @@ func newPruneScreen(th theme.Theme, service LogsService) Screen {
 	}
 }
 
-func (s *pruneScreen) Init() tea.Cmd { return nil }
-func (s *pruneScreen) Title() string { return "Prune Old Logs" }
+func (s *pruneScreen) Init() tea.Cmd        { return nil }
+func (s *pruneScreen) Title() string        { return "Prune Old Logs" }
 func (s *pruneScreen) Breadcrumb() []string { return []string{"logs", "prune"} }
-func (s *pruneScreen) Footer() []components.KeyHint { return []components.KeyHint{{Key: "enter", Label: "confirm"}} }
+func (s *pruneScreen) Footer() []components.KeyHint {
+	return []components.KeyHint{{Key: "enter", Label: "confirm"}}
+}
 func (s *pruneScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	if key, ok := msg.(tea.KeyMsg); ok {
 		if key.String() == "esc" {

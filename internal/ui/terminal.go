@@ -16,6 +16,8 @@ const (
 	StyleDim    Style = "\033[2m"
 	StyleCyan   Style = "\033[36m"
 	StyleBlue   Style = "\033[34m"
+	StyleGreen  Style = "\033[32m"
+	StyleRed    Style = "\033[31m"
 	StyleYellow Style = "\033[33m"
 	StyleWhite  Style = "\033[97m"
 )

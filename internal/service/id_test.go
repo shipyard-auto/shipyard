@@ -11,4 +11,3 @@ func TestRandomIDGeneratorNewID(t *testing.T) {
 		t.Fatalf("expected 6-char id, got %q", id)
 	}
 }
-

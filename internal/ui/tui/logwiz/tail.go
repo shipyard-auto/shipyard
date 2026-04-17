@@ -53,8 +53,8 @@ func newTailScreen(th theme.Theme, service LogsService) Screen {
 	}
 }
 
-func (s *tailScreen) Init() tea.Cmd { return nil }
-func (s *tailScreen) Title() string { return "Tail Live Events" }
+func (s *tailScreen) Init() tea.Cmd        { return nil }
+func (s *tailScreen) Title() string        { return "Tail Live Events" }
 func (s *tailScreen) Breadcrumb() []string { return []string{"logs", "tail"} }
 
 func (s *tailScreen) Footer() []components.KeyHint {

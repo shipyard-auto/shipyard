@@ -64,8 +64,8 @@ func newShowScreen(th theme.Theme, service LogsService, source string) Screen {
 	}
 }
 
-func (s *showScreen) Init() tea.Cmd { return nil }
-func (s *showScreen) Title() string { return "Show Recent Events" }
+func (s *showScreen) Init() tea.Cmd        { return nil }
+func (s *showScreen) Title() string        { return "Show Recent Events" }
 func (s *showScreen) Breadcrumb() []string { return []string{"logs", "show"} }
 
 func (s *showScreen) Footer() []components.KeyHint {

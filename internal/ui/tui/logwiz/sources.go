@@ -3,8 +3,8 @@ package logwiz
 import (
 	"fmt"
 
-	tea "github.com/charmbracelet/bubbletea"
 	btable "github.com/charmbracelet/bubbles/table"
+	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/shipyard-auto/shipyard/internal/logs"
 	"github.com/shipyard-auto/shipyard/internal/ui/tui/components"
@@ -53,10 +53,12 @@ func (s *sourcesScreen) refresh() {
 	s.table = &table
 }
 
-func (s *sourcesScreen) Init() tea.Cmd { return nil }
-func (s *sourcesScreen) Title() string { return "View Sources" }
+func (s *sourcesScreen) Init() tea.Cmd        { return nil }
+func (s *sourcesScreen) Title() string        { return "View Sources" }
 func (s *sourcesScreen) Breadcrumb() []string { return []string{"logs", "sources"} }
-func (s *sourcesScreen) Footer() []components.KeyHint { return []components.KeyHint{{Key: "enter", Label: "inspect source"}} }
+func (s *sourcesScreen) Footer() []components.KeyHint {
+	return []components.KeyHint{{Key: "enter", Label: "inspect source"}}
+}
 func (s *sourcesScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	if key, ok := msg.(tea.KeyMsg); ok && key.String() == "esc" {
 		return newMenuScreen(s.theme, s.service), nil

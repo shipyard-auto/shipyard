@@ -89,8 +89,8 @@ func (s *batchScreen) refresh() {
 	s.empty = nil
 }
 
-func (s *batchScreen) Init() tea.Cmd { return nil }
-func (s *batchScreen) Title() string { return s.title }
+func (s *batchScreen) Init() tea.Cmd        { return nil }
+func (s *batchScreen) Title() string        { return s.title }
 func (s *batchScreen) Breadcrumb() []string { return s.breadcrumb }
 
 func (s *batchScreen) Footer() []components.KeyHint {

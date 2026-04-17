@@ -1,0 +1,389 @@
+package fairway
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"net"
+	"net/http"
+	"sync"
+	"time"
+)
+
+const (
+	httpReadHeaderTimeout = 10 * time.Second
+	httpReadTimeout       = 10 * time.Second
+	httpWriteTimeout      = DefaultActionTimeout + 5*time.Second
+	httpShutdownTimeout   = 10 * time.Second
+)
+
+// ServerConfig holds the dependencies for creating an HTTP server.
+type ServerConfig struct {
+	// Router is the in-memory routing table.
+	Router *Router
+
+	// Executor dispatches route actions.
+	Executor Executor
+
+	// Logger is used for structured daemon logging.
+	Logger *slog.Logger
+
+	// ReqLogger writes a JSONL line for every completed HTTP request. Optional.
+	ReqLogger *RequestLogger
+
+	// Stats tracks per-route request counters. Optional.
+	Stats *Stats
+}
+
+// Server is the HTTP server for the fairway daemon. It matches incoming
+// requests against the routing table, authenticates them, and dispatches
+// the configured action via the Executor.
+type Server struct {
+	router    *Router
+	executor  Executor
+	logger    *slog.Logger
+	reqLogger *RequestLogger
+	stats     *Stats
+	httpSrv   *http.Server
+	bind      string
+	port      int
+	addr      string     // real address after Listen (set in Serve)
+	addrMu    sync.Mutex // protects addr
+
+	authCacheMu sync.RWMutex
+	authCache   map[string]Authenticator
+}
+
+// NewServer creates an HTTP server from cfg.
+func NewServer(cfg ServerConfig) *Server {
+	s := &Server{
+		router:    cfg.Router,
+		executor:  cfg.Executor,
+		logger:    cfg.Logger,
+		reqLogger: cfg.ReqLogger,
+		stats:     cfg.Stats,
+		authCache: make(map[string]Authenticator),
+	}
+
+	if s.logger == nil {
+		s.logger = slog.Default()
+	}
+
+	rc := cfg.Router.Config()
+	s.bind = rc.Bind
+	s.port = rc.Port
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/_health", s.handleHealth)
+	mux.HandleFunc("/", s.handleRouted)
+
+	s.httpSrv = &http.Server{
+		Handler:           mux,
+		ReadHeaderTimeout: httpReadHeaderTimeout,
+		ReadTimeout:       httpReadTimeout,
+		WriteTimeout:      httpWriteTimeout,
+	}
+
+	return s
+}
+
+// Serve binds to the configured address, starts serving, and blocks until
+// ctx is cancelled. It performs a graceful shutdown allowing in-flight requests
+// up to httpShutdownTimeout to complete.
+func (s *Server) Serve(ctx context.Context) error {
+	lis, err := net.Listen("tcp", fmt.Sprintf("%s:%d", s.bind, s.port))
+	if err != nil {
+		return fmt.Errorf("listen %s:%d: %w", s.bind, s.port, err)
+	}
+	if s.reqLogger != nil {
+		defer func() {
+			_ = s.reqLogger.Close()
+		}()
+	}
+
+	s.addrMu.Lock()
+	s.addr = lis.Addr().String()
+	s.addrMu.Unlock()
+
+	// Graceful shutdown goroutine.
+	go func() {
+		<-ctx.Done()
+		shutCtx, cancel := context.WithTimeout(context.Background(), httpShutdownTimeout)
+		defer cancel()
+		_ = s.httpSrv.Shutdown(shutCtx)
+	}()
+
+	err = s.httpSrv.Serve(lis)
+	if err == http.ErrServerClosed {
+		return nil
+	}
+	return err
+}
+
+// Addr returns the real address the server is listening on.
+// It is populated after Serve is called.
+func (s *Server) Addr() string {
+	s.addrMu.Lock()
+	defer s.addrMu.Unlock()
+	return s.addr
+}
+
+// InFlight returns the number of currently running pooled subprocess actions.
+func (s *Server) InFlight() int {
+	if reporter, ok := s.executor.(InFlightReporter); ok {
+		return reporter.InFlight()
+	}
+	return 0
+}
+
+// handler returns the internal http.Handler. Used by the socket server for
+// route.test without binding a real TCP port.
+func (s *Server) handler() http.Handler {
+	return s.httpSrv.Handler
+}
+
+// ServerHandlerForTest returns the internal http.Handler of the server.
+// It exists solely to allow handler-level tests without binding a real TCP port.
+// Must not be used in production code.
+func ServerHandlerForTest(s *Server) http.Handler {
+	return s.httpSrv.Handler
+}
+
+// InvalidateAuthCache clears the authenticator cache.
+// Must be called after a route is added, deleted, or replaced.
+func (s *Server) InvalidateAuthCache() {
+	s.authCacheMu.Lock()
+	defer s.authCacheMu.Unlock()
+	s.authCache = make(map[string]Authenticator)
+}
+
+// handleHealth responds to /_health with 200 OK. No auth required.
+func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte("ok"))
+}
+
+// handleRouted matches the request path against the routing table, authenticates,
+// and dispatches the action.
+func (s *Server) handleRouted(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+
+	route, ok := s.router.Match(r.URL.Path)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+
+	// Wrap the ResponseWriter so we can capture the status code for logging.
+	sc := &statusCapture{ResponseWriter: w, status: http.StatusOK}
+
+	auth, err := s.getOrCreateAuth(route)
+	if err != nil {
+		http.Error(sc, `{"error":"internal auth error"}`, http.StatusInternalServerError)
+		s.observeRequest(requestObservation{
+			Route:      route,
+			Method:     r.Method,
+			Status:     sc.status,
+			Duration:   time.Since(start),
+			RemoteAddr: r.RemoteAddr,
+			AuthType:   string(route.Auth.Type),
+			AuthResult: "internal-error",
+			ExitCode:   -1,
+		})
+		return
+	}
+
+	authType := string(route.Auth.Type)
+
+	if err := auth.Verify(r); err != nil {
+		if ae, ok := IsAuthError(err); ok {
+			sc.Header().Set("Content-Type", "application/json")
+			sc.WriteHeader(ae.Status)
+			body, _ := json.Marshal(map[string]string{"error": ae.Reason})
+			_, _ = sc.Write(body)
+			s.observeRequest(requestObservation{
+				Route:      route,
+				Method:     r.Method,
+				Status:     sc.status,
+				Duration:   time.Since(start),
+				RemoteAddr: r.RemoteAddr,
+				AuthType:   authType,
+				AuthResult: "denied",
+				ExitCode:   -1,
+			})
+			return
+		}
+		http.Error(sc, `{"error":"authentication failed"}`, http.StatusInternalServerError)
+		s.observeRequest(requestObservation{
+			Route:      route,
+			Method:     r.Method,
+			Status:     sc.status,
+			Duration:   time.Since(start),
+			RemoteAddr: r.RemoteAddr,
+			AuthType:   authType,
+			AuthResult: "internal-error",
+			ExitCode:   -1,
+		})
+		return
+	}
+
+	// Read and cap request body before passing to executor.
+	if r.Body != nil {
+		limited := http.MaxBytesReader(sc, r.Body, MaxSubprocessOutput)
+		bodyBytes, readErr := io.ReadAll(limited)
+		if readErr != nil {
+			var maxBytesErr *http.MaxBytesError
+			if errors.As(readErr, &maxBytesErr) {
+				http.Error(sc, "request body too large", http.StatusRequestEntityTooLarge)
+			} else {
+				http.Error(sc, "error reading request body", http.StatusInternalServerError)
+			}
+			s.observeRequest(requestObservation{
+				Route:      route,
+				Method:     r.Method,
+				Status:     sc.status,
+				Duration:   time.Since(start),
+				RemoteAddr: r.RemoteAddr,
+				AuthType:   authType,
+				AuthResult: "ok",
+				ExitCode:   -1,
+			})
+			return
+		}
+		r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+	}
+
+	result, err := s.executor.Execute(r.Context(), route, r)
+	if err != nil {
+		http.Error(sc, `{"error":"executor error"}`, http.StatusInternalServerError)
+		s.observeRequest(requestObservation{
+			Route:      route,
+			Method:     r.Method,
+			Status:     sc.status,
+			Duration:   time.Since(start),
+			RemoteAddr: r.RemoteAddr,
+			AuthType:   authType,
+			AuthResult: "ok",
+			ExitCode:   -1,
+		})
+		return
+	}
+
+	// For http.forward, proxy response headers to the caller.
+	if result.Header != nil {
+		for k, vs := range result.Header {
+			for _, v := range vs {
+				sc.Header().Add(k, v)
+			}
+		}
+	}
+
+	sc.WriteHeader(result.HTTPStatus)
+	_, _ = sc.Write(result.Body)
+
+	dur := time.Since(start)
+	s.observeRequest(requestObservation{
+		Route:      route,
+		Method:     r.Method,
+		Status:     sc.status,
+		Duration:   dur,
+		RemoteAddr: r.RemoteAddr,
+		AuthType:   authType,
+		AuthResult: "ok",
+		ExitCode:   result.ExitCode,
+		Truncated:  result.Truncated,
+	})
+}
+
+type requestObservation struct {
+	Route      Route
+	Method     string
+	Status     int
+	Duration   time.Duration
+	RemoteAddr string
+	AuthType   string
+	AuthResult string
+	ExitCode   int
+	Truncated  bool
+}
+
+// observeRequest records a completed request in stats and the request logger.
+func (s *Server) observeRequest(obs requestObservation) {
+	if s.stats != nil {
+		s.stats.ObserveResult(obs.Route.Path, obs.Status, obs.ExitCode, obs.Duration)
+	}
+	if s.reqLogger != nil {
+		event := RequestEvent{
+			Timestamp: time.Now().UTC().Format(time.RFC3339),
+			Source:    "fairway",
+			Level:     "info",
+			Event:     "http_request",
+			Message:   "fairway HTTP request handled",
+			Data: EventData{
+				Method:     obs.Method,
+				Path:       obs.Route.Path,
+				Status:     obs.Status,
+				DurationMs: obs.Duration.Milliseconds(),
+				RemoteAddr: obs.RemoteAddr,
+				Action:     string(obs.Route.Action.Type),
+				Target:     obs.Route.Action.Target,
+				ExitCode:   obs.ExitCode,
+				AuthType:   obs.AuthType,
+				AuthResult: obs.AuthResult,
+				Truncated:  obs.Truncated,
+			},
+		}
+		// Log errors are intentionally ignored to avoid blocking HTTP responses.
+		_ = s.reqLogger.Log(event)
+	}
+}
+
+// statusCapture wraps an http.ResponseWriter to record the status code written.
+type statusCapture struct {
+	http.ResponseWriter
+	status  int
+	written bool
+}
+
+func (sc *statusCapture) WriteHeader(code int) {
+	if !sc.written {
+		sc.status = code
+		sc.written = true
+	}
+	sc.ResponseWriter.WriteHeader(code)
+}
+
+func (sc *statusCapture) Write(b []byte) (int, error) {
+	if !sc.written {
+		sc.WriteHeader(http.StatusOK)
+	}
+	return sc.ResponseWriter.Write(b)
+}
+
+// getOrCreateAuth returns a cached Authenticator for the route path,
+// creating one if necessary.
+func (s *Server) getOrCreateAuth(route Route) (Authenticator, error) {
+	s.authCacheMu.RLock()
+	if auth, ok := s.authCache[route.Path]; ok {
+		s.authCacheMu.RUnlock()
+		return auth, nil
+	}
+	s.authCacheMu.RUnlock()
+
+	s.authCacheMu.Lock()
+	defer s.authCacheMu.Unlock()
+	// Double-check after acquiring write lock.
+	if auth, ok := s.authCache[route.Path]; ok {
+		return auth, nil
+	}
+	auth, err := NewAuthenticator(route.Auth)
+	if err != nil {
+		return nil, err
+	}
+	s.authCache[route.Path] = auth
+	return auth, nil
+}

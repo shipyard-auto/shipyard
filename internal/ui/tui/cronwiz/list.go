@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
 	btable "github.com/charmbracelet/bubbles/table"
+	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/shipyard-auto/shipyard/internal/cron"
 	"github.com/shipyard-auto/shipyard/internal/ui/tui/components"
@@ -66,8 +66,8 @@ func (s *listScreen) refresh() {
 	s.empty = nil
 }
 
-func (s *listScreen) Init() tea.Cmd { return nil }
-func (s *listScreen) Title() string { return "Browse Jobs" }
+func (s *listScreen) Init() tea.Cmd        { return nil }
+func (s *listScreen) Title() string        { return "Browse Jobs" }
 func (s *listScreen) Breadcrumb() []string { return []string{"cron", "browse"} }
 func (s *listScreen) Footer() []components.KeyHint {
 	return []components.KeyHint{
