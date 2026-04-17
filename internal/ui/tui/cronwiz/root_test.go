@@ -25,9 +25,21 @@ type fakeCronService struct {
 	ran     []string
 }
 
-func (f *fakeCronService) List() ([]cron.Job, error)                          { return append([]cron.Job{}, f.jobs...), nil }
-func (f *fakeCronService) Get(id string) (cron.Job, error)                    { for _, j := range f.jobs { if j.ID == id { return j, nil } }; return cron.Job{}, cron.ErrJobNotFound }
-func (f *fakeCronService) Add(input cron.JobInput) (cron.Job, error)          { f.added = append(f.added, input); j := cron.Job{ID: "AB12CD", Name: *input.Name, Schedule: *input.Schedule, Command: *input.Command, Enabled: *input.Enabled, CreatedAt: time.Now(), UpdatedAt: time.Now()}; f.jobs = append(f.jobs, j); return j, nil }
+func (f *fakeCronService) List() ([]cron.Job, error) { return append([]cron.Job{}, f.jobs...), nil }
+func (f *fakeCronService) Get(id string) (cron.Job, error) {
+	for _, j := range f.jobs {
+		if j.ID == id {
+			return j, nil
+		}
+	}
+	return cron.Job{}, cron.ErrJobNotFound
+}
+func (f *fakeCronService) Add(input cron.JobInput) (cron.Job, error) {
+	f.added = append(f.added, input)
+	j := cron.Job{ID: "AB12CD", Name: *input.Name, Schedule: *input.Schedule, Command: *input.Command, Enabled: *input.Enabled, CreatedAt: time.Now(), UpdatedAt: time.Now()}
+	f.jobs = append(f.jobs, j)
+	return j, nil
+}
 func (f *fakeCronService) Update(id string, input cron.JobInput) (cron.Job, error) {
 	f.updated = append(f.updated, struct {
 		ID    string
@@ -56,12 +68,18 @@ func (f *fakeCronService) Update(id string, input cron.JobInput) (cron.Job, erro
 	}
 	return cron.Job{}, cron.ErrJobNotFound
 }
-func (f *fakeCronService) Enable(id string) (cron.Job, error)                 { return f.Get(id) }
-func (f *fakeCronService) Disable(id string) (cron.Job, error)                { return f.Get(id) }
-func (f *fakeCronService) Run(id string) (cron.Job, string, error)            { f.ran = append(f.ran, id); j, err := f.Get(id); return j, "ok", err }
-func (f *fakeCronService) Delete(id string) error                             { f.deleted = append(f.deleted, id); return nil }
+func (f *fakeCronService) Enable(id string) (cron.Job, error)  { return f.Get(id) }
+func (f *fakeCronService) Disable(id string) (cron.Job, error) { return f.Get(id) }
+func (f *fakeCronService) Run(id string) (cron.Job, string, error) {
+	f.ran = append(f.ran, id)
+	j, err := f.Get(id)
+	return j, "ok", err
+}
+func (f *fakeCronService) Delete(id string) error { f.deleted = append(f.deleted, id); return nil }
 
-func sendText[T interface{ Update(tea.Msg) (Screen, tea.Cmd) }](t *testing.T, screen Screen, text string) Screen {
+func sendText[T interface {
+	Update(tea.Msg) (Screen, tea.Cmd)
+}](t *testing.T, screen Screen, text string) Screen {
 	t.Helper()
 	for _, r := range text {
 		next, _ := screen.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})

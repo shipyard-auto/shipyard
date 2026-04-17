@@ -3,21 +3,21 @@ package components
 import (
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/bubbles/textinput"
+	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/shipyard-auto/shipyard/internal/ui/tui/theme"
 )
 
 type Input struct {
-	theme      theme.Theme
-	model      textinput.Model
-	label      string
-	hint       string
-	err        string
-	maxLength  int
-	validator  func(string) error
-	width      int
+	theme       theme.Theme
+	model       textinput.Model
+	label       string
+	hint        string
+	err         string
+	maxLength   int
+	validator   func(string) error
+	width       int
 	placeholder string
 }
 

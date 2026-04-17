@@ -32,6 +32,7 @@ func NewRootCmd() *cobra.Command {
 	})
 	cmd.Version = app.Version
 
+	cmd.AddCommand(newFairwayCmd())
 	cmd.AddCommand(newUninstallCmd())
 	cmd.AddCommand(newCronCmd())
 	cmd.AddCommand(newServiceCmd())

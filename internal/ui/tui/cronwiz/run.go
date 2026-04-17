@@ -62,8 +62,8 @@ func (s *runScreen) bootstrap() {
 	s.picker = components.NewMenu(s.theme, jobsToMenuItems(jobs))
 }
 
-func (s *runScreen) Init() tea.Cmd { return nil }
-func (s *runScreen) Title() string { return "Run Job Now" }
+func (s *runScreen) Init() tea.Cmd        { return nil }
+func (s *runScreen) Title() string        { return "Run Job Now" }
 func (s *runScreen) Breadcrumb() []string { return []string{"cron", "run"} }
 
 func (s *runScreen) Footer() []components.KeyHint {

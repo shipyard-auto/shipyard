@@ -40,8 +40,8 @@ func (s *deleteScreen) bootstrap() {
 	s.picker = components.NewMenu(s.theme, recordsToMenuItems(records))
 }
 
-func (s *deleteScreen) Init() tea.Cmd { return nil }
-func (s *deleteScreen) Title() string { return "Delete Service" }
+func (s *deleteScreen) Init() tea.Cmd        { return nil }
+func (s *deleteScreen) Title() string        { return "Delete Service" }
 func (s *deleteScreen) Breadcrumb() []string { return []string{"service", "delete"} }
 func (s *deleteScreen) Footer() []components.KeyHint {
 	if s.done {
@@ -121,11 +121,11 @@ type staticScreen struct {
 	next   Screen
 }
 
-func (s *staticScreen) Init() tea.Cmd { return nil }
-func (s *staticScreen) Title() string { return s.title }
-func (s *staticScreen) Breadcrumb() []string { return s.crumb }
+func (s *staticScreen) Init() tea.Cmd                { return nil }
+func (s *staticScreen) Title() string                { return s.title }
+func (s *staticScreen) Breadcrumb() []string         { return s.crumb }
 func (s *staticScreen) Footer() []components.KeyHint { return s.footer }
-func (s *staticScreen) View() string { return s.body }
+func (s *staticScreen) View() string                 { return s.body }
 func (s *staticScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	if key, ok := msg.(tea.KeyMsg); ok && key.String() == "esc" {
 		return s.next, nil

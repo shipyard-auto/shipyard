@@ -47,8 +47,8 @@ func (s *statusScreen) bootstrap() {
 	s.picker = components.NewMenu(s.theme, recordsToMenuItems(records))
 }
 
-func (s *statusScreen) Init() tea.Cmd { return nil }
-func (s *statusScreen) Title() string { return "Service Status" }
+func (s *statusScreen) Init() tea.Cmd        { return nil }
+func (s *statusScreen) Title() string        { return "Service Status" }
 func (s *statusScreen) Breadcrumb() []string { return []string{"service", "status"} }
 func (s *statusScreen) Footer() []components.KeyHint {
 	if s.record == nil {

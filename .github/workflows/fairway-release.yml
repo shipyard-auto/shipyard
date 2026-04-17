@@ -1,0 +1,157 @@
+name: Fairway Release
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "VERSION"
+      - "addons/fairway/**"
+      - "internal/fairwayctl/**"
+      - "internal/cli/fairway*.go"
+      - "internal/ui/tui/fairwaywiz/**"
+      - "Makefile"
+      - ".github/workflows/fairway-release.yml"
+
+permissions:
+  contents: write
+  pull-requests: read
+
+concurrency:
+  group: fairway-release-main
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      version: ${{ steps.version.outputs.version }}
+      skip: ${{ steps.version.outputs.skip }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.2"
+
+      - name: Compute fairway release tag
+        id: version
+        shell: bash
+        run: |
+          version="$(tr -d '[:space:]' < VERSION)"
+          if [ -z "$version" ]; then
+            echo "VERSION is empty" >&2
+            exit 1
+          fi
+
+          tag="fairway-v$version"
+          if git rev-parse "$tag" >/dev/null 2>&1; then
+            echo "Tag $tag already exists — skipping fairway release."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Generate changelog
+        if: steps.version.outputs.skip != 'true'
+        id: changelog
+        uses: actions/github-script@v8
+        env:
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const sha = context.sha;
+            const response = await github.request(
+              "GET /repos/{owner}/{repo}/commits/{commit_sha}/pulls",
+              { owner, repo, commit_sha: sha, mediaType: { previews: ["groot"] } }
+            );
+            const pr = response.data[0];
+            const fallbackBody = [
+              `## Fairway Release ${process.env.RELEASE_TAG}`,
+              "",
+              "Automated fairway release from a direct push to `main`.",
+              "",
+              `- Commit: ${sha}`
+            ].join("\n");
+            if (!pr) {
+              core.setOutput("body", fallbackBody);
+              return;
+            }
+            const prBody = (pr.body || "").trim();
+            const summary = prBody.length > 0 ? prBody : "_No PR description provided._";
+            const body = [
+              `## Fairway Release ${process.env.RELEASE_TAG}`,
+              "",
+              `Source PR: [#${pr.number} - ${pr.title}](${pr.html_url})`,
+              "",
+              "### Changelog",
+              summary,
+              "",
+              "### Metadata",
+              `- PR: #${pr.number}`,
+              `- Author: @${pr.user.login}`,
+              `- Merge Commit: ${sha}`,
+              `- Version lock: este fairway é compatível apenas com shipyard v${process.env.RELEASE_TAG.replace(/^fairway-v/, "")}`
+            ].join("\n");
+            core.setOutput("body", body);
+
+      - name: Run fairway tests
+        if: steps.version.outputs.skip != 'true'
+        run: |
+          go test ./addons/fairway/... \
+                  ./internal/fairwayctl/... \
+                  ./internal/cli/... \
+                  ./internal/ui/tui/fairwaywiz/...
+
+      - name: Run fairway makefile validation
+        if: steps.version.outputs.skip != 'true'
+        run: bash addons/fairway/Makefile_test.sh
+
+      - name: Build fairway artifacts
+        if: steps.version.outputs.skip != 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          COMMIT: ${{ github.sha }}
+          BUILD_DATE: ${{ github.event.head_commit.timestamp }}
+        run: make package-fairway checksums-fairway
+
+      - name: Create GitHub release
+        if: steps.version.outputs.skip != 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: Fairway ${{ steps.version.outputs.version }}
+          body: ${{ steps.changelog.outputs.body }}
+          make_latest: false
+          files: |
+            dist/shipyard-fairway_${{ steps.version.outputs.version }}_linux_amd64.tar.gz
+            dist/shipyard-fairway_${{ steps.version.outputs.version }}_linux_arm64.tar.gz
+            dist/shipyard-fairway_${{ steps.version.outputs.version }}_darwin_amd64.tar.gz
+            dist/shipyard-fairway_${{ steps.version.outputs.version }}_darwin_arm64.tar.gz
+            dist/shipyard-fairway_${{ steps.version.outputs.version }}_checksums.txt
+
+  smoke-test:
+    needs: release
+    if: needs.release.outputs.skip != 'true'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Validate published release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash addons/fairway/ci/validate_release.sh "${{ needs.release.outputs.tag }}"

@@ -1,8 +1,8 @@
 package components
 
 import (
-	tea "github.com/charmbracelet/bubbletea"
 	bspin "github.com/charmbracelet/bubbles/spinner"
+	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/shipyard-auto/shipyard/internal/ui/tui/theme"
 )

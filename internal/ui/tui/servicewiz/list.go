@@ -3,8 +3,8 @@ package servicewiz
 import (
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
 	btable "github.com/charmbracelet/bubbles/table"
+	tea "github.com/charmbracelet/bubbletea"
 
 	svcpkg "github.com/shipyard-auto/shipyard/internal/service"
 	"github.com/shipyard-auto/shipyard/internal/ui/tui/components"
@@ -65,8 +65,8 @@ func (s *listScreen) refresh() {
 	s.empty = nil
 }
 
-func (s *listScreen) Init() tea.Cmd { return nil }
-func (s *listScreen) Title() string { return "Browse Services" }
+func (s *listScreen) Init() tea.Cmd        { return nil }
+func (s *listScreen) Title() string        { return "Browse Services" }
 func (s *listScreen) Breadcrumb() []string { return []string{"service", "browse"} }
 func (s *listScreen) Footer() []components.KeyHint {
 	return []components.KeyHint{{Key: "enter", Label: "details"}, {Key: "u", Label: "update"}, {Key: "x", Label: "status"}, {Key: "d", Label: "delete"}, {Key: "esc", Label: "back"}}

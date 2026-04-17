@@ -51,10 +51,12 @@ func (s *menuScreen) refresh() {
 	}
 }
 
-func (s *menuScreen) Init() tea.Cmd                       { return nil }
-func (s *menuScreen) Title() string                       { return "Logs Control Panel" }
-func (s *menuScreen) Breadcrumb() []string                { return []string{"logs"} }
-func (s *menuScreen) Footer() []components.KeyHint        { return []components.KeyHint{{Key: "↑↓", Label: "navigate"}, {Key: "enter", Label: "select"}} }
+func (s *menuScreen) Init() tea.Cmd        { return nil }
+func (s *menuScreen) Title() string        { return "Logs Control Panel" }
+func (s *menuScreen) Breadcrumb() []string { return []string{"logs"} }
+func (s *menuScreen) Footer() []components.KeyHint {
+	return []components.KeyHint{{Key: "↑↓", Label: "navigate"}, {Key: "enter", Label: "select"}}
+}
 func (s *menuScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	if key, ok := msg.(tea.KeyMsg); ok && key.String() == "esc" {
 		return s, nil

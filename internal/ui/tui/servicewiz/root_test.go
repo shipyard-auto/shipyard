@@ -14,16 +14,18 @@ import (
 )
 
 type fakeServiceAPI struct {
-	records  []svcpkg.ServiceRecord
-	added    []svcpkg.ServiceInput
-	updated  []struct {
+	records []svcpkg.ServiceRecord
+	added   []svcpkg.ServiceInput
+	updated []struct {
 		ID    string
 		Input svcpkg.ServiceInput
 	}
 	deleted []string
 }
 
-func (f *fakeServiceAPI) List() ([]svcpkg.ServiceRecord, error) { return append([]svcpkg.ServiceRecord{}, f.records...), nil }
+func (f *fakeServiceAPI) List() ([]svcpkg.ServiceRecord, error) {
+	return append([]svcpkg.ServiceRecord{}, f.records...), nil
+}
 func (f *fakeServiceAPI) Get(id string) (svcpkg.ServiceRecord, error) {
 	for _, record := range f.records {
 		if record.ID == id {
@@ -45,7 +47,7 @@ func (f *fakeServiceAPI) Update(id string, patch svcpkg.ServiceInput) (svcpkg.Se
 	}{id, patch})
 	return f.Get(id)
 }
-func (f *fakeServiceAPI) Delete(id string) error { f.deleted = append(f.deleted, id); return nil }
+func (f *fakeServiceAPI) Delete(id string) error                          { f.deleted = append(f.deleted, id); return nil }
 func (f *fakeServiceAPI) Enable(id string) (svcpkg.ServiceRecord, error)  { return f.Get(id) }
 func (f *fakeServiceAPI) Disable(id string) (svcpkg.ServiceRecord, error) { return f.Get(id) }
 func (f *fakeServiceAPI) Start(id string) (svcpkg.ServiceRecord, error)   { return f.Get(id) }

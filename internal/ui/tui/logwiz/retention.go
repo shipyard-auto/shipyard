@@ -32,10 +32,12 @@ func newRetentionScreen(th theme.Theme, service LogsService) Screen {
 	return &retentionScreen{theme: th, service: service, input: in, value: cfg.RetentionDays}
 }
 
-func (s *retentionScreen) Init() tea.Cmd { return s.input.Init() }
-func (s *retentionScreen) Title() string { return "Configure Retention" }
+func (s *retentionScreen) Init() tea.Cmd        { return s.input.Init() }
+func (s *retentionScreen) Title() string        { return "Configure Retention" }
 func (s *retentionScreen) Breadcrumb() []string { return []string{"logs", "retention"} }
-func (s *retentionScreen) Footer() []components.KeyHint { return []components.KeyHint{{Key: "enter", Label: "save"}} }
+func (s *retentionScreen) Footer() []components.KeyHint {
+	return []components.KeyHint{{Key: "enter", Label: "save"}}
+}
 func (s *retentionScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	if key, ok := msg.(tea.KeyMsg); ok {
 		if key.String() == "esc" {

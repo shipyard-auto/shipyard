@@ -71,8 +71,8 @@ func (s *updateScreen) seed(record svcpkg.ServiceRecord) {
 	s.add = screen
 }
 
-func (s *updateScreen) Init() tea.Cmd { return nil }
-func (s *updateScreen) Title() string { return "Update Service" }
+func (s *updateScreen) Init() tea.Cmd        { return nil }
+func (s *updateScreen) Title() string        { return "Update Service" }
 func (s *updateScreen) Breadcrumb() []string { return []string{"service", "update"} }
 func (s *updateScreen) Footer() []components.KeyHint {
 	switch {
