@@ -288,6 +288,56 @@ func TestSocketServerMethods(t *testing.T) {
 			}
 		}
 	})
+
+	t.Run("statsUsesInjectedProvider", func(t *testing.T) {
+		server, err := NewSocketServer(SocketServerConfig{
+			Router:  NewRouterWithConfig(&fakeRepository{}, baseSocketRouterConfig()),
+			Version: "0.22",
+			Stats: staticStatsProvider{
+				snapshot: StatsSnapshot{
+					RequestsTotal:   12,
+					RequestsHandled: 9,
+					RouteNotFound:   1,
+					AuthFailures:    1,
+					ActionFailures:  1,
+					ActiveRequests:  2,
+					LastRequestAt:   time.Date(2026, 4, 17, 2, 12, 0, 0, time.UTC),
+					StatusCodes: map[string]int64{
+						"200": 8,
+						"404": 1,
+					},
+				},
+			},
+		})
+		if err != nil {
+			t.Fatalf("NewSocketServer() error = %v", err)
+		}
+
+		response := rpcRoundTrip(t, server,
+			`{"jsonrpc":"2.0","id":"0","method":"handshake","params":{"version":"0.22"}}`,
+			`{"jsonrpc":"2.0","id":"1","method":"stats","params":{}}`,
+		)
+		if response.Error != nil {
+			t.Fatalf("response = %#v, want success", response)
+		}
+
+		raw, _ := json.Marshal(response.Result)
+		text := string(raw)
+		for _, needle := range []string{
+			`"requestsTotal":12`,
+			`"requestsHandled":9`,
+			`"routeNotFound":1`,
+			`"authFailures":1`,
+			`"actionFailures":1`,
+			`"activeRequests":2`,
+			`"200":8`,
+			`"404":1`,
+		} {
+			if !strings.Contains(text, needle) {
+				t.Fatalf("stats = %s, want %s", text, needle)
+			}
+		}
+	})
 }
 
 func TestSocketServerStartAndShutdown(t *testing.T) {
@@ -389,6 +439,14 @@ type staticStatusProvider struct {
 }
 
 func (s staticStatusProvider) Status() StatusSnapshot {
+	return s.snapshot
+}
+
+type staticStatsProvider struct {
+	snapshot StatsSnapshot
+}
+
+func (s staticStatsProvider) Stats() StatsSnapshot {
 	return s.snapshot
 }
 

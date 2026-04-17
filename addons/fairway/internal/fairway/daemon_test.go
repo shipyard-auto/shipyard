@@ -97,6 +97,53 @@ func TestRuntimeStatus(t *testing.T) {
 	}
 }
 
+func TestRuntimeStats(t *testing.T) {
+	stats := newRuntimeStats()
+	now := time.Date(2026, 4, 17, 2, 15, 0, 0, time.UTC)
+
+	stats.Begin(now)
+	stats.RecordHandled(202)
+	stats.End()
+
+	stats.Begin(now.Add(time.Second))
+	stats.RecordRouteNotFound(404)
+	stats.End()
+
+	stats.Begin(now.Add(2 * time.Second))
+	stats.RecordAuthFailure(401)
+	stats.End()
+
+	stats.Begin(now.Add(3 * time.Second))
+	stats.RecordActionFailure(500)
+	stats.End()
+
+	snapshot := stats.Stats()
+	if snapshot.RequestsTotal != 4 {
+		t.Fatalf("RequestsTotal = %d, want 4", snapshot.RequestsTotal)
+	}
+	if snapshot.RequestsHandled != 1 {
+		t.Fatalf("RequestsHandled = %d, want 1", snapshot.RequestsHandled)
+	}
+	if snapshot.RouteNotFound != 1 {
+		t.Fatalf("RouteNotFound = %d, want 1", snapshot.RouteNotFound)
+	}
+	if snapshot.AuthFailures != 1 {
+		t.Fatalf("AuthFailures = %d, want 1", snapshot.AuthFailures)
+	}
+	if snapshot.ActionFailures != 1 {
+		t.Fatalf("ActionFailures = %d, want 1", snapshot.ActionFailures)
+	}
+	if snapshot.ActiveRequests != 0 {
+		t.Fatalf("ActiveRequests = %d, want 0", snapshot.ActiveRequests)
+	}
+	if snapshot.LastRequestAt != now.Add(3*time.Second) {
+		t.Fatalf("LastRequestAt = %s, want %s", snapshot.LastRequestAt, now.Add(3*time.Second))
+	}
+	if snapshot.StatusCodes["202"] != 1 || snapshot.StatusCodes["404"] != 1 || snapshot.StatusCodes["401"] != 1 || snapshot.StatusCodes["500"] != 1 {
+		t.Fatalf("StatusCodes = %#v", snapshot.StatusCodes)
+	}
+}
+
 func TestDaemonRunLifecycle(t *testing.T) {
 	socketPath := filepath.Join(t.TempDir(), "run", "fairway.sock")
 
