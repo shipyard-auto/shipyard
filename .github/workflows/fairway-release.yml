@@ -45,7 +45,7 @@ jobs:
         shell: bash
         run: |
           curr=$(grep '^fairway=' manifest | cut -d= -f2)
-          prev=$(git show HEAD~1:manifest 2>/dev/null | grep '^fairway=' | cut -d= -f2 || echo "0.0.0")
+          prev=$(git show ${{ github.event.before }}:manifest 2>/dev/null | grep '^fairway=' | cut -d= -f2 || echo "0.0.0")
 
           echo "curr=$curr"
           echo "prev=$prev"
