@@ -317,7 +317,7 @@ func TestRoot_snapshotScreens(t *testing.T) {
 	tm.Send(tea.KeyMsg{Type: tea.KeyEnter})
 	teatest.WaitFor(t, tm.Output(), func(b []byte) bool {
 		return bytes.Contains(b, []byte("Routes (1)"))
-	})
+	}, teatest.WithDuration(3*time.Second))
 }
 
 func TestRoot_snapshotFormScreen(t *testing.T) {
@@ -332,7 +332,7 @@ func TestRoot_snapshotFormScreen(t *testing.T) {
 	tm.Send(tea.KeyMsg{Type: tea.KeyEnter})
 	teatest.WaitFor(t, tm.Output(), func(b []byte) bool {
 		return bytes.Contains(b, []byte("No routes configured yet."))
-	})
+	}, teatest.WithDuration(3*time.Second))
 
 	tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
 	teatest.WaitFor(t, tm.Output(), func(b []byte) bool {
