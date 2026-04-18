@@ -213,6 +213,17 @@ shipyard fairway stats --by-route
 shipyard fairway stats --by-status
 ```
 
+## Execution Limits
+
+Every action dispatch is bounded so a misbehaving subprocess cannot drown the daemon:
+
+- **Subprocess pool**: up to 16 concurrent executions. Requests wait up to 5s for a free slot; if the queue stays full, fairway replies `503`.
+- **Per-action timeout**: defaults to 30s; overridable per-route (`timeout`, max 5m). Exceeded timeouts return `504` and the subprocess is killed.
+- **Captured output**: stdout and stderr are captured and merged into the request log, capped at **4 MB per invocation**. Output beyond the cap is silently discarded and the log entry is marked `truncated: true` — the subprocess is not killed and its exit code is still honored.
+- **Body forwarding**: the incoming request body is also read up to 4 MB before being handed to the action (stdin for `telegram.handle`, `--text=` for `message.send`, piped verbatim for `http.forward`).
+
+These limits are defined as constants in `addons/fairway/internal/fairway/model.go` (`DefaultMaxInFlight`, `DefaultActionTimeout`, `DefaultQueueTimeout`, `MaxSubprocessOutput`).
+
 ## Important Paths
 
 Default runtime paths:

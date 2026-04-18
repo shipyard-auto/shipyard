@@ -39,7 +39,6 @@ func (f Footer) View() string {
 	if !f.isRoot {
 		hints = append([]KeyHint{{Key: "esc", Label: "back"}}, hints...)
 	}
-	hints = append(hints, KeyHint{Key: "q", Label: "quit"})
 
 	parts := make([]string, 0, len(hints))
 	for _, hint := range hints {

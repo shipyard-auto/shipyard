@@ -34,7 +34,7 @@ func (s *menuScreen) Init() tea.Cmd        { return nil }
 func (s *menuScreen) Title() string        { return "Fairway Config" }
 func (s *menuScreen) Breadcrumb() []string { return []string{"fairway", "config"} }
 func (s *menuScreen) Footer() []components.KeyHint {
-	return []components.KeyHint{{Key: "↑↓", Label: "navigate"}, {Key: "enter", Label: "select"}}
+	return []components.KeyHint{{Key: "↑↓", Label: "navigate"}, {Key: "enter", Label: "select"}, {Key: "q", Label: "quit"}}
 }
 func (s *menuScreen) State() state { return stateMenu }
 

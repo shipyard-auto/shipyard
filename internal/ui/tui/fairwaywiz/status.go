@@ -28,7 +28,7 @@ func (s *statusScreen) Init() tea.Cmd        { return loadStatusCmd(s.client) }
 func (s *statusScreen) Title() string        { return "Daemon Status" }
 func (s *statusScreen) Breadcrumb() []string { return []string{"fairway", "config", "status"} }
 func (s *statusScreen) Footer() []components.KeyHint {
-	return []components.KeyHint{{Key: "r", Label: "refresh"}, {Key: "esc", Label: "back"}}
+	return []components.KeyHint{{Key: "r", Label: "refresh"}, {Key: "q", Label: "quit"}, {Key: "esc", Label: "back"}}
 }
 func (s *statusScreen) State() state { return stateStatus }
 

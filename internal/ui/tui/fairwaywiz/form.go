@@ -254,47 +254,40 @@ func (s *formScreen) View() string {
 func (s *formScreen) renderCurrentStep() string {
 	switch s.focus {
 	case fieldPath:
-		return s.renderField("Path", true, s.path.View())
+		return s.path.View()
 	case fieldAuthType:
-		return s.renderField("Auth type", true, s.authType.View())
+		return s.authType.View()
 	case fieldAuthSecret:
-		label := "Bearer secret"
 		if fairwayctl.AuthType(s.authType.Selected().Key) == fairwayctl.AuthToken {
 			s.authSecret.SetHint("Expected token value.")
-			label = "Token value"
 		} else {
 			s.authSecret.SetHint("Shared bearer secret expected in Authorization.")
 		}
-		return s.renderField(label, true, s.authSecret.View())
+		return s.authSecret.View()
 	case fieldAuthLookup:
 		s.authLookup.SetHint("Use header name or query:parameter.")
-		return s.renderField("Header or query", true, s.authLookup.View())
+		return s.authLookup.View()
 	case fieldActionType:
-		return s.renderField("Action", true, s.actionType.View())
+		return s.actionType.View()
 	case fieldActionTarget:
-		label := "Action target"
 		switch fairwayctl.ActionType(s.actionType.Selected().Key) {
 		case fairwayctl.ActionMessageSend:
 			s.actionTgt.SetHint("Optional logical target for the message.")
-			label = "Message target"
 		case fairwayctl.ActionHTTPForward:
 			s.actionTgt.SetHint("Destination URL starting with http:// or https://.")
-			label = "Forward URL"
 		default:
 			s.actionTgt.SetHint("Shipyard object ID or target name.")
 		}
-		return s.renderField(label, true, s.actionTgt.View())
+		return s.actionTgt.View()
 	case fieldActionMeta:
-		label := "Provider"
 		if fairwayctl.ActionType(s.actionType.Selected().Key) == fairwayctl.ActionHTTPForward {
 			s.actionMeta.SetHint("Optional HTTP method override, for example POST.")
-			label = "Method"
 		} else {
 			s.actionMeta.SetHint("Optional provider override.")
 		}
-		return s.renderField(label, true, s.actionMeta.View())
+		return s.actionMeta.View()
 	case fieldTimeout:
-		return s.renderField("Timeout", true, s.timeout.View())
+		return s.timeout.View()
 	case fieldSubmit:
 		return s.submitPanel()
 	}

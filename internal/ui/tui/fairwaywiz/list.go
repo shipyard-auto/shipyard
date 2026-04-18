@@ -40,6 +40,7 @@ func (s *listScreen) Footer() []components.KeyHint {
 		{Key: "e", Label: "edit"},
 		{Key: "d", Label: "delete"},
 		{Key: "enter", Label: "details"},
+		{Key: "q", Label: "quit"},
 		{Key: "esc", Label: "back"},
 	}
 }

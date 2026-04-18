@@ -44,6 +44,11 @@ func (r *Root) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "ctrl+c":
 			r.quitting = true
 			return r, tea.Quit
+		case "q":
+			if r.state != stateForm {
+				r.quitting = true
+				return r, tea.Quit
+			}
 		}
 	}
 	next, cmd := r.screen.Update(msg)

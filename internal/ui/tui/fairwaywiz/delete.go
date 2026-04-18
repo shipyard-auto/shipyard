@@ -35,9 +35,9 @@ func (s *deleteScreen) Breadcrumb() []string {
 }
 func (s *deleteScreen) Footer() []components.KeyHint {
 	if s.donePath != "" {
-		return []components.KeyHint{{Key: "enter", Label: "back to routes"}}
+		return []components.KeyHint{{Key: "enter", Label: "back to routes"}, {Key: "q", Label: "quit"}}
 	}
-	return []components.KeyHint{{Key: "←→", Label: "choose"}, {Key: "enter", Label: "confirm"}, {Key: "esc", Label: "cancel"}}
+	return []components.KeyHint{{Key: "←→", Label: "choose"}, {Key: "enter", Label: "confirm"}, {Key: "q", Label: "quit"}, {Key: "esc", Label: "cancel"}}
 }
 func (s *deleteScreen) State() state { return stateDelete }
 
