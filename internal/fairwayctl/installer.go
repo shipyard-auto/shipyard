@@ -151,8 +151,9 @@ func ArtifactName(version string, p Platform) string {
 	return fmt.Sprintf("shipyard-fairway_%s_%s_%s.tar.gz", version, p.OS, p.Arch)
 }
 
-// InstalledVersion executes the installed binary with --version and returns the
-// trimmed output. Returns an error if the binary is absent or exec fails.
+// InstalledVersion executes the installed binary with --version and returns
+// the parsed semver string (e.g. "1.0.5"). Returns an error if the binary is
+// absent or exec fails.
 func (i *Installer) InstalledVersion() (string, error) {
 	binPath := i.BinPath()
 	if _, err := os.Stat(binPath); errors.Is(err, os.ErrNotExist) {
@@ -162,7 +163,21 @@ func (i *Installer) InstalledVersion() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("fairway: exec --version: %w", err)
 	}
-	return strings.TrimSpace(string(out)), nil
+	return parseVersionOutput(string(out)), nil
+}
+
+// parseVersionOutput extracts the semver token from `shipyard-fairway --version`
+// output, which has the form: "shipyard-fairway <version> (<hash>, built <ts>)".
+// Falls back to the trimmed input when the prefix is missing.
+func parseVersionOutput(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if strings.HasPrefix(trimmed, "shipyard-fairway ") {
+		parts := strings.Fields(trimmed)
+		if len(parts) >= 2 {
+			return parts[1]
+		}
+	}
+	return trimmed
 }
 
 // Install downloads, verifies, installs and registers shipyard-fairway.

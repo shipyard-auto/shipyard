@@ -276,6 +276,20 @@ func TestInstalledVersion_returnsVersion(t *testing.T) {
 	}
 }
 
+func TestInstalledVersion_parsesRealVersionOutput(t *testing.T) {
+	dir := t.TempDir()
+	makeFakeShellScript(t, dir, "shipyard-fairway", "shipyard-fairway 1.0.5 (abc123, built 2026-04-18T03:10:54-03:00)")
+
+	inst := &Installer{Version: "1.0.5", BinDir: dir}
+	ver, err := inst.InstalledVersion()
+	if err != nil {
+		t.Fatalf("InstalledVersion: %v", err)
+	}
+	if ver != "1.0.5" {
+		t.Errorf("want 1.0.5, got %q", ver)
+	}
+}
+
 func TestInstalledVersion_binAbsent_returnsError(t *testing.T) {
 	inst := &Installer{Version: "0.22", BinDir: t.TempDir()}
 	_, err := inst.InstalledVersion()
@@ -296,7 +310,7 @@ func buildInstallHTTPClient(t *testing.T, version string, p Platform) (*fakeHTTP
 
 	return &fakeHTTPClient{
 		responses: map[string]*http.Response{
-			base + "/" + ReleaseTag(version) + "/" + artifact:              newFakeHTTPResponse(archiveBytes),
+			base + "/" + ReleaseTag(version) + "/" + artifact:                      newFakeHTTPResponse(archiveBytes),
 			base + "/" + ReleaseTag(version) + "/" + ChecksumManifestName(version): newFakeHTTPResponse([]byte(checksumLine)),
 		},
 	}, sha
@@ -335,7 +349,7 @@ func TestInstall_checksumFails_rollsBack(t *testing.T) {
 
 	client := &fakeHTTPClient{
 		responses: map[string]*http.Response{
-			base + "/" + ReleaseTag("0.22") + "/" + artifact:                 newFakeHTTPResponse(archiveBytes),
+			base + "/" + ReleaseTag("0.22") + "/" + artifact:                     newFakeHTTPResponse(archiveBytes),
 			base + "/" + ReleaseTag("0.22") + "/" + ChecksumManifestName("0.22"): newFakeHTTPResponse([]byte(checksumLine)),
 		},
 	}
@@ -474,7 +488,6 @@ func TestUninstall_binaryAbsent_noError(t *testing.T) {
 		t.Errorf("expected nil for absent binary, got %v", err)
 	}
 }
-
 
 func TestExtractBinary_noBinaryInArchive_returnsError(t *testing.T) {
 	// Create a tar.gz with a file that is NOT named "shipyard-fairway".

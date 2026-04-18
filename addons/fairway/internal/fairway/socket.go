@@ -214,6 +214,14 @@ func (s *SocketServer) handleConn(ctx context.Context, conn net.Conn) {
 		return
 	}
 
+	if hsParams.Version != s.version {
+		_ = cw.write(errResp(req.ID, ErrCodeVersionMismatch, "version mismatch", map[string]string{
+			"daemon": s.version,
+			"client": hsParams.Version,
+		}))
+		return
+	}
+
 	_ = cw.write(okResp(req.ID, map[string]string{"daemonVersion": s.version}))
 
 	// ── Dispatch loop ─────────────────────────────────────────────────────────

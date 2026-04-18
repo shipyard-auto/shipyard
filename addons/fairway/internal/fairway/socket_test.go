@@ -225,11 +225,9 @@ func TestHandshake_success_returnsDaemonVersion(t *testing.T) {
 	// dialAndHandshake already asserted no error and the response was valid.
 }
 
-func TestHandshake_differentVersion_isAccepted(t *testing.T) {
+func TestHandshake_versionMismatch_returnsError_closesConn(t *testing.T) {
 	t.Parallel()
 
-	// Versions are independent since fairway and core shipyard adopted separate
-	// release tracks. The socket must accept any client version.
 	sockPath := startSocket(t, defaultSocketCfg("daemon-v2", newTestRouter(t), nil))
 
 	conn, err := net.Dial("unix", sockPath)
@@ -250,8 +248,14 @@ func TestHandshake_differentVersion_isAccepted(t *testing.T) {
 	var resp fairway.Response
 	json.Unmarshal(scanner.Bytes(), &resp)
 
-	if resp.Error != nil {
-		t.Errorf("expected handshake to succeed with different version; got error: %v", resp.Error)
+	if resp.Error == nil || resp.Error.Code != fairway.ErrCodeVersionMismatch {
+		t.Fatalf("error.code = %v; want %d", resp.Error, fairway.ErrCodeVersionMismatch)
+	}
+
+	// Connection must be closed after a version mismatch.
+	_ = conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+	if scanner.Scan() {
+		t.Error("expected conn to be closed after version mismatch")
 	}
 }
 
