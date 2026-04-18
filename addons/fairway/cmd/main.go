@@ -17,6 +17,7 @@ import (
 	"log"
 	"log/slog"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"syscall"
@@ -161,8 +162,9 @@ func run(ctx context.Context, deps runDeps) int {
 
 	stats := deps.newStats(deps.now())
 	executor := deps.newExecutor(fairway.ExecutorConfig{
-		MaxInFlight: router.Config().MaxInFlight,
-		Now:         deps.now,
+		ShipyardBinary: resolveShipyardBinary(),
+		MaxInFlight:    router.Config().MaxInFlight,
+		Now:            deps.now,
 	})
 
 	daemonLogger := slog.New(slog.NewTextHandler(deps.stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
@@ -245,6 +247,24 @@ func resolvePaths(configPath, logDir string, deps runDeps) (string, string, stri
 	}
 
 	return resolvedConfigPath, resolvedLogDir, runDir, exitOK, nil
+}
+
+// resolveShipyardBinary returns the absolute path to the shipyard binary.
+// It first looks next to the running fairway binary (both are installed in the
+// same directory by shipyard fairway install). If that fails it falls back to
+// exec.LookPath, which works when the caller's PATH is set correctly.
+// Returns "shipyard" as a last resort so existing behaviour is preserved.
+func resolveShipyardBinary() string {
+	if self, err := os.Executable(); err == nil {
+		candidate := filepath.Join(filepath.Dir(self), "shipyard")
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate
+		}
+	}
+	if p, err := exec.LookPath("shipyard"); err == nil {
+		return p
+	}
+	return "shipyard"
 }
 
 func newRunDeps(args []string) runDeps {
