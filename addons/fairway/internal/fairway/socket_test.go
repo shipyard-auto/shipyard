@@ -225,9 +225,11 @@ func TestHandshake_success_returnsDaemonVersion(t *testing.T) {
 	// dialAndHandshake already asserted no error and the response was valid.
 }
 
-func TestHandshake_versionMismatch_returnsError_closesConn(t *testing.T) {
+func TestHandshake_differentVersion_isAccepted(t *testing.T) {
 	t.Parallel()
 
+	// Versions are independent since fairway and core shipyard adopted separate
+	// release tracks. The socket must accept any client version.
 	sockPath := startSocket(t, defaultSocketCfg("daemon-v2", newTestRouter(t), nil))
 
 	conn, err := net.Dial("unix", sockPath)
@@ -248,29 +250,8 @@ func TestHandshake_versionMismatch_returnsError_closesConn(t *testing.T) {
 	var resp fairway.Response
 	json.Unmarshal(scanner.Bytes(), &resp)
 
-	if resp.Error == nil || resp.Error.Code != fairway.ErrCodeVersionMismatch {
-		t.Errorf("error.code = %v; want %d", resp.Error, fairway.ErrCodeVersionMismatch)
-	}
-
-	// Verify data fields.
-	if resp.Error.Data != nil {
-		dataBytes, _ := json.Marshal(resp.Error.Data)
-		var d map[string]string
-		json.Unmarshal(dataBytes, &d)
-		if d["daemon"] != "daemon-v2" {
-			t.Errorf("data.daemon = %q; want %q", d["daemon"], "daemon-v2")
-		}
-		if d["client"] != "client-v1" {
-			t.Errorf("data.client = %q; want %q", d["client"], "client-v1")
-		}
-	}
-
-	// Connection should be closed by server.
-	_ = conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
-	if scanner.Scan() {
-		t.Error("expected conn to be closed after version mismatch")
-	} else if err := scanner.Err(); err != nil {
-		t.Errorf("expected clean EOF; got: %v", err)
+	if resp.Error != nil {
+		t.Errorf("expected handshake to succeed with different version; got error: %v", resp.Error)
 	}
 }
 

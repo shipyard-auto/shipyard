@@ -212,7 +212,7 @@ func TestStatus_versionMismatch(t *testing.T) {
 	if !strings.Contains(out, "version mismatch") {
 		t.Fatalf("output = %q; want version mismatch", out)
 	}
-	if !strings.Contains(out, "shipyard fairway upgrade") {
+	if !strings.Contains(out, "shipyard update") {
 		t.Fatalf("output = %q; want upgrade suggestion", out)
 	}
 	if !strings.Contains(out, "\033[31m") {

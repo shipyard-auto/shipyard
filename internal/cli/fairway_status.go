@@ -188,7 +188,7 @@ func collectFairwayStatus(ctx context.Context, deps fairwayStatusDeps) (fairwayS
 		case errors.As(err, &vmErr):
 			report.State = "version mismatch"
 			report.Version = vmErr.Daemon
-			report.VersionAdvice = "Run `shipyard fairway upgrade` to align daemon and CLI versions."
+			report.VersionAdvice = "Run `shipyard update` to update the fairway daemon."
 			return report, errFairwayVersionMismatch
 		case errors.Is(err, fairwayctl.ErrDaemonNotRunning), errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled):
 			report.State = "stopped"
