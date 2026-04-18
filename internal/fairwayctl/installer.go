@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -38,7 +39,53 @@ func ChecksumManifestName(version string) string {
 var ErrAlreadyInstalled = errors.New("fairway: already installed at current version")
 
 // ErrUpgradeRequired is returned when a different version is already installed.
-var ErrUpgradeRequired = errors.New("fairway: different version installed — run 'shipyard fairway upgrade'")
+var ErrUpgradeRequired = errors.New("fairway: different version installed — run 'shipyard update'")
+
+const fairwayReleasesAPI = "https://api.github.com/repos/shipyard-auto/shipyard/releases?per_page=30"
+
+type releaseListItem struct {
+	TagName    string `json:"tag_name"`
+	Draft      bool   `json:"draft"`
+	Prerelease bool   `json:"prerelease"`
+}
+
+// ResolveLatestFairwayVersion fetches the latest stable fairway release version from GitHub.
+func ResolveLatestFairwayVersion(ctx context.Context, client HTTPClient) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fairwayReleasesAPI, nil)
+	if err != nil {
+		return "", fmt.Errorf("fairway: create version request: %w", err)
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("fairway: request latest version: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("fairway: request latest version: unexpected status %s", resp.Status)
+	}
+
+	var releases []releaseListItem
+	if err := json.NewDecoder(resp.Body).Decode(&releases); err != nil {
+		return "", fmt.Errorf("fairway: decode version response: %w", err)
+	}
+
+	for _, r := range releases {
+		if r.Draft || r.Prerelease {
+			continue
+		}
+		if strings.HasPrefix(r.TagName, "fairway-v") {
+			version := strings.TrimPrefix(r.TagName, "fairway-v")
+			if version != "" {
+				return version, nil
+			}
+		}
+	}
+
+	return "", errors.New("fairway: no stable release found")
+}
 
 // HTTPClient is the interface for making HTTP requests. Injected for tests.
 type HTTPClient interface {

@@ -31,7 +31,6 @@ func newFairwayCmd() *cobra.Command {
 	cmd.AddCommand(newFairwayStatsCmd())
 	cmd.AddCommand(newFairwayStatusCmd())
 	cmd.AddCommand(newFairwayUninstallCmd())
-	cmd.AddCommand(newFairwayUpgradeCmd())
 	return cmd
 }
 
@@ -106,7 +105,7 @@ func newFairwayInstallCmdWith(installer *fairwayctl.Installer) *cobra.Command {
 				}
 				if errors.Is(err, fairwayctl.ErrUpgradeRequired) {
 					ui.Printf(w, "%s\n", ui.Emphasis("A different version of fairway is installed."))
-					ui.Printf(w, "%s\n", ui.Muted("Run 'shipyard fairway upgrade' to update."))
+					ui.Printf(w, "%s\n", ui.Muted("Run 'shipyard update' to update."))
 					return err
 				}
 				return err
@@ -163,44 +162,5 @@ func newFairwayUninstallCmdWith(installer *fairwayctl.Installer) *cobra.Command 
 	}
 
 	cmd.Flags().BoolVar(&purge, "purge", false, "Also remove ~/.shipyard/fairway/ (routes, config, logs)")
-	return cmd
-}
-
-func newFairwayUpgradeCmd() *cobra.Command {
-	return newFairwayUpgradeCmdWith(nil)
-}
-
-func newFairwayUpgradeCmdWith(installer *fairwayctl.Installer) *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "upgrade",
-		Short: "Upgrade shipyard-fairway to the current core version",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			inst := installer
-			if inst == nil {
-				var err error
-				inst, err = buildInstaller(app.Version)
-				if err != nil {
-					return err
-				}
-			}
-
-			w := cmd.OutOrStdout()
-			ui.Printf(w, "%s\n", ui.SectionTitle("SHIPYARD FAIRWAY"))
-			ui.Printf(w, "%s\n\n", ui.Muted(fmt.Sprintf("Upgrading to shipyard-fairway %s...", inst.Version)))
-
-			if err := inst.Upgrade(cmd.Context()); err != nil {
-				if errors.Is(err, fairwayctl.ErrAlreadyAtVersion) {
-					ui.Printf(w, "%s\n", ui.Emphasis(
-						fmt.Sprintf("fairway is already at version %s.", inst.Version),
-					))
-					return nil
-				}
-				return err
-			}
-
-			ui.Printf(w, "%s\n", ui.Emphasis("shipyard-fairway upgraded successfully."))
-			return nil
-		},
-	}
 	return cmd
 }

@@ -178,24 +178,3 @@ func TestFairwayUninstallCommand_purgeFlagRemovesState(t *testing.T) {
 	}
 }
 
-func TestFairwayUpgradeCommand_invokesUpgrade(t *testing.T) {
-	dir := t.TempDir()
-	// No binary installed → InstalledVersion fails → Upgrade proceeds to install
-	// → download fails (stub HTTP). Just verify the header appears and no panic.
-	inst := newCLIInstaller("0.22", dir)
-
-	cmd := newFairwayUpgradeCmdWith(inst)
-	cmd.SetContext(context.Background())
-	buf := &bytes.Buffer{}
-	cmd.SetOut(buf)
-
-	_ = cmd.Execute() // error expected (stub HTTP), we only check output prefix
-
-	out := buf.String()
-	if !strings.Contains(out, "SHIPYARD FAIRWAY") {
-		t.Errorf("expected section title in output, got: %q", out)
-	}
-	if !strings.Contains(out, "Upgrading") {
-		t.Errorf("expected 'Upgrading' in output, got: %q", out)
-	}
-}
