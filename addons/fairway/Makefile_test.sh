@@ -57,7 +57,7 @@ main() {
   need_cmd mktemp
 
   repo_root="$(root_dir)"
-  version="$(cat "$repo_root/VERSION")"
+  version="$(grep '^fairway=' "$repo_root/manifest" | cut -d= -f2)"
   binary_name="shipyard-fairway"
   manifest_name="${binary_name}_${version}_checksums.txt"
 
