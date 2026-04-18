@@ -5,11 +5,11 @@ on:
     branches:
       - main
     paths:
-      - "VERSION"
       - "addons/fairway/**"
       - "internal/fairwayctl/**"
       - "internal/cli/fairway*.go"
       - "internal/ui/tui/fairwaywiz/**"
+      - "manifest"
       - "Makefile"
       - ".github/workflows/fairway-release.yml"
 
@@ -27,7 +27,7 @@ jobs:
     outputs:
       tag: ${{ steps.version.outputs.tag }}
       version: ${{ steps.version.outputs.version }}
-      skip: ${{ steps.version.outputs.skip }}
+      skip: ${{ steps.detect.outputs.changed == 'false' || steps.version.outputs.skip }}
 
     steps:
       - name: Checkout repository
@@ -40,19 +40,39 @@ jobs:
         with:
           go-version: "1.26.2"
 
+      - name: Detect fairway version change
+        id: detect
+        shell: bash
+        run: |
+          curr=$(grep '^fairway=' manifest | cut -d= -f2)
+          prev=$(git show HEAD~1:manifest 2>/dev/null | grep '^fairway=' | cut -d= -f2 || echo "0.0.0")
+
+          echo "curr=$curr"
+          echo "prev=$prev"
+
+          if [ "$curr" = "$prev" ]; then
+            echo "Versão fairway não mudou ($curr) — skipping release."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Versão fairway mudou: $prev → $curr"
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+          echo "version=$curr" >> "$GITHUB_OUTPUT"
+
       - name: Compute fairway release tag
+        if: steps.detect.outputs.changed == 'true'
         id: version
         shell: bash
         run: |
-          version="$(tr -d '[:space:]' < VERSION)"
+          version="${{ steps.detect.outputs.version }}"
           if [ -z "$version" ]; then
-            echo "VERSION is empty" >&2
+            echo "Versão não encontrada em manifest nem em VERSION" >&2
             exit 1
           fi
 
           tag="fairway-v$version"
           if git rev-parse "$tag" >/dev/null 2>&1; then
-            echo "Tag $tag already exists — skipping fairway release."
+            echo "Tag $tag já existe — skipping fairway release."
             echo "skip=true" >> "$GITHUB_OUTPUT"
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
@@ -62,7 +82,7 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Generate changelog
-        if: steps.version.outputs.skip != 'true'
+        if: steps.detect.outputs.changed == 'true' && steps.version.outputs.skip != 'true'
         id: changelog
         uses: actions/github-script@v8
         env:
@@ -106,7 +126,7 @@ jobs:
             core.setOutput("body", body);
 
       - name: Run fairway tests
-        if: steps.version.outputs.skip != 'true'
+        if: steps.detect.outputs.changed == 'true' && steps.version.outputs.skip != 'true'
         run: |
           go test ./addons/fairway/... \
                   ./internal/fairwayctl/... \
@@ -114,11 +134,11 @@ jobs:
                   ./internal/ui/tui/fairwaywiz/...
 
       - name: Run fairway makefile validation
-        if: steps.version.outputs.skip != 'true'
+        if: steps.detect.outputs.changed == 'true' && steps.version.outputs.skip != 'true'
         run: bash addons/fairway/Makefile_test.sh
 
       - name: Build fairway artifacts
-        if: steps.version.outputs.skip != 'true'
+        if: steps.detect.outputs.changed == 'true' && steps.version.outputs.skip != 'true'
         env:
           VERSION: ${{ steps.version.outputs.version }}
           COMMIT: ${{ github.sha }}
@@ -126,7 +146,7 @@ jobs:
         run: make package-fairway checksums-fairway
 
       - name: Create GitHub release
-        if: steps.version.outputs.skip != 'true'
+        if: steps.detect.outputs.changed == 'true' && steps.version.outputs.skip != 'true'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.tag }}

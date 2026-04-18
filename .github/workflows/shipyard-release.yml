@@ -5,7 +5,13 @@ on:
     branches:
       - main
     paths:
-      - "**"
+      - "cmd/shipyard/**"
+      - "internal/**"
+      - "pkg/**"
+      - "manifest"
+      - "go.mod"
+      - "go.sum"
+      - "Makefile"
       - ".github/workflows/shipyard-release.yml"
 
 permissions:
@@ -31,19 +37,39 @@ jobs:
         with:
           go-version: "1.26.2"
 
+      - name: Detect shipyard version change
+        id: detect
+        shell: bash
+        run: |
+          curr=$(grep '^shipyard=' manifest | cut -d= -f2)
+          prev=$(git show HEAD~1:manifest 2>/dev/null | grep '^shipyard=' | cut -d= -f2 || echo "0.0.0")
+
+          echo "curr=$curr"
+          echo "prev=$prev"
+
+          if [ "$curr" = "$prev" ]; then
+            echo "Versão shipyard não mudou ($curr) — skipping release."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Versão shipyard mudou: $prev → $curr"
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+          echo "version=$curr" >> "$GITHUB_OUTPUT"
+
       - name: Compute release version
+        if: steps.detect.outputs.changed == 'true'
         id: version
         shell: bash
         run: |
-          version="$(tr -d '[:space:]' < VERSION)"
+          version="${{ steps.detect.outputs.version }}"
           if [ -z "$version" ]; then
-            echo "VERSION file is empty" >&2
+            echo "Versão não encontrada em manifest nem em VERSION" >&2
             exit 1
           fi
 
           tag="v$version"
           if git rev-parse "$tag" >/dev/null 2>&1; then
-            echo "Tag $tag already exists. Bump VERSION before pushing to main." >&2
+            echo "Tag $tag já existe. Atualize a versão shipyard em manifest antes de fazer push para main." >&2
             exit 1
           fi
 
@@ -51,6 +77,7 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Generate changelog from merged PR
+        if: steps.detect.outputs.changed == 'true'
         id: changelog
         uses: actions/github-script@v8
         with:
@@ -99,9 +126,11 @@ jobs:
           RELEASE_TAG: ${{ steps.version.outputs.tag }}
 
       - name: Run tests
+        if: steps.detect.outputs.changed == 'true'
         run: go test ./...
 
       - name: Build release artifacts
+        if: steps.detect.outputs.changed == 'true'
         env:
           VERSION: ${{ steps.version.outputs.version }}
           COMMIT: ${{ github.sha }}
@@ -109,6 +138,7 @@ jobs:
         run: make package
 
       - name: Create GitHub release
+        if: steps.detect.outputs.changed == 'true'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.tag }}

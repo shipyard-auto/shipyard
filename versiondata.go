@@ -5,14 +5,18 @@ import (
 	"strings"
 )
 
-//go:embed VERSION
-var rawVersion string
+//go:embed manifest
+var rawManifest string
 
 func CurrentVersion() string {
-	version := strings.TrimSpace(rawVersion)
-	if version == "" {
-		return "dev"
+	for _, line := range strings.Split(rawManifest, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "shipyard=") {
+			v := strings.TrimPrefix(line, "shipyard=")
+			if v != "" {
+				return v
+			}
+		}
 	}
-
-	return version
+	return "dev"
 }
