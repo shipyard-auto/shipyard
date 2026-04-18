@@ -1,5 +1,9 @@
 # Shipyard
 
+```sh
+curl -fsSL https://raw.githubusercontent.com/shipyard-auto/shipyard/main/scripts/install.sh | sh
+```
+
 `shipyard` is a standalone Go CLI for local automation and OS-integrated operations on Linux and macOS.
 
 This project is intentionally local-first. The current focus is:
@@ -17,7 +21,7 @@ If you are another engineer or an AI entering this repository, the quickest accu
 - main implemented subsystem: [`internal/cron`](./internal/cron)
 - reusable observability foundation: [`internal/logs`](./internal/logs)
 - terminal rendering/help styling: [`internal/ui`](./internal/ui)
-- release source of truth: [`VERSION`](./VERSION)
+- release source of truth: [`manifest`](./manifest)
 
 The CLI already has real OS integration. `cron` commands modify the current user's crontab. `logs` writes JSONL event files under `~/.shipyard/logs/`.
 
@@ -173,9 +177,9 @@ GOTOOLCHAIN=go1.26.2 go build ./cmd/shipyard
 
 ## Release Model
 
-- release version is read from [`VERSION`](./VERSION)
+- release versions are read from [`manifest`](./manifest) (`shipyard=` and `fairway=` lines)
 - GitHub Actions publishes releases from `main`
-- tags use `v<version>`, for example `v0.13`
+- shipyard tags use `v<version>`, fairway tags use `fairway-v<version>`
 - version bumps are manual and intentional
 
 ## Active Engineering Rules
