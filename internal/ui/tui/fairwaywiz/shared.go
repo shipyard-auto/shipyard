@@ -56,6 +56,7 @@ var (
 	}
 	actionOptions = []components.MenuItem{
 		{Title: "cron.run", Description: "Trigger one cron job by ID.", Key: string(fairwayctl.ActionCronRun)},
+		{Title: "crew.run", Description: "Run a crew agent by name (shipyard-crew addon).", Key: string(fairwayctl.ActionCrewRun)},
 		{Title: "cron.enable", Description: "Enable one cron job.", Key: string(fairwayctl.ActionCronEnable)},
 		{Title: "cron.disable", Description: "Disable one cron job.", Key: string(fairwayctl.ActionCronDisable)},
 		{Title: "service.start", Description: "Start a managed Shipyard service.", Key: string(fairwayctl.ActionServiceStart)},
@@ -243,7 +244,7 @@ func routeFromFormState(s formState) (fairwayctl.Route, error) {
 	}
 
 	switch route.Action.Type {
-	case fairwayctl.ActionCronRun, fairwayctl.ActionCronEnable, fairwayctl.ActionCronDisable,
+	case fairwayctl.ActionCronRun, fairwayctl.ActionCrewRun, fairwayctl.ActionCronEnable, fairwayctl.ActionCronDisable,
 		fairwayctl.ActionServiceStart, fairwayctl.ActionServiceStop, fairwayctl.ActionServiceRestart:
 		route.Action.Target = strings.TrimSpace(s.ActionTarget)
 	case fairwayctl.ActionMessageSend:

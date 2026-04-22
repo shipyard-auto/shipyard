@@ -25,6 +25,29 @@ import (
 // DefaultReleaseBase is the GitHub releases base URL.
 const DefaultReleaseBase = "https://github.com/shipyard-auto/shipyard/releases/download"
 
+// BinaryName is the filename of the installed fairway binary.
+const BinaryName = "shipyard-fairway"
+
+// ErrNotInstalled is returned by ResolveBinary when the fairway binary cannot
+// be located on disk.
+var ErrNotInstalled = errors.New("fairway: binary not installed")
+
+// ResolveBinary returns the absolute path to an installed shipyard-fairway
+// binary, or ErrNotInstalled when no usable binary is found. It looks first at
+// the default install prefix (~/.local/bin), then falls back to PATH.
+func ResolveBinary() (string, error) {
+	if home, err := os.UserHomeDir(); err == nil {
+		candidate := filepath.Join(home, ".local", "bin", BinaryName)
+		if info, statErr := os.Stat(candidate); statErr == nil && !info.IsDir() {
+			return candidate, nil
+		}
+	}
+	if path, err := exec.LookPath(BinaryName); err == nil {
+		return path, nil
+	}
+	return "", ErrNotInstalled
+}
+
 // ReleaseTag returns the GitHub release tag used by fairway artifacts.
 func ReleaseTag(version string) string {
 	return fmt.Sprintf("fairway-v%s", version)

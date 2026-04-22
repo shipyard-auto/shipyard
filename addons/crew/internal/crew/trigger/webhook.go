@@ -188,8 +188,8 @@ func (r *WebhookReconciler) runFairwayAdd(ctx context.Context, route, agentName 
 	args := []string{
 		"fairway", "route", "add",
 		"--path", route,
-		"--action", "exec",
-		"--target", fmt.Sprintf("shipyard crew run %s", agentName),
+		"--action", "crew.run",
+		"--target", agentName,
 	}
 	_, err := r.Runner.Run(ctx, "shipyard", args...)
 	return err

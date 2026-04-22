@@ -626,6 +626,23 @@ func TestBuildArgs_cronRun_correctCLI(t *testing.T) {
 	}
 }
 
+func TestBuildArgs_crewRun_correctCLI(t *testing.T) {
+	t.Parallel()
+
+	cr := newCapturingRunner()
+	cfg := defaultExec(cr.runner)
+	e := fairway.NewExecutor(*cfg)
+
+	route := subprocessRoute(fairway.ActionCrewRun, "promo-hunter")
+	req := httptest.NewRequest(http.MethodPost, "/test", nil)
+	e.Execute(context.Background(), route, req) //nolint:errcheck
+
+	call := cr.lastCall()
+	if len(call.Args) < 3 || call.Args[0] != "crew" || call.Args[1] != "run" || call.Args[2] != "promo-hunter" {
+		t.Errorf("args = %v; want [crew run promo-hunter ...]", call.Args)
+	}
+}
+
 func TestBuildArgs_serviceRestart_correctCLI(t *testing.T) {
 	t.Parallel()
 
@@ -717,6 +734,7 @@ func TestBuildArgs_allActionTypes(t *testing.T) {
 		{fairway.ActionCronDisable, "j", "cron", "disable"},
 		{fairway.ActionServiceStart, "s", "service", "start"},
 		{fairway.ActionServiceStop, "s", "service", "stop"},
+		{fairway.ActionCrewRun, "promo-hunter", "crew", "run"},
 	}
 
 	for _, tc := range cases {

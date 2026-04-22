@@ -10,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/shipyard-auto/shipyard/internal/addon"
 	"github.com/shipyard-auto/shipyard/internal/crewctl"
 	"github.com/shipyard-auto/shipyard/internal/ui"
 	"github.com/shipyard-auto/shipyard/internal/ui/tui/tty"
@@ -59,6 +60,7 @@ func newUninstallCmdWith(inst *crewctl.Installer) *cobra.Command {
 			if err := target.Uninstall(cmd.Context()); err != nil {
 				return err
 			}
+			_ = addon.NewRegistry("").Forget(addon.KindCrew)
 			ui.Printf(w, "%s\n", ui.Emphasis("uninstalled: "+target.BinPath()))
 			ui.Printf(w, "%s\n", ui.Muted("crew agents config preserved in "+target.StateDir))
 			return nil

@@ -98,6 +98,9 @@ const (
 
 	// ActionHTTPForward proxies the incoming request to a downstream URL.
 	ActionHTTPForward ActionType = "http.forward"
+
+	// ActionCrewRun triggers an on-demand execution of a shipyard-crew agent.
+	ActionCrewRun ActionType = "crew.run"
 )
 
 // Config is the top-level configuration for the fairway daemon, persisted in
@@ -266,6 +269,10 @@ func (a Action) Validate() error {
 			return fmt.Errorf("%w for action %q", ErrMissingActionTarget, a.Type)
 		}
 	case ActionServiceStart, ActionServiceStop, ActionServiceRestart:
+		if a.Target == "" {
+			return fmt.Errorf("%w for action %q", ErrMissingActionTarget, a.Type)
+		}
+	case ActionCrewRun:
 		if a.Target == "" {
 			return fmt.Errorf("%w for action %q", ErrMissingActionTarget, a.Type)
 		}

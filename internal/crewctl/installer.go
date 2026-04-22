@@ -43,6 +43,10 @@ var ErrUpgradeRequired = errors.New("crew: different version installed — pass 
 // ErrPlatformUnsupported is returned when the platform pair is not recognised.
 var ErrPlatformUnsupported = errors.New("crew: unsupported platform")
 
+// ErrAlreadyAtVersion is returned by Upgrade when the installed version
+// matches the requested version — the caller should treat this as a no-op.
+var ErrAlreadyAtVersion = errors.New("crew: already at current version")
+
 // HTTPClient is the minimal HTTP contract used by the Installer; injected for
 // deterministic tests.
 type HTTPClient interface {
@@ -303,6 +307,30 @@ func (i *Installer) maybeWarnPATH() {
 		}
 	}
 	fmt.Fprintf(i.warnWriter(), "warning: %s is not in your PATH; add it so you can run shipyard-crew directly\n", i.BinDir)
+}
+
+// Upgrade reinstalls the crew binary at i.Version, preserving StateDir and
+// RunDir. Returns ErrAlreadyAtVersion when the installed version already
+// matches. Force is ignored — Upgrade always replaces the binary when the
+// versions differ.
+func (i *Installer) Upgrade(ctx context.Context) error {
+	current, err := i.InstalledVersion()
+	if err == nil && current == i.Version {
+		return ErrAlreadyAtVersion
+	}
+
+	if err := os.Remove(i.BinPath()); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("crew: upgrade remove binary: %w", err)
+	}
+
+	prevForce := i.Force
+	i.Force = true
+	defer func() { i.Force = prevForce }()
+
+	if err := i.Install(ctx); err != nil {
+		return fmt.Errorf("crew: upgrade install failed — run 'shipyard crew install' to recover: %w", err)
+	}
+	return nil
 }
 
 // Uninstall removes the binary from BinDir. StateDir and RunDir are preserved

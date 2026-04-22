@@ -14,6 +14,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/shipyard-auto/shipyard/internal/addon"
 	"github.com/shipyard-auto/shipyard/internal/app"
 	"github.com/shipyard-auto/shipyard/internal/fairwayctl"
 	"github.com/shipyard-auto/shipyard/internal/ui"
@@ -44,6 +45,7 @@ func newFairwayStatsCmdWith(deps fairwayStatsDeps) *cobra.Command {
 		Short:         "Show fairway request statistics from the daemon",
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		PreRunE:       addon.RequirePreRun(addon.KindFairway),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			deps = deps.withDefaults()
 			client, err := deps.dial(cmd.Context(), fairwayctl.Opts{

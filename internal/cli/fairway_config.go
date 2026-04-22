@@ -10,6 +10,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
 
+	"github.com/shipyard-auto/shipyard/internal/addon"
 	"github.com/shipyard-auto/shipyard/internal/app"
 	"github.com/shipyard-auto/shipyard/internal/fairwayctl"
 	"github.com/shipyard-auto/shipyard/internal/ui"
@@ -45,6 +46,7 @@ func newFairwayConfigCmdWith(deps fairwayConfigDeps) *cobra.Command {
 			"Use this TUI to create, edit and remove webhook routes over the daemon socket.",
 			"For scripting and CI, keep using `shipyard fairway route ...`.",
 		}, "\n"),
+		PreRunE: addon.RequirePreRun(addon.KindFairway),
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			deps = deps.withDefaults()
 			if !deps.isInteractive(deps.stdinFD()) || !deps.isInteractive(deps.stdoutFD()) {

@@ -76,6 +76,10 @@ func (a Action) Validate() error {
 		if a.Target == "" {
 			return fmt.Errorf("%w for action %q", ErrMissingActionTarget, a.Type)
 		}
+	case ActionCrewRun:
+		if a.Target == "" {
+			return fmt.Errorf("%w for action %q", ErrMissingActionTarget, a.Type)
+		}
 	case ActionMessageSend, ActionTelegramHandle:
 		// Provider is optional; no required fields.
 	case ActionHTTPForward:

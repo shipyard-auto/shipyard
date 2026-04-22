@@ -275,6 +275,8 @@ func (s *formScreen) renderCurrentStep() string {
 			s.actionTgt.SetHint("Optional logical target for the message.")
 		case fairwayctl.ActionHTTPForward:
 			s.actionTgt.SetHint("Destination URL starting with http:// or https://.")
+		case fairwayctl.ActionCrewRun:
+			s.actionTgt.SetHint("Crew agent name (see `shipyard crew list`).")
 		default:
 			s.actionTgt.SetHint("Shipyard object ID or target name.")
 		}
@@ -315,6 +317,8 @@ func (s *formScreen) stepLabel(f formField) string {
 			return "Message target"
 		case fairwayctl.ActionHTTPForward:
 			return "Forward URL"
+		case fairwayctl.ActionCrewRun:
+			return "Crew agent"
 		default:
 			return "Action target"
 		}
@@ -407,7 +411,7 @@ func (s *formScreen) authSection() string {
 
 func (s *formScreen) actionSection() string {
 	switch fairwayctl.ActionType(s.actionType.Selected().Key) {
-	case fairwayctl.ActionCronRun, fairwayctl.ActionCronEnable, fairwayctl.ActionCronDisable,
+	case fairwayctl.ActionCronRun, fairwayctl.ActionCrewRun, fairwayctl.ActionCronEnable, fairwayctl.ActionCronDisable,
 		fairwayctl.ActionServiceStart, fairwayctl.ActionServiceStop, fairwayctl.ActionServiceRestart:
 		s.actionTgt.SetHint("Shipyard object ID or target name.")
 		return s.renderField("Action target", s.focus == fieldActionTarget, s.actionTgt.View())
@@ -513,7 +517,7 @@ func (s *formScreen) visibleFields() []formField {
 	}
 	fields = append(fields, fieldActionType)
 	switch fairwayctl.ActionType(s.actionType.Selected().Key) {
-	case fairwayctl.ActionCronRun, fairwayctl.ActionCronEnable, fairwayctl.ActionCronDisable,
+	case fairwayctl.ActionCronRun, fairwayctl.ActionCrewRun, fairwayctl.ActionCronEnable, fairwayctl.ActionCronDisable,
 		fairwayctl.ActionServiceStart, fairwayctl.ActionServiceStop, fairwayctl.ActionServiceRestart:
 		fields = append(fields, fieldActionTarget)
 	case fairwayctl.ActionMessageSend:

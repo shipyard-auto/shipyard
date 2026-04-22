@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 
 	versiondata "github.com/shipyard-auto/shipyard"
+	"github.com/shipyard-auto/shipyard/internal/addon"
 	"github.com/shipyard-auto/shipyard/internal/crewctl"
 	"github.com/shipyard-auto/shipyard/internal/ui"
 )
@@ -67,6 +68,8 @@ func newInstallCmdWith(inst *crewctl.Installer) *cobra.Command {
 				}
 				return err
 			}
+
+			_ = addon.NewRegistry("").Record(addon.KindCrew, true, target.BinPath(), target.Version)
 
 			ui.Printf(w, "%s\n", ui.Emphasis("shipyard-crew installed successfully."))
 			ui.Printf(w, "%s\n", ui.Muted("installed: "+target.BinPath()))

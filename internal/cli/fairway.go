@@ -11,6 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/shipyard-auto/shipyard/internal/addon"
 	"github.com/shipyard-auto/shipyard/internal/app"
 	"github.com/shipyard-auto/shipyard/internal/fairwayctl"
 	"github.com/shipyard-auto/shipyard/internal/ui"
@@ -111,6 +112,8 @@ func newFairwayInstallCmdWith(installer *fairwayctl.Installer) *cobra.Command {
 				return err
 			}
 
+			_ = addon.NewRegistry("").Record(addon.KindFairway, true, inst.BinPath(), inst.Version)
+
 			ui.Printf(w, "%s\n", ui.Emphasis("shipyard-fairway installed successfully."))
 			ui.Printf(w, "%s\n", ui.Muted("Registered as a Shipyard service — starts automatically on login."))
 			return nil
@@ -150,6 +153,7 @@ func newFairwayUninstallCmdWith(installer *fairwayctl.Installer) *cobra.Command 
 			if err := inst.Uninstall(cmd.Context()); err != nil {
 				return err
 			}
+			_ = addon.NewRegistry("").Forget(addon.KindFairway)
 
 			ui.Printf(w, "%s\n", ui.Emphasis("shipyard-fairway removed."))
 			if purge {

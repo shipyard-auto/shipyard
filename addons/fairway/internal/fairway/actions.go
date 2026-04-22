@@ -285,6 +285,8 @@ func buildArgs(action Action, body []byte) (args []string, stdin io.Reader) {
 		return []string{"service", "stop", action.Target}, nil
 	case ActionServiceRestart:
 		return []string{"service", "restart", action.Target}, nil
+	case ActionCrewRun:
+		return []string{"crew", "run", action.Target}, nil
 	case ActionMessageSend:
 		return []string{"message", "send", fmt.Sprintf("--text=%s", string(body))}, nil
 	case ActionTelegramHandle:

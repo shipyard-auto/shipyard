@@ -41,11 +41,11 @@ func TestWebhookReconcileAddsRoutesAndPersistsState(t *testing.T) {
 	}
 	for _, c := range runner.callsWith("fairway route add") {
 		joined := strings.Join(c.Args, " ")
-		if !strings.Contains(joined, "--action exec") {
-			t.Fatalf("expected --action exec in: %s", joined)
+		if !strings.Contains(joined, "--action crew.run") {
+			t.Fatalf("expected --action crew.run in: %s", joined)
 		}
-		if !strings.Contains(joined, "--target shipyard crew run demo") {
-			t.Fatalf("expected --target: %s", joined)
+		if !strings.Contains(joined, "--target demo") {
+			t.Fatalf("expected --target demo in: %s", joined)
 		}
 	}
 	statePath := filepath.Join(home, "crew", "demo", ".reconciled.json")

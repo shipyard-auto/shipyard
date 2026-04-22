@@ -366,6 +366,9 @@ func TestAction_Validate(t *testing.T) {
 		{name: "serviceStopMissingTarget", action: fairway.Action{Type: fairway.ActionServiceStop}, wantErr: fairway.ErrMissingActionTarget},
 		{name: "serviceRestartValid", action: fairway.Action{Type: fairway.ActionServiceRestart, Target: "svc-1"}, wantErr: nil},
 		{name: "serviceRestartMissingTarget", action: fairway.Action{Type: fairway.ActionServiceRestart}, wantErr: fairway.ErrMissingActionTarget},
+		// crew
+		{name: "crewRunValid", action: fairway.Action{Type: fairway.ActionCrewRun, Target: "promo-hunter"}, wantErr: nil},
+		{name: "crewRunMissingTarget", action: fairway.Action{Type: fairway.ActionCrewRun}, wantErr: fairway.ErrMissingActionTarget},
 		// message/telegram
 		{name: "messageSendValid", action: fairway.Action{Type: fairway.ActionMessageSend}, wantErr: nil},
 		{name: "messageSendWithProvider", action: fairway.Action{Type: fairway.ActionMessageSend, Provider: "slack"}, wantErr: nil},

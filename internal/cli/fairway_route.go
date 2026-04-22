@@ -16,6 +16,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/shipyard-auto/shipyard/internal/addon"
 	"github.com/shipyard-auto/shipyard/internal/app"
 	"github.com/shipyard-auto/shipyard/internal/fairwayctl"
 	"github.com/shipyard-auto/shipyard/internal/ui"
@@ -82,6 +83,7 @@ func newFairwayRouteListCmdWith(deps routeDeps) *cobra.Command {
 		Short:         "List fairway routes",
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		PreRunE:       addon.RequirePreRun(addon.KindFairway),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, err := dialRouteClient(cmd.Context(), deps)
 			if err != nil {
@@ -112,6 +114,7 @@ func newFairwayRouteAddCmdWith(deps routeDeps) *cobra.Command {
 		Short:         "Add a new fairway route",
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		PreRunE:       addon.RequirePreRun(addon.KindFairway),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			route, err := buildRouteFromAddInput(*input, deps)
 			if err != nil {
@@ -145,7 +148,7 @@ func newFairwayRouteAddCmdWith(deps routeDeps) *cobra.Command {
 	cmd.Flags().StringVar(&input.authValue, "auth-value", "", "Token auth expected value")
 	cmd.Flags().StringVar(&input.authHeader, "auth-header", "", "Token auth header name")
 	cmd.Flags().StringVar(&input.authQuery, "auth-query", "", "Token auth query parameter name")
-	cmd.Flags().StringVar(&input.actionType, "action", "", "Action type: cron.run, service.restart, message.send, telegram.handle, http.forward, ...")
+	cmd.Flags().StringVar(&input.actionType, "action", "", "Action type: cron.run, service.restart, message.send, telegram.handle, http.forward, crew.run, ...")
 	cmd.Flags().StringVar(&input.target, "target", "", "Action target")
 	cmd.Flags().StringVar(&input.provider, "provider", "", "Optional provider name for message.send")
 	cmd.Flags().StringVar(&input.url, "url", "", "Destination URL for http.forward")
@@ -163,6 +166,7 @@ func newFairwayRouteDeleteCmdWith(deps routeDeps) *cobra.Command {
 		Args:          cobra.ExactArgs(1),
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		PreRunE:       addon.RequirePreRun(addon.KindFairway),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			path := args[0]
 			if !yes {
@@ -212,6 +216,7 @@ func newFairwayRouteTestCmdWith(deps routeDeps) *cobra.Command {
 		Args:          cobra.ExactArgs(1),
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		PreRunE:       addon.RequirePreRun(addon.KindFairway),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			headers, err := parseHeaders(headerFlags)
 			if err != nil {

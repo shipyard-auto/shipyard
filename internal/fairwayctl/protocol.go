@@ -73,6 +73,7 @@ const (
 	ActionMessageSend    ActionType = "message.send"
 	ActionTelegramHandle ActionType = "telegram.handle"
 	ActionHTTPForward    ActionType = "http.forward"
+	ActionCrewRun        ActionType = "crew.run"
 )
 
 // Auth holds the authentication configuration for a Route.
