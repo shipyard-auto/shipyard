@@ -101,9 +101,9 @@ main() {
   assert_file "$dist_dir/$manifest_name"
   assert_checksum_manifest "$dist_dir" "$manifest_name"
 
-  log "scenario: make_package_all_includesCoreAndFairway"
+  log "scenario: make_package_all_includesCoreFairwayAndCrew"
   make DIST_DIR="$dist_dir" package-all >/dev/null
-  [ "$(count_tarballs "$dist_dir")" -eq 8 ] || fail "expected 8 total tarballs after package-all"
+  [ "$(count_tarballs "$dist_dir")" -eq 12 ] || fail "expected 12 total tarballs after package-all (4 core + 4 fairway + 4 crew)"
 
   log "scenario: build_does_not_regress"
   make DIST_DIR="$dist_dir" build >/dev/null
