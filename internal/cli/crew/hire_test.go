@@ -85,6 +85,31 @@ func TestRunHire_CreatesStructure(t *testing.T) {
 	if !strings.Contains(msg, "shipyard crew run promo-hunter") {
 		t.Fatalf("missing run hint: %q", msg)
 	}
+
+	// Scaffolded cli backend must wire prompt.md via {{.Prompt}} so the
+	// agent's identity is actually delivered to the subprocess. Without the
+	// placeholder, cli.go rejects the run at turn time.
+	raw, err := os.ReadFile(filepath.Join(dir, "agent.yaml"))
+	if err != nil {
+		t.Fatalf("read agent.yaml: %v", err)
+	}
+	var doc scaffoldedYAML
+	if err := yaml.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("unmarshal agent.yaml: %v", err)
+	}
+	if doc.Backend.Type != "cli" {
+		t.Fatalf("backend.type = %q want cli", doc.Backend.Type)
+	}
+	foundPlaceholder := false
+	for _, a := range doc.Backend.Command {
+		if strings.Contains(a, "{{.Prompt}}") {
+			foundPlaceholder = true
+			break
+		}
+	}
+	if !foundPlaceholder {
+		t.Fatalf("scaffolded cli command must reference {{.Prompt}}, got %v", doc.Backend.Command)
+	}
 }
 
 func TestRunHire_Validation(t *testing.T) {

@@ -199,6 +199,141 @@ func TestCLI_RegexOverride(t *testing.T) {
 	}
 }
 
+func TestCLI_RejectsPromptWithoutPlaceholder(t *testing.T) {
+	b := NewCLIBackend()
+	_, err := b.Run(context.Background(), RunInput{
+		User:   "hi",
+		Prompt: "you are a resident evil tutor",
+		Agent:  cliAgent("/bin/sh", "-c", "cat"),
+	}, nil)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "does not reference it") {
+		t.Fatalf("err message should guide the user, got: %v", err)
+	}
+}
+
+func TestCLI_AllowsEmptyPromptWithoutPlaceholder(t *testing.T) {
+	// Backwards compatibility: agents with no prompt.md (or a whitespace-only
+	// one) should still run without requiring a placeholder in the argv.
+	b := NewCLIBackend()
+	out, err := b.Run(context.Background(), RunInput{
+		User:   "hi",
+		Prompt: "   \n\t  ",
+		Agent:  cliAgent("/bin/sh", "-c", "cat"),
+	}, nil)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if out.Text != "hi" {
+		t.Fatalf("Text=%q", out.Text)
+	}
+}
+
+func TestCLI_PromptInlinePlaceholder(t *testing.T) {
+	dir := t.TempDir()
+	argsFile := filepath.Join(dir, "args.txt")
+	script := filepath.Join(dir, "shim.sh")
+	// The shim writes its argv (one per line) to argsFile and echoes stdin.
+	body := "#!/bin/sh\nfor a in \"$@\"; do printf '%s\\n' \"$a\" >> " + argsFile + "; done\ncat\n"
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	b := NewCLIBackend()
+	out, err := b.Run(context.Background(), RunInput{
+		User:   "ping",
+		Prompt: "you are an RE tutor for 15-year-olds",
+		Agent:  cliAgent(script, "--sys", "{{.Prompt}}"),
+	}, nil)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if out.Text != "ping" {
+		t.Fatalf("Text=%q", out.Text)
+	}
+
+	raw, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimRight(string(raw), "\n"), "\n")
+	want := []string{"--sys", "you are an RE tutor for 15-year-olds"}
+	if len(lines) != len(want) {
+		t.Fatalf("argv=%v want %v", lines, want)
+	}
+	for i := range want {
+		if lines[i] != want[i] {
+			t.Fatalf("argv[%d]=%q want %q", i, lines[i], want[i])
+		}
+	}
+}
+
+func TestCLI_PromptFilePlaceholder(t *testing.T) {
+	dir := t.TempDir()
+	argsFile := filepath.Join(dir, "args.txt")
+	contentFile := filepath.Join(dir, "captured.txt")
+	script := filepath.Join(dir, "shim.sh")
+	// The shim records argv, copies the contents of the --sys-file arg into
+	// contentFile, then echoes stdin. `$2` is the expanded prompt-file path.
+	body := "#!/bin/sh\nfor a in \"$@\"; do printf '%s\\n' \"$a\" >> " + argsFile + "; done\ncat \"$2\" > " + contentFile + "\ncat\n"
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	b := NewCLIBackend()
+	prompt := "system prompt line 1\nline 2\n"
+	_, err := b.Run(context.Background(), RunInput{
+		User:   "ping",
+		Prompt: prompt,
+		Agent:  cliAgent(script, "--sys-file", "{{.PromptFile}}"),
+	}, nil)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	// Captured prompt file contents must match the original prompt.
+	got, err := os.ReadFile(contentFile)
+	if err != nil {
+		t.Fatalf("read captured: %v", err)
+	}
+	if string(got) != prompt {
+		t.Fatalf("captured prompt=%q want %q", string(got), prompt)
+	}
+
+	// Tempfile path recorded in argv[1] must no longer exist after Run —
+	// the backend is responsible for cleanup.
+	rawArgs, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimRight(string(rawArgs), "\n"), "\n")
+	if len(lines) != 2 || lines[0] != "--sys-file" {
+		t.Fatalf("argv=%v", lines)
+	}
+	if _, statErr := os.Stat(lines[1]); !os.IsNotExist(statErr) {
+		t.Fatalf("prompt tempfile should be removed after Run, stat err=%v", statErr)
+	}
+}
+
+func TestCLI_InvalidTemplateSurfacesError(t *testing.T) {
+	b := NewCLIBackend()
+	// Unknown field inside the template should produce a clear error, not
+	// silent substitution or a subprocess launch.
+	_, err := b.Run(context.Background(), RunInput{
+		User:   "x",
+		Prompt: "sys",
+		Agent:  cliAgent("/bin/sh", "-c", "echo {{.DoesNotExist}} ; {{.Prompt}}"),
+	}, nil)
+	if err == nil {
+		t.Fatal("expected error for unknown template field")
+	}
+	if !strings.Contains(err.Error(), "expand argv") {
+		t.Fatalf("err should mention expand step, got: %v", err)
+	}
+}
+
 func TestLimitedWriter_Behaviour(t *testing.T) {
 	var buf bytesWriter
 	lw := &limitedWriter{w: &buf, limit: 5}

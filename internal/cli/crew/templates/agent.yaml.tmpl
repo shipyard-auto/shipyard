@@ -5,7 +5,9 @@ description: "replace me — describe what this agent does"
 backend:
   type: {{.BackendType}}
 {{- if eq .BackendType "cli" }}
-  command: ["claude", "--print"]
+  # {{"{{.Prompt}}"}} is expanded at run time with the contents of prompt.md.
+  # Use {{"{{.PromptFile}}"}} instead if your CLI prefers a file path.
+  command: ["claude", "--print", "--append-system-prompt", "{{"{{.Prompt}}"}}"]
 {{- else }}
   model: claude-sonnet-4-6
 {{- end }}

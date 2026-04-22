@@ -21,7 +21,7 @@ name: %s
 description: test
 backend:
   type: cli
-  command: ["/bin/echo"]
+  command: ["/bin/echo", "{{.Prompt}}"]
 execution:
   mode: service
   pool: cli
