@@ -23,6 +23,7 @@ import (
 	"github.com/shipyard-auto/shipyard/addons/crew/internal/crew/backend"
 	"github.com/shipyard-auto/shipyard/addons/crew/internal/crew/config"
 	"github.com/shipyard-auto/shipyard/addons/crew/internal/crew/conversation"
+	"github.com/shipyard-auto/shipyard/addons/crew/internal/crew/logs"
 	"github.com/shipyard-auto/shipyard/addons/crew/internal/crew/pidfile"
 	"github.com/shipyard-auto/shipyard/addons/crew/internal/crew/pool"
 	"github.com/shipyard-auto/shipyard/addons/crew/internal/crew/runner"
@@ -60,6 +61,11 @@ type Options struct {
 	// ConfigPath optionally points at the global crew config.yaml. Empty
 	// uses defaults from config.Default.
 	ConfigPath string
+
+	// LogDir is the directory for JSONL run logs. Empty uses the default
+	// (<SHIPYARD_HOME>/logs/crew). The directory is created on demand by
+	// the emitter.
+	LogDir string
 
 	// Version is the daemon version string used in handshake responses.
 	Version string
@@ -132,6 +138,7 @@ func Run(ctx context.Context, opts Options) (int, error) {
 	if err != nil {
 		return ExitBuildRuntime, fmt.Errorf("build runtime: %w", err)
 	}
+	defer rt.closeLogs()
 
 	innerCtx, cancelInner := context.WithCancel(ctx)
 	defer cancelInner()
@@ -191,6 +198,16 @@ type runtime struct {
 	mu       sync.RWMutex
 	agentDir string
 	rn       *runner.Runner
+	em       logs.Emitter // owned by runtime; closed in closeLogs.
+}
+
+// closeLogs releases the file descriptor owned by the JSONL emitter.
+// Safe to call when no emitter was attached.
+func (r *runtime) closeLogs() {
+	if r == nil || r.em == nil {
+		return
+	}
+	_ = r.em.Close()
 }
 
 func (r *runtime) Run(ctx context.Context, p socket.RunParams) (socket.RunResult, error) {
@@ -234,7 +251,13 @@ func buildRuntime(a *crew.Agent, opts Options) (*runtime, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &runtime{rn: rn, agentDir: opts.AgentDir}, nil
+	em, emErr := logs.NewFileEmitter(opts.LogDir)
+	if emErr != nil {
+		// Logs are best-effort; never block the daemon.
+		em = logs.NewNopEmitter()
+	}
+	rn.Logs = logs.NewRunnerAdapter(em)
+	return &runtime{rn: rn, agentDir: opts.AgentDir, em: em}, nil
 }
 
 // NewRunner wires the dependencies a crew runner needs (config, pool, backend,

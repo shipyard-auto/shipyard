@@ -96,6 +96,7 @@ func newTestInstaller(t *testing.T, client HTTPClient) *Installer {
 		BinDir:      filepath.Join(base, "bin"),
 		StateDir:    filepath.Join(base, "state"),
 		RunDir:      filepath.Join(base, "run"),
+		LogsDir:     filepath.Join(base, "logs"),
 		HTTPClient:  client,
 		ReleaseBase: "https://fake.example/releases/download",
 		Warn:        io.Discard,
@@ -393,6 +394,13 @@ func TestInstall_happyPath(t *testing.T) {
 	}
 	if rinfo.Mode().Perm() != 0o700 {
 		t.Errorf("RunDir perms %v, want 0700", rinfo.Mode().Perm())
+	}
+	linfo, err := os.Stat(inst.LogsDir)
+	if err != nil {
+		t.Fatalf("LogsDir missing: %v", err)
+	}
+	if linfo.Mode().Perm() != 0o700 {
+		t.Errorf("LogsDir perms %v, want 0700", linfo.Mode().Perm())
 	}
 }
 

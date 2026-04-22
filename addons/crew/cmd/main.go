@@ -36,6 +36,7 @@ import (
 	"github.com/shipyard-auto/shipyard/addons/crew/internal/app"
 	"github.com/shipyard-auto/shipyard/addons/crew/internal/crew/agent"
 	"github.com/shipyard-auto/shipyard/addons/crew/internal/crew/daemon"
+	"github.com/shipyard-auto/shipyard/addons/crew/internal/crew/logs"
 	"github.com/shipyard-auto/shipyard/addons/crew/internal/crew/runner"
 )
 
@@ -74,6 +75,7 @@ type onDemandRequest struct {
 	AgentName  string
 	AgentDir   string
 	ConfigPath string
+	LogDir     string
 	Input      map[string]any
 	Stdout     io.Writer
 	Stderr     io.Writer
@@ -155,7 +157,6 @@ func run(ctx context.Context, deps runtimeDeps) int {
 	if logDir == "" {
 		logDir = filepath.Join(home, "logs", "crew")
 	}
-	_ = logDir
 
 	agentDir := filepath.Join(home, "crew", agentName)
 	runDir := filepath.Join(home, "run", "crew")
@@ -166,6 +167,7 @@ func run(ctx context.Context, deps runtimeDeps) int {
 			AgentDir:   agentDir,
 			RunDir:     runDir,
 			ConfigPath: configPath,
+			LogDir:     logDir,
 			Version:    app.Version,
 		})
 	}
@@ -174,6 +176,7 @@ func run(ctx context.Context, deps runtimeDeps) int {
 		AgentName:  agentName,
 		AgentDir:   agentDir,
 		ConfigPath: configPath,
+		LogDir:     logDir,
 		Stdout:     deps.Stdout,
 		Stderr:     deps.Stderr,
 	})
@@ -230,6 +233,16 @@ func defaultRunOnDemand(ctx context.Context, req onDemandRequest) (int, error) {
 	if err != nil {
 		return ExitBuildRuntime, fmt.Errorf("build runtime: %w", err)
 	}
+
+	emitter, emErr := logs.NewFileEmitter(req.LogDir)
+	if emErr != nil {
+		// Logs are best-effort: fall back to nop so a broken filesystem does
+		// not fail the agent run. The envelope still carries the trace_id.
+		emitter = logs.NewNopEmitter()
+		fmt.Fprintf(req.Stderr, "shipyard-crew: logs disabled: %s\n", emErr)
+	}
+	defer emitter.Close()
+	rn.Logs = logs.NewRunnerAdapter(emitter)
 
 	out, runErr := rn.Run(ctx, runner.Input{Data: req.Input, Source: "on-demand"})
 	env := map[string]any{

@@ -99,6 +99,7 @@ func buildCrewInstaller(version string) (*crewctl.Installer, error) {
 		BinDir:      filepath.Join(home, ".local", "bin"),
 		StateDir:    filepath.Join(home, ".shipyard", "crew"),
 		RunDir:      filepath.Join(home, ".shipyard", "run", "crew"),
+		LogsDir:     filepath.Join(home, ".shipyard", "logs", "crew"),
 		HTTPClient:  crewctl.DefaultHTTPClient(),
 		ReleaseBase: crewctl.DefaultReleaseBase,
 	}, nil

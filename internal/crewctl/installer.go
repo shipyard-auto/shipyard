@@ -107,6 +107,7 @@ type Installer struct {
 	BinDir      string
 	StateDir    string // ~/.shipyard/crew — preserved on uninstall
 	RunDir      string // ~/.shipyard/run/crew — socket and pidfile location
+	LogsDir     string // ~/.shipyard/logs/crew — JSONL logs shared by all agents
 	Force       bool
 	HTTPClient  HTTPClient
 	ReleaseBase string
@@ -255,6 +256,11 @@ func (i *Installer) Install(ctx context.Context) error {
 	if i.RunDir != "" {
 		if err := os.MkdirAll(i.RunDir, 0o700); err != nil {
 			return fmt.Errorf("crew: create run dir: %w", err)
+		}
+	}
+	if i.LogsDir != "" {
+		if err := os.MkdirAll(i.LogsDir, 0o700); err != nil {
+			return fmt.Errorf("crew: create logs dir: %w", err)
 		}
 	}
 

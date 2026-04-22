@@ -367,6 +367,75 @@ func TestDefaultRunOnDemandSuccess(t *testing.T) {
 	}
 }
 
+// TestDefaultRunOnDemandWritesLogs proves the on-demand entrypoint wires the
+// JSONL emitter and that a successful run produces both run_start and run_end
+// events under the supplied LogDir. This is a regression for the wiring gap
+// where the emitter existed but was never instantiated by main.go.
+func TestDefaultRunOnDemandWritesLogs(t *testing.T) {
+	home := t.TempDir()
+	writeAgent(t, home, "omega")
+	logDir := filepath.Join(home, "logs", "crew")
+
+	code, err := defaultRunOnDemand(context.Background(), onDemandRequest{
+		AgentName:  "omega",
+		AgentDir:   filepath.Join(home, "crew", "omega"),
+		ConfigPath: "",
+		LogDir:     logDir,
+		Input:      map[string]any{"user": "hi"},
+		Stdout:     &bytes.Buffer{},
+		Stderr:     &bytes.Buffer{},
+	})
+	if code != ExitOK {
+		t.Fatalf("code = %d, err=%v", code, err)
+	}
+
+	entries, err := os.ReadDir(logDir)
+	if err != nil {
+		t.Fatalf("logs dir not created: %v", err)
+	}
+	var jsonl string
+	for _, e := range entries {
+		if filepath.Ext(e.Name()) == ".jsonl" {
+			jsonl = filepath.Join(logDir, e.Name())
+			break
+		}
+	}
+	if jsonl == "" {
+		t.Fatalf("no jsonl file in %s; entries=%v", logDir, entries)
+	}
+
+	raw, err := os.ReadFile(jsonl)
+	if err != nil {
+		t.Fatalf("read jsonl: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(raw)), "\n")
+	if len(lines) < 2 {
+		t.Fatalf("want at least 2 events (run_start + run_end), got %d: %s", len(lines), raw)
+	}
+	var startSeen, endSeen bool
+	for _, line := range lines {
+		var ev map[string]any
+		if err := json.Unmarshal([]byte(line), &ev); err != nil {
+			t.Fatalf("parse line %q: %v", line, err)
+		}
+		switch ev["type"] {
+		case "run_start":
+			startSeen = true
+			if ev["source"] != "on-demand" {
+				t.Errorf("source=%v, want on-demand", ev["source"])
+			}
+		case "run_end":
+			endSeen = true
+		}
+		if ev["agent"] != "omega" {
+			t.Errorf("agent=%v, want omega", ev["agent"])
+		}
+	}
+	if !startSeen || !endSeen {
+		t.Errorf("missing events: run_start=%v run_end=%v", startSeen, endSeen)
+	}
+}
+
 func TestWithDefaultsPopulatesAll(t *testing.T) {
 	d := runtimeDeps{}.withDefaults()
 	if d.Env == nil || d.Stdout == nil || d.Stderr == nil || d.Stdin == nil {
