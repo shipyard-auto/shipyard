@@ -151,7 +151,10 @@ func runLogs(ctx context.Context, deps logsDeps, name string, flags logsFlags) e
 		if err != nil {
 			return err
 		}
-		since := deps.Now().Add(-flags.Since)
+		var since time.Time
+		if flags.Since > 0 {
+			since = deps.Now().Add(-flags.Since)
+		}
 		for _, f := range refresh {
 			prev := offsets[f]
 			newEntries, newOffset, err := readSince(f, name, flags, since, prev)

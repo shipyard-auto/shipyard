@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/shipyard-auto/shipyard/addons/crew/internal/crew/conversation"
 )
@@ -16,6 +17,10 @@ import (
 const (
 	cliMaxStdoutBytes = 4 * 1024 * 1024
 	cliMaxStderrBytes = 4 * 1024 * 1024
+	// cliWaitDelay bounds how long Wait blocks on pipe drainage after the
+	// process is signaled. Without it, grandchildren (e.g. `sleep` under
+	// `sh -c`) can hold stdout/stderr FDs open well past cancellation.
+	cliWaitDelay = 500 * time.Millisecond
 )
 
 // defaultSessionRegex matches "session=<id>" or "session: <id>" emitted by
@@ -63,6 +68,7 @@ func (b *CLIBackend) Run(ctx context.Context, in RunInput, _ ToolDispatcher) (Ru
 	}
 
 	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
+	cmd.WaitDelay = cliWaitDelay
 	cmd.Stdin = strings.NewReader(in.User)
 
 	var stdout, stderr bytes.Buffer
