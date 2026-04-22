@@ -1,0 +1,13 @@
+[Unit]
+Description=Shipyard crew agent (promo)
+After=network.target
+
+[Service]
+ExecStart=/usr/local/bin/shipyard-crew --service --agent promo
+Restart=always
+RestartSec=2
+StandardOutput=append:HOME/.shipyard/logs/crew/promo.out.log
+StandardError=append:HOME/.shipyard/logs/crew/promo.err.log
+
+[Install]
+WantedBy=default.target

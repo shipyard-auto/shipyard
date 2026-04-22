@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -77,14 +78,17 @@ func newCronConfigCmd() *cobra.Command {
 }
 
 func newCronListCmd() *cobra.Command {
-	return &cobra.Command{
+	var jsonOutput bool
+	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List Shipyard cron jobs",
 		Long:  "Render a table with the Shipyard-managed cron jobs known in ~/.shipyard/crons.json.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runCronList(cmd)
+			return runCronList(cmd, jsonOutput)
 		},
 	}
+	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Emit jobs as JSON array")
+	return cmd
 }
 
 func newCronShowCmd() *cobra.Command {
@@ -410,7 +414,7 @@ func newCronRunCmd() *cobra.Command {
 	}
 }
 
-func runCronList(cmd *cobra.Command) error {
+func runCronList(cmd *cobra.Command, jsonOutput bool) error {
 	service, err := cron.NewService()
 	if err != nil {
 		return err
@@ -419,6 +423,15 @@ func runCronList(cmd *cobra.Command) error {
 	jobs, err := service.List()
 	if err != nil {
 		return humanizeCronError(err, "")
+	}
+
+	if jsonOutput {
+		if jobs == nil {
+			jobs = []cron.Job{}
+		}
+		enc := json.NewEncoder(cmd.OutOrStdout())
+		enc.SetIndent("", "  ")
+		return enc.Encode(jobs)
 	}
 
 	ui.Printf(cmd.OutOrStdout(), "%s\n", ui.SectionTitle("Shipyard Cron Jobs"))

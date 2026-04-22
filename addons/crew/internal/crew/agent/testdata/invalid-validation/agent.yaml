@@ -1,0 +1,14 @@
+schema_version: "1"
+name: bad-agent
+description: ""
+backend:
+  type: cli
+execution:
+  mode: on-demand
+  pool: cli
+conversation:
+  mode: stateless
+triggers:
+  - type: cron
+    schedule: "* * * * *"
+tools: []

@@ -1,0 +1,4 @@
+concurrency:
+  pools:
+    cli:
+      max: 8

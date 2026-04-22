@@ -1,0 +1,15 @@
+schema_version: "1"
+name: no-prompt
+description: ""
+backend:
+  type: cli
+  command: ["claude"]
+execution:
+  mode: on-demand
+  pool: cli
+conversation:
+  mode: stateless
+triggers:
+  - type: cron
+    schedule: "* * * * *"
+tools: []

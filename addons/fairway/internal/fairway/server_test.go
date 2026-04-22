@@ -377,6 +377,15 @@ func TestServe_gracefulShutdownAllowsInFlightRequests(t *testing.T) {
 
 	cfg := baseConfig()
 	cfg.Routes = []fairway.Route{route}
+	// Pick an ephemeral port instead of DefaultPort (9876), which a locally
+	// installed shipyard-fairway daemon may already be holding.
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("find free port: %v", err)
+	}
+	_, portStr, _ := net.SplitHostPort(lis.Addr().String())
+	fmt.Sscanf(portStr, "%d", &cfg.Port)
+	lis.Close()
 	repo := &fakeRepo{cfg: cfg}
 	router := fairway.NewRouterWithConfig(repo, cfg)
 
