@@ -66,7 +66,7 @@ func (l *RequestLogger) Log(event RequestEvent) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	day := l.now().Format("2006-01-02")
+	day := l.now().UTC().Format("2006-01-02")
 	if day != l.currentDay {
 		// Day changed (or first write): close old file and open new one.
 		if l.currentFile != nil {

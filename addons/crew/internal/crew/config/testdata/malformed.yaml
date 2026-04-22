@@ -1,0 +1,4 @@
+concurrency:
+  default_pool: cli
+   pools:
+     cli: [bad

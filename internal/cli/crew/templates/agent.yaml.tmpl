@@ -1,0 +1,22 @@
+schema_version: "{{.SchemaVersion}}"
+name: {{.Name}}
+description: "replace me — describe what this agent does"
+
+backend:
+  type: {{.BackendType}}
+{{- if eq .BackendType "cli" }}
+  command: ["claude", "--print"]
+{{- else }}
+  model: claude-sonnet-4-6
+{{- end }}
+
+execution:
+  mode: {{.Mode}}
+  pool: cli
+
+conversation:
+  mode: stateless
+
+triggers: []
+
+tools: []

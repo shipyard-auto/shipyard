@@ -1,0 +1,10 @@
+concurrency:
+  default_pool: cli
+  pools:
+    cli:
+      max: 4
+  timeout: 10s
+  queue:
+    strategy: wait
+    max_wait: 30s
+    max_queue_size: 16

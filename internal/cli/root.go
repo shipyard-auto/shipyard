@@ -7,6 +7,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/shipyard-auto/shipyard/internal/app"
+	"github.com/shipyard-auto/shipyard/internal/cli/crew"
 	"github.com/shipyard-auto/shipyard/internal/ui"
 )
 
@@ -33,6 +34,7 @@ func NewRootCmd() *cobra.Command {
 	cmd.Version = app.Version
 
 	cmd.AddCommand(newFairwayCmd())
+	cmd.AddCommand(crew.NewCrewCmd())
 	cmd.AddCommand(newUninstallCmd())
 	cmd.AddCommand(newCronCmd())
 	cmd.AddCommand(newServiceCmd())

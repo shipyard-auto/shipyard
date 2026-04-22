@@ -1,0 +1,29 @@
+schema_version: "1"
+name: promo-hunter
+description: Busca promoções
+backend:
+  type: cli
+  command: ["claude", "--print"]
+execution:
+  mode: on-demand
+  pool: cli
+conversation:
+  mode: stateless
+triggers:
+  - type: cron
+    schedule: "0 */3 * * *"
+tools:
+  - name: auction_scraper
+    protocol: exec
+    command: ["/home/leo/bin/auction.py"]
+    description: "Scrape auctions"
+    input_schema:
+      category: string
+      max_price: number
+  - name: notify
+    protocol: http
+    method: POST
+    url: "https://example.com/notify"
+    headers:
+      content-type: application/json
+    body: '{"msg":"hi"}'
