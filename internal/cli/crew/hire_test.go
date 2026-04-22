@@ -86,9 +86,9 @@ func TestRunHire_CreatesStructure(t *testing.T) {
 		t.Fatalf("missing run hint: %q", msg)
 	}
 
-	// Scaffolded cli backend must wire prompt.md via {{.Prompt}} so the
-	// agent's identity is actually delivered to the subprocess. Without the
-	// placeholder, cli.go rejects the run at turn time.
+	// Scaffolded cli backend must parse cleanly and not declare a
+	// system_prompt_flag — the cli backend injects prompt.md via the default
+	// --append-system-prompt flag automatically.
 	raw, err := os.ReadFile(filepath.Join(dir, "agent.yaml"))
 	if err != nil {
 		t.Fatalf("read agent.yaml: %v", err)
@@ -100,15 +100,8 @@ func TestRunHire_CreatesStructure(t *testing.T) {
 	if doc.Backend.Type != "cli" {
 		t.Fatalf("backend.type = %q want cli", doc.Backend.Type)
 	}
-	foundPlaceholder := false
-	for _, a := range doc.Backend.Command {
-		if strings.Contains(a, "{{.Prompt}}") {
-			foundPlaceholder = true
-			break
-		}
-	}
-	if !foundPlaceholder {
-		t.Fatalf("scaffolded cli command must reference {{.Prompt}}, got %v", doc.Backend.Command)
+	if len(doc.Backend.Command) == 0 {
+		t.Fatalf("scaffolded cli command must be non-empty")
 	}
 }
 

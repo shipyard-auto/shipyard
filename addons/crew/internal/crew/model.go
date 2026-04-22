@@ -69,6 +69,11 @@ type Backend struct {
 	Type    BackendType `yaml:"type"`
 	Command []string    `yaml:"command,omitempty"`
 	Model   string      `yaml:"model,omitempty"`
+	// SystemPromptFlag overrides the argv flag used to inject prompt.md into
+	// the subprocess when Type is "cli". When empty, the backend uses the
+	// Claude Code default ("--append-system-prompt"). The prompt value is
+	// always passed as the flag's argument — never omitted.
+	SystemPromptFlag string `yaml:"system_prompt_flag,omitempty"`
 }
 
 type Execution struct {
@@ -149,12 +154,18 @@ func (b Backend) Validate() error {
 		if b.Model != "" {
 			return errors.New(`type "cli" must not set model`)
 		}
+		if b.SystemPromptFlag != "" && strings.TrimSpace(b.SystemPromptFlag) != b.SystemPromptFlag {
+			return errors.New(`system_prompt_flag must not have surrounding whitespace`)
+		}
 	case BackendAnthropicAPI:
 		if strings.TrimSpace(b.Model) == "" {
 			return errors.New(`type "anthropic_api" requires model`)
 		}
 		if len(b.Command) > 0 {
 			return errors.New(`type "anthropic_api" must not set command`)
+		}
+		if b.SystemPromptFlag != "" {
+			return errors.New(`type "anthropic_api" must not set system_prompt_flag`)
 		}
 	default:
 		return fmt.Errorf(`invalid type %q: must be "cli" or "anthropic_api"`, b.Type)

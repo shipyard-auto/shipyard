@@ -19,7 +19,7 @@ name: %s
 description: test agent
 backend:
   type: cli
-  command: ["/bin/echo", "{{.Prompt}}"]
+  command: ["/bin/echo"]
 execution:
   mode: service
   pool: cli
@@ -328,7 +328,7 @@ name: epsilon
 description: test agent
 backend:
   type: cli
-  command: ["/bin/echo", "{{.Prompt}}"]
+  command: ["/bin/echo"]
 execution:
   mode: service
   pool: nonexistent
