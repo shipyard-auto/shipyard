@@ -11,8 +11,8 @@ import (
 
 	"github.com/spf13/cobra"
 
+	versiondata "github.com/shipyard-auto/shipyard"
 	"github.com/shipyard-auto/shipyard/internal/addon"
-	"github.com/shipyard-auto/shipyard/internal/app"
 	"github.com/shipyard-auto/shipyard/internal/fairwayctl"
 	"github.com/shipyard-auto/shipyard/internal/ui"
 )
@@ -35,8 +35,9 @@ func newFairwayCmd() *cobra.Command {
 	return cmd
 }
 
-// buildInstaller constructs a production Installer from app.Version and
-// the user's home directory. Used by install, uninstall and upgrade commands.
+// buildInstaller constructs a production Installer from the given fairway
+// version and the user's home directory. Used by install, uninstall and
+// upgrade commands.
 func buildInstaller(version string) (*fairwayctl.Installer, error) {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
@@ -76,7 +77,7 @@ func newFairwayInstallCmdWith(installer *fairwayctl.Installer) *cobra.Command {
 			inst := installer
 			if inst == nil {
 				if version == "" {
-					version = app.Version
+					version = versiondata.ComponentVersion("fairway")
 				}
 				var err error
 				inst, err = buildInstaller(version)
@@ -121,7 +122,7 @@ func newFairwayInstallCmdWith(installer *fairwayctl.Installer) *cobra.Command {
 	}
 
 	cmd.Flags().BoolVar(&force, "force", false, "Reinstall even if already present")
-	cmd.Flags().StringVar(&version, "version", "", "Version to install (default: core version)")
+	cmd.Flags().StringVar(&version, "version", "", "Version to install (default: version from manifest)")
 	return cmd
 }
 
@@ -139,7 +140,7 @@ func newFairwayUninstallCmdWith(installer *fairwayctl.Installer) *cobra.Command 
 			inst := installer
 			if inst == nil {
 				var err error
-				inst, err = buildInstaller(app.Version)
+				inst, err = buildInstaller(versiondata.ComponentVersion("fairway"))
 				if err != nil {
 					return err
 				}
