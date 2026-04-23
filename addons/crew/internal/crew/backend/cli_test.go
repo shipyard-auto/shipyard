@@ -307,6 +307,56 @@ func TestCLI_NoPromptNoFlagAppended(t *testing.T) {
 	}
 }
 
+func TestCLI_MCPFlagsInjectedWhenToolsDeclared(t *testing.T) {
+	// When the agent declares tools, the backend must emit the MCP bridge
+	// config AND bypass the interactive permission prompt — otherwise
+	// `claude --print` refuses tool calls. This test pins the contract.
+	agent, argsFile := captureArgvAgent(t, []string{"base"}, "")
+	agent.Tools = []crew.Tool{
+		{Name: "echo", Protocol: crew.ToolExec, Command: []string{"/bin/true"}},
+	}
+
+	b := NewCLIBackend().
+		WithSelfPath("/fake/shipyard-crew").
+		WithUserHomeDir(func() (string, error) { return t.TempDir(), nil })
+	_, err := b.Run(context.Background(), RunInput{
+		User:  "ping",
+		Agent: agent,
+	}, nil)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	got := readArgvLines(t, argsFile)
+	argv := strings.Join(got, " ")
+	if !strings.Contains(argv, "--mcp-config") {
+		t.Fatalf("missing --mcp-config: %v", got)
+	}
+	if !strings.Contains(argv, "--strict-mcp-config") {
+		t.Fatalf("missing --strict-mcp-config: %v", got)
+	}
+	if !strings.Contains(argv, "--permission-mode bypassPermissions") {
+		t.Fatalf("missing --permission-mode bypassPermissions: %v", got)
+	}
+}
+
+func TestCLI_NoMCPFlagsWhenAgentHasNoToolsOrMCP(t *testing.T) {
+	// Zero-config agents must pay nothing: no --mcp-config, no bypass flag.
+	agent, argsFile := captureArgvAgent(t, []string{"base"}, "")
+
+	b := NewCLIBackend().WithUserHomeDir(func() (string, error) { return t.TempDir(), nil })
+	_, err := b.Run(context.Background(), RunInput{User: "ping", Agent: agent}, nil)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	got := readArgvLines(t, argsFile)
+	argv := strings.Join(got, " ")
+	if strings.Contains(argv, "--mcp-config") || strings.Contains(argv, "bypassPermissions") {
+		t.Fatalf("argv should be untouched when no tools declared, got: %v", got)
+	}
+}
+
 func TestCLI_PromptPrecedesResumeFlag(t *testing.T) {
 	agent, argsFile := captureArgvAgent(t, []string{"base"}, "")
 

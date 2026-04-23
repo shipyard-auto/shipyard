@@ -139,7 +139,16 @@ func (b *CLIBackend) Run(ctx context.Context, in RunInput, _ ToolDispatcher) (Ru
 	defer cleanup()
 
 	if cfgPath != "" {
-		args = append(args, "--mcp-config", cfgPath, "--strict-mcp-config")
+		// --permission-mode bypassPermissions is required because claude --print
+		// has no TTY to approve tool calls interactively; without it the model
+		// replies "preciso de permissão…" instead of invoking the tool.
+		// --strict-mcp-config already confines the tool surface to the servers
+		// we synthesised (the internal crew bridge + agent-declared refs).
+		args = append(args,
+			"--mcp-config", cfgPath,
+			"--strict-mcp-config",
+			"--permission-mode", "bypassPermissions",
+		)
 	}
 
 	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
