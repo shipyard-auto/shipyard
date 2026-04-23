@@ -86,6 +86,60 @@ The binary is installed at `~/.local/bin/shipyard-crew`. The artifact is downloa
    shipyard crew run promo-hunter --input '{"user":"olá"}'
    ```
 
+## Reusing tools across agents (tool library)
+
+When the same tool shows up in more than one agent, promote it to the shared library under `~/.shipyard/crew/tools/` and reference it by name.
+
+```bash
+# Create an exec tool. Payload is read from stdin as JSON; envelope goes to stdout.
+shipyard crew tool add echo \
+  --protocol exec \
+  --description "Echo the payload back" \
+  --command /bin/sh \
+  --command -c \
+  --command 'read l; printf %s "{\"ok\":true,\"data\":{\"echoed\":$(printf %s "$l" | jq -Rs .)}}"'
+
+# Or an HTTP tool.
+shipyard crew tool add telegram_send \
+  --protocol http --method POST \
+  --url "http://localhost:9876/telegram/send" \
+  --header "Authorization: Bearer {{env.TG_TOKEN}}" \
+  --body '{"chat_id": "{{input.chat_id}}", "text": "{{input.text}}"}'
+
+shipyard crew tool list             # table or --json
+shipyard crew tool show echo        # raw YAML or --json
+shipyard crew tool rm echo          # blocked if any agent uses `ref: echo`
+shipyard crew tool rm echo --yes    # force removal
+```
+
+Each `tool add` writes `~/.shipyard/crew/tools/<name>.yaml` (mode `0600`) with the same schema used inline in `agent.yaml`. Reference it from any agent:
+
+```yaml
+tools:
+  - ref: echo                  # picked up from the library
+  - name: local_only           # inline still works, and can be mixed freely
+    protocol: exec
+    command: ["/bin/date"]
+```
+
+Validation rules: `ref` and inline fields are mutually exclusive on the same item; a `ref` pointing at a missing file fails `shipyard crew run` loudly (the error lists the available tools). Inline tool names cannot collide with a `ref` resolution — duplicates are rejected at load time.
+
+## Using MCPs you already installed in Claude Code
+
+Claude Code users typically have external MCPs configured in `~/.claude.json` (e.g. `chrome-devtools`, `@playwright/mcp`). An agent can re-use them without touching that file:
+
+```yaml
+# agent.yaml
+tools:
+  - ref: echo
+mcp_servers:
+  - ref: chrome-devtools     # must exist under ~/.claude.json mcpServers.<key>
+```
+
+At run-time, the crew backend copies the matching block **verbatim** from `~/.claude.json` into the synthesised `--mcp-config` handed to the external CLI. If the ref is missing, the run fails with the list of available keys (or `<none>` when `~/.claude.json` is absent) — there is no silent fallback. Only the root-level `mcpServers` is read in v1; per-project scopes (`projects.<path>.mcpServers`) are ignored (roadmap §1.7).
+
+When the agent has neither tools nor `mcp_servers`, no `--mcp-config` is generated and the CLI is invoked exactly as before — so existing agents pay nothing for the new feature.
+
 ## Directory layout
 
 ```
@@ -385,6 +439,8 @@ The roadmap at `docs/crew/roadmap.md` has the full list. Highlights:
 - **`shipyard crew run` exits `70` with "version mismatch".** The daemon and the core CLI disagree on protocol version. Reinstall the addon: `shipyard crew install --force`, then restart the daemon (`shipyard service restart crew-<name>`).
 - **"pool full" or `--timeout` exceeded while queued.** The configured concurrency pool has no free slot and the queue is full or the wait exceeded `max_wait`. Increase `concurrency.pools.<pool>.max` or `concurrency.queue.max_wait` in `~/.shipyard/crew/config.yaml`, or flip the strategy to `reject` if you prefer fast failures (e.g. for webhooks).
 - **`~/.local/bin is not in your PATH` after install.** The installer warns when `~/.local/bin` is missing from `$PATH`. Add it to your shell rc file (e.g. `export PATH="$HOME/.local/bin:$PATH"`) and open a new shell.
+- **`shipyard crew run` fails with "unknown tool ref `<name>`".** The agent's `tools: [{ref: <name>}]` does not match any file in `~/.shipyard/crew/tools/`. List with `shipyard crew tool list`, then either `shipyard crew tool add <name> …` or edit the agent to use a ref that exists.
+- **`shipyard crew run` fails with "mcp_servers: ref `<k>` not found; available: …".** The ref does not match any key of `mcpServers` in `~/.claude.json`. The error message prints the available keys (or `<none>` when the file is absent). Add the MCP to `~/.claude.json` via `claude mcp add …` or remove the ref from the agent.
 
 ## Development
 
