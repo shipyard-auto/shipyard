@@ -307,6 +307,111 @@ func TestCLI_NoPromptNoFlagAppended(t *testing.T) {
 	}
 }
 
+// claudePrintShim writes a fake `claude --print --output-format json`
+// response to stdout. The shim captures its argv to argsFile so the test
+// can assert that --output-format json was appended by the backend. The
+// body is emitted verbatim regardless of stdin so happy/error paths are
+// interchangeable.
+func claudePrintShim(t *testing.T, body string) (*crew.Agent, string) {
+	t.Helper()
+	dir := t.TempDir()
+	argsFile := filepath.Join(dir, "args.txt")
+	script := filepath.Join(dir, "claude.sh")
+	// Use printf so bodies with single quotes survive the shell.
+	src := "#!/bin/sh\nfor a in \"$@\"; do printf '%s\\n' \"$a\" >> " + argsFile + "; done\n" +
+		"cat >/dev/null\n" +
+		"cat <<'EOF'\n" + body + "\nEOF\n"
+	if err := os.WriteFile(script, []byte(src), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	a := &crew.Agent{
+		Name:         "t",
+		Backend:      crew.Backend{Type: crew.BackendCLI, Command: []string{script}},
+		Conversation: crew.Conversation{Mode: crew.ConversationStateful, Key: "{{input.chat_id}}"},
+	}
+	return a, argsFile
+}
+
+func TestCLI_StatefulAddsOutputFormatJSONAndParses(t *testing.T) {
+	agent, argsFile := claudePrintShim(t, `{"type":"result","is_error":false,"result":"Oi!","session_id":"abc-123","usage":{"input_tokens":2,"output_tokens":7}}`)
+
+	b := NewCLIBackend()
+	out, err := b.Run(context.Background(), RunInput{User: "hi", Agent: agent}, nil)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if out.Text != "Oi!" {
+		t.Fatalf("Text=%q want %q", out.Text, "Oi!")
+	}
+	if out.History.SessionID != "abc-123" {
+		t.Fatalf("SessionID=%q want %q", out.History.SessionID, "abc-123")
+	}
+	if out.Usage.InputTokens != 2 || out.Usage.OutputTokens != 7 {
+		t.Fatalf("Usage=%+v", out.Usage)
+	}
+
+	// argv must contain the JSON flag pair when stateful.
+	argv := strings.Join(readArgvLines(t, argsFile), " ")
+	if !strings.Contains(argv, "--output-format json") {
+		t.Fatalf("missing --output-format json: %v", argv)
+	}
+}
+
+func TestCLI_StatefulIsErrorPropagates(t *testing.T) {
+	agent, _ := claudePrintShim(t, `{"type":"result","is_error":true,"result":"boom","session_id":"s1"}`)
+
+	b := NewCLIBackend()
+	_, err := b.Run(context.Background(), RunInput{User: "hi", Agent: agent}, nil)
+	if err == nil || !strings.Contains(err.Error(), "boom") {
+		t.Fatalf("want error wrapping \"boom\", got %v", err)
+	}
+}
+
+func TestCLI_StatefulEmptySessionKeepsPrevious(t *testing.T) {
+	// Defensive contract: if Claude ever drops session_id for a turn, we
+	// keep the previous id so the conversation state is not lost.
+	agent, _ := claudePrintShim(t, `{"type":"result","is_error":false,"result":"ok","session_id":""}`)
+
+	b := NewCLIBackend()
+	out, err := b.Run(context.Background(), RunInput{
+		User:    "hi",
+		Agent:   agent,
+		History: conversation.History{SessionID: "old-sid"},
+	}, nil)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if out.History.SessionID != "old-sid" {
+		t.Fatalf("SessionID=%q want fallback %q", out.History.SessionID, "old-sid")
+	}
+}
+
+func TestCLI_StatefulBadJSONReturnsError(t *testing.T) {
+	agent, _ := claudePrintShim(t, `not json at all`)
+
+	b := NewCLIBackend()
+	_, err := b.Run(context.Background(), RunInput{User: "hi", Agent: agent}, nil)
+	if err == nil || !strings.Contains(err.Error(), "parse json") {
+		t.Fatalf("want json parse error, got %v", err)
+	}
+}
+
+func TestCLI_StatelessDoesNotAddJSONFlag(t *testing.T) {
+	// Regression guard: agents without Conversation.Mode stay on the text
+	// path. Breaking this would change behaviour for every existing crew.
+	agent, argsFile := captureArgvAgent(t, []string{"base"}, "")
+
+	b := NewCLIBackend()
+	_, err := b.Run(context.Background(), RunInput{User: "hi", Agent: agent}, nil)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	argv := strings.Join(readArgvLines(t, argsFile), " ")
+	if strings.Contains(argv, "--output-format") {
+		t.Fatalf("stateless must not append --output-format: %v", argv)
+	}
+}
+
 func TestCLI_MCPFlagsInjectedWhenToolsDeclared(t *testing.T) {
 	// When the agent declares tools, the backend must emit the MCP bridge
 	// config AND bypass the interactive permission prompt — otherwise

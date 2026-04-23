@@ -151,6 +151,16 @@ func (b *CLIBackend) Run(ctx context.Context, in RunInput, _ ToolDispatcher) (Ru
 		)
 	}
 
+	// Stateful agents must persist a session id across turns, but recent
+	// versions of `claude --print` no longer emit a `session=<id>` marker
+	// on stderr — the id is only surfaced through --output-format json.
+	// Stateless agents keep the plain-text path so non-Claude CLIs that
+	// echo their response on stdout keep working unchanged.
+	stateful := in.Agent.Conversation.Mode == crew.ConversationStateful
+	if stateful {
+		args = append(args, "--output-format", "json")
+	}
+
 	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
 	cmd.WaitDelay = cliWaitDelay
 	cmd.Stdin = strings.NewReader(in.User)
@@ -166,6 +176,10 @@ func (b *CLIBackend) Run(ctx context.Context, in RunInput, _ ToolDispatcher) (Ru
 		return RunOutput{}, fmt.Errorf("cli run: %w; stderr=%s", err, truncate(stderr.String(), 1024))
 	}
 
+	if stateful {
+		return parseClaudeJSONResult(stdout.Bytes(), in.History.SessionID)
+	}
+
 	sid := b.extractSessionID(stderr.String())
 	if sid == "" {
 		sid = in.History.SessionID
@@ -175,6 +189,54 @@ func (b *CLIBackend) Run(ctx context.Context, in RunInput, _ ToolDispatcher) (Ru
 		Text:    strings.TrimRight(stdout.String(), "\n"),
 		History: conversation.History{SessionID: sid},
 		Usage:   Usage{},
+	}, nil
+}
+
+// claudePrintResult mirrors the single-object payload emitted by
+// `claude --print --output-format json`. Only the fields the crew runtime
+// consumes are decoded; anything else in the payload is ignored.
+type claudePrintResult struct {
+	IsError   bool   `json:"is_error"`
+	Result    string `json:"result"`
+	SessionID string `json:"session_id"`
+	Usage     struct {
+		InputTokens  int `json:"input_tokens"`
+		OutputTokens int `json:"output_tokens"`
+	} `json:"usage"`
+}
+
+// parseClaudeJSONResult decodes the JSON payload and projects it onto
+// RunOutput. Precedence for the persisted session id is:
+//  1. the JSON's session_id when non-empty (normal case),
+//  2. the previous turn's id otherwise (defensive: keeps existing state
+//     intact if a Claude build drops the field).
+//
+// is_error=true is surfaced as a hard error so the runner marks the run
+// as failed — stateless path deliberately does not do this because the
+// plain text mode has no structured error signal.
+func parseClaudeJSONResult(raw []byte, prevSID string) (RunOutput, error) {
+	var r claudePrintResult
+	if err := json.Unmarshal(raw, &r); err != nil {
+		return RunOutput{}, fmt.Errorf("cli parse json: %w; stdout=%s", err, truncate(string(raw), 512))
+	}
+	if r.IsError {
+		msg := strings.TrimSpace(r.Result)
+		if msg == "" {
+			msg = "(empty result)"
+		}
+		return RunOutput{}, fmt.Errorf("cli reported error: %s", msg)
+	}
+	sid := r.SessionID
+	if sid == "" {
+		sid = prevSID
+	}
+	return RunOutput{
+		Text:    r.Result,
+		History: conversation.History{SessionID: sid},
+		Usage: Usage{
+			InputTokens:  r.Usage.InputTokens,
+			OutputTokens: r.Usage.OutputTokens,
+		},
 	}, nil
 }
 
