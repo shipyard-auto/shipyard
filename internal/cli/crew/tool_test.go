@@ -60,6 +60,55 @@ func TestRunToolAdd_ExecHappyPath(t *testing.T) {
 	}
 }
 
+func TestRunToolAdd_SchemaFlagsPersist(t *testing.T) {
+	home := setHome(t)
+	err := runToolAdd(&bytes.Buffer{}, "echo", toolAddFlags{
+		protocol:     "exec",
+		command:      []string{"/bin/true"},
+		inputSchema:  []string{"text=string", "max_price=number"},
+		outputSchema: []string{"echoed=string"},
+	})
+	if err != nil {
+		t.Fatalf("runToolAdd: %v", err)
+	}
+	raw, err := os.ReadFile(filepath.Join(home, "crew", "tools", "echo.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc toolDoc
+	if err := yaml.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc.InputSchema["text"] != "string" || doc.InputSchema["max_price"] != "number" {
+		t.Fatalf("input_schema=%v", doc.InputSchema)
+	}
+	if doc.OutputSchema["echoed"] != "string" {
+		t.Fatalf("output_schema=%v", doc.OutputSchema)
+	}
+	// Round-trip through YAML must keep the domain keys (input_schema/output_schema).
+	if !strings.Contains(string(raw), "input_schema:") || !strings.Contains(string(raw), "output_schema:") {
+		t.Fatalf("yaml missing schema keys:\n%s", raw)
+	}
+}
+
+func TestRunToolAdd_OmitsSchemaWhenUnset(t *testing.T) {
+	// Tools that take no arguments must not sprout empty schema maps in the
+	// emitted YAML — that would be noise compared to hand-written files.
+	home := setHome(t)
+	if err := runToolAdd(&bytes.Buffer{}, "noop", toolAddFlags{
+		protocol: "exec", command: []string{"/bin/true"},
+	}); err != nil {
+		t.Fatalf("runToolAdd: %v", err)
+	}
+	raw, err := os.ReadFile(filepath.Join(home, "crew", "tools", "noop.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "input_schema") || strings.Contains(string(raw), "output_schema") {
+		t.Fatalf("unexpected schema keys in:\n%s", raw)
+	}
+}
+
 func TestRunToolAdd_HTTPHappyPath(t *testing.T) {
 	home := setHome(t)
 	err := runToolAdd(&bytes.Buffer{}, "weather", toolAddFlags{
@@ -145,6 +194,43 @@ func TestRunToolAdd_Errors(t *testing.T) {
 			toolNm:  "t",
 			flags:   toolAddFlags{protocol: "http", method: "GET", url: "https://x", headers: []string{"no-colon"}},
 			wantSub: "invalid --header",
+		},
+		{
+			name:    "input-schema missing equals",
+			toolNm:  "t",
+			flags:   toolAddFlags{protocol: "exec", command: []string{"/x"}, inputSchema: []string{"text"}},
+			wantSub: "invalid --input-schema",
+		},
+		{
+			name:    "input-schema empty key",
+			toolNm:  "t",
+			flags:   toolAddFlags{protocol: "exec", command: []string{"/x"}, inputSchema: []string{"=string"}},
+			wantSub: "empty field name",
+		},
+		{
+			name:    "input-schema empty type",
+			toolNm:  "t",
+			flags:   toolAddFlags{protocol: "exec", command: []string{"/x"}, inputSchema: []string{"text="}},
+			wantSub: "empty type",
+		},
+		{
+			name:    "input-schema bad type",
+			toolNm:  "t",
+			flags:   toolAddFlags{protocol: "exec", command: []string{"/x"}, inputSchema: []string{"text=int"}},
+			wantSub: `type "int" not in`,
+		},
+		{
+			name:   "input-schema duplicate key",
+			toolNm: "t",
+			flags: toolAddFlags{protocol: "exec", command: []string{"/x"},
+				inputSchema: []string{"text=string", "text=number"}},
+			wantSub: "declared more than once",
+		},
+		{
+			name:    "output-schema bad type",
+			toolNm:  "t",
+			flags:   toolAddFlags{protocol: "exec", command: []string{"/x"}, outputSchema: []string{"x=float"}},
+			wantSub: "invalid --output-schema",
 		},
 	}
 	for _, tc := range cases {
@@ -436,6 +522,44 @@ func TestFindAgentUsers_NoCrewDir(t *testing.T) {
 	}
 	if len(users) != 0 {
 		t.Fatalf("users=%v", users)
+	}
+}
+
+func TestParseSchemaFlag(t *testing.T) {
+	// Happy path: empty input yields nil map (not an empty map — YAML omits it).
+	got, err := parseSchemaFlag("--input-schema", nil)
+	if err != nil {
+		t.Fatalf("nil input: %v", err)
+	}
+	if got != nil {
+		t.Fatalf("want nil, got %v", got)
+	}
+
+	// Happy path with whitespace: trimmed on both sides.
+	got, err = parseSchemaFlag("--input-schema", []string{"  text = string  "})
+	if err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	if got["text"] != "string" || len(got) != 1 {
+		t.Fatalf("trim broken: %v", got)
+	}
+
+	// All five allowed types must be accepted — pins the parity contract
+	// with addons/crew/internal/crew.isValidSchemaType.
+	got, err = parseSchemaFlag("--input-schema", []string{
+		"a=string", "b=number", "c=boolean", "d=object", "e=array",
+	})
+	if err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	if len(got) != 5 {
+		t.Fatalf("want 5 fields, got %d: %v", len(got), got)
+	}
+
+	// Label surfaces in error messages so users know which flag is wrong.
+	_, err = parseSchemaFlag("--output-schema", []string{"bad"})
+	if err == nil || !strings.Contains(err.Error(), "--output-schema") {
+		t.Fatalf("label missing: %v", err)
 	}
 }
 

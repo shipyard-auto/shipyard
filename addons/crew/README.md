@@ -92,9 +92,13 @@ When the same tool shows up in more than one agent, promote it to the shared lib
 
 ```bash
 # Create an exec tool. Payload is read from stdin as JSON; envelope goes to stdout.
+# Declare the expected input fields with --input-schema so the MCP bridge
+# exposes them to the LLM — without it the model calls the tool with no args.
 shipyard crew tool add echo \
   --protocol exec \
   --description "Echo the payload back" \
+  --input-schema text=string \
+  --output-schema echoed=string \
   --command /bin/sh \
   --command -c \
   --command 'read l; printf %s "{\"ok\":true,\"data\":{\"echoed\":$(printf %s "$l" | jq -Rs .)}}"'
@@ -104,6 +108,7 @@ shipyard crew tool add telegram_send \
   --protocol http --method POST \
   --url "http://localhost:9876/telegram/send" \
   --header "Authorization: Bearer {{env.TG_TOKEN}}" \
+  --input-schema chat_id=string --input-schema text=string \
   --body '{"chat_id": "{{input.chat_id}}", "text": "{{input.text}}"}'
 
 shipyard crew tool list             # table or --json
@@ -358,7 +363,7 @@ shipyard crew apply     <name> [--dry-run] [--json]
 shipyard crew list      [--json] [--long] [-v|--verbose]
 shipyard crew run       <name> [--input JSON] [--input-file PATH] [--timeout DUR] [--json]
 shipyard crew logs      <name> [-f|--follow] [--since DUR] [--tail N] [--json]
-shipyard crew tool add  <name> --protocol exec|http [--command ... | --method/--url/--header/--body] [--description TEXT] [--force]
+shipyard crew tool add  <name> --protocol exec|http [--command ... | --method/--url/--header/--body] [--input-schema KEY=TYPE ...] [--output-schema KEY=TYPE ...] [--description TEXT] [--force]
 shipyard crew tool list [--json]
 shipyard crew tool show <name> [--json]
 shipyard crew tool rm   <name> [--yes]

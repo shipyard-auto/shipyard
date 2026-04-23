@@ -26,6 +26,13 @@ var allowedHTTPMethods = map[string]bool{
 	"GET": true, "POST": true, "PUT": true, "PATCH": true, "DELETE": true,
 }
 
+// allowedSchemaTypes mirrors addons/crew/internal/crew.isValidSchemaType.
+// Duplicated locally so the core CLI stays independent of the addon —
+// the addon revalidates at load time, which catches drift early.
+var allowedSchemaTypes = map[string]bool{
+	"string": true, "number": true, "boolean": true, "object": true, "array": true,
+}
+
 // toolDoc is the shape we serialise to ~/.shipyard/crew/tools/<name>.yaml.
 // It intentionally mirrors the addon's crew.Tool struct — we keep it local
 // to avoid importing across the boundary, and the addon's LoadTool
@@ -62,14 +69,16 @@ func newToolCmd() *cobra.Command {
 // --- add ---------------------------------------------------------------
 
 type toolAddFlags struct {
-	protocol    string
-	description string
-	command     []string
-	method      string
-	url         string
-	headers     []string
-	body        string
-	force       bool
+	protocol     string
+	description  string
+	command      []string
+	method       string
+	url          string
+	headers      []string
+	body         string
+	inputSchema  []string
+	outputSchema []string
+	force        bool
 }
 
 func newToolAddCmd() *cobra.Command {
@@ -90,6 +99,10 @@ func newToolAddCmd() *cobra.Command {
 	cmd.Flags().StringVar(&f.url, "url", "", "http: target URL")
 	cmd.Flags().StringArrayVar(&f.headers, "header", nil, "http: header as Key: Value (repeat)")
 	cmd.Flags().StringVar(&f.body, "body", "", "http: request body template")
+	cmd.Flags().StringArrayVar(&f.inputSchema, "input-schema", nil,
+		"declare an input field as KEY=TYPE (repeat for each field; TYPE in {string,number,boolean,object,array})")
+	cmd.Flags().StringArrayVar(&f.outputSchema, "output-schema", nil,
+		"declare an output field inside data as KEY=TYPE (repeat; same TYPE set)")
 	cmd.Flags().BoolVar(&f.force, "force", false, "overwrite existing tool file")
 	return cmd
 }
@@ -99,7 +112,21 @@ func runToolAdd(out io.Writer, name string, f toolAddFlags) error {
 		return fmt.Errorf("invalid name %q: must match %s", name, toolNameRe)
 	}
 
-	doc := toolDoc{Name: name, Description: f.description}
+	inputSchema, err := parseSchemaFlag("--input-schema", f.inputSchema)
+	if err != nil {
+		return err
+	}
+	outputSchema, err := parseSchemaFlag("--output-schema", f.outputSchema)
+	if err != nil {
+		return err
+	}
+
+	doc := toolDoc{
+		Name:         name,
+		Description:  f.description,
+		InputSchema:  inputSchema,
+		OutputSchema: outputSchema,
+	}
 	switch f.protocol {
 	case "exec":
 		if len(f.command) == 0 {
@@ -159,6 +186,45 @@ func runToolAdd(out io.Writer, name string, f toolAddFlags) error {
 	}
 	fmt.Fprintf(out, "Tool %q created at %s\n", name, path)
 	return nil
+}
+
+// parseSchemaFlag parses a repeated --input-schema / --output-schema flag
+// of the form KEY=TYPE into a map suitable for toolDoc. The kind argument
+// is the flag name we report on errors so both use sites get precise
+// messages without duplicating logic.
+//
+// Rules, in order:
+//   - each entry must contain exactly one '=' (empty raw slice → nil map).
+//   - key cannot be empty or whitespace-only.
+//   - type must be in allowedSchemaTypes.
+//   - duplicate keys across entries are rejected.
+func parseSchemaFlag(kind string, raw []string) (map[string]string, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	out := make(map[string]string, len(raw))
+	for _, entry := range raw {
+		k, v, ok := strings.Cut(entry, "=")
+		if !ok {
+			return nil, fmt.Errorf("invalid %s %q: expected KEY=TYPE", kind, entry)
+		}
+		k = strings.TrimSpace(k)
+		v = strings.TrimSpace(v)
+		if k == "" {
+			return nil, fmt.Errorf("invalid %s %q: empty field name", kind, entry)
+		}
+		if v == "" {
+			return nil, fmt.Errorf("invalid %s %q: empty type", kind, entry)
+		}
+		if !allowedSchemaTypes[v] {
+			return nil, fmt.Errorf("invalid %s %q: type %q not in {string,number,boolean,object,array}", kind, entry, v)
+		}
+		if _, dup := out[k]; dup {
+			return nil, fmt.Errorf("invalid %s: field %q declared more than once", kind, k)
+		}
+		out[k] = v
+	}
+	return out, nil
 }
 
 func parseHeaders(raw []string) (map[string]string, error) {
