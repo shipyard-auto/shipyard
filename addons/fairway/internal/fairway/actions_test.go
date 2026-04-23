@@ -537,6 +537,103 @@ func TestHTTPForward_proxyRequest_bodyBoundLimit(t *testing.T) {
 	}
 }
 
+func TestHTTPForward_forwardsBodyWithContentLengthNotChunked(t *testing.T) {
+	t.Parallel()
+
+	// Downstreams like Python http.server read strictly by Content-Length
+	// and silently ignore chunked bodies. Ensure the outgoing request has
+	// Content-Length set and Transfer-Encoding unset, and the body bytes
+	// pass through unchanged.
+	var capturedReq *http.Request
+	var capturedBody []byte
+	client := &captureHTTPClient{fn: func(r *http.Request) (*http.Response, error) {
+		capturedReq = r
+		if r.Body != nil {
+			capturedBody, _ = io.ReadAll(r.Body)
+		}
+		return staticHTTPResponse(200, "", nil), nil
+	}}
+
+	cfg := defaultExec(helperRunner())
+	cfg.HTTP = client
+	e := fairway.NewExecutor(*cfg)
+
+	payload := `{"termo":"Shipyard"}`
+	route := forwardRoute("http://example.com/hook", http.MethodPost, nil)
+	req := httptest.NewRequest(http.MethodPost, "/fwd", strings.NewReader(payload))
+
+	e.Execute(context.Background(), route, req) //nolint:errcheck
+
+	if capturedReq == nil {
+		t.Fatal("HTTP client was never called")
+	}
+	if got := capturedReq.ContentLength; got != int64(len(payload)) {
+		t.Errorf("outgoing ContentLength = %d; want %d", got, len(payload))
+	}
+	if te := capturedReq.TransferEncoding; len(te) != 0 {
+		t.Errorf("outgoing TransferEncoding = %v; want none", te)
+	}
+	if string(capturedBody) != payload {
+		t.Errorf("downstream body = %q; want %q", string(capturedBody), payload)
+	}
+}
+
+func TestHTTPForward_oversizedRequestBody_returns413(t *testing.T) {
+	t.Parallel()
+
+	// A body larger than MaxSubprocessOutput must be rejected with 413
+	// rather than silently truncated and forwarded.
+	var called bool
+	client := &captureHTTPClient{fn: func(r *http.Request) (*http.Response, error) {
+		called = true
+		return staticHTTPResponse(200, "", nil), nil
+	}}
+
+	cfg := defaultExec(helperRunner())
+	cfg.HTTP = client
+	e := fairway.NewExecutor(*cfg)
+
+	bigBody := strings.Repeat("x", int(fairway.MaxSubprocessOutput)+1)
+	route := forwardRoute("http://example.com/hook", http.MethodPost, nil)
+	req := httptest.NewRequest(http.MethodPost, "/fwd", strings.NewReader(bigBody))
+
+	result, _ := e.Execute(context.Background(), route, req)
+	if result.HTTPStatus != 413 {
+		t.Errorf("HTTPStatus = %d; want 413", result.HTTPStatus)
+	}
+	if called {
+		t.Error("downstream was called; expected request to be rejected before forwarding")
+	}
+}
+
+func TestHTTPForward_emptyBody_sendsContentLengthZero(t *testing.T) {
+	t.Parallel()
+
+	// A nil-body request must not become chunked either — downstream should
+	// see Content-Length: 0 and no Transfer-Encoding.
+	var capturedReq *http.Request
+	client := &captureHTTPClient{fn: func(r *http.Request) (*http.Response, error) {
+		capturedReq = r
+		return staticHTTPResponse(200, "", nil), nil
+	}}
+
+	cfg := defaultExec(helperRunner())
+	cfg.HTTP = client
+	e := fairway.NewExecutor(*cfg)
+
+	route := forwardRoute("http://example.com/hook", http.MethodPost, nil)
+	req := httptest.NewRequest(http.MethodPost, "/fwd", nil)
+
+	e.Execute(context.Background(), route, req) //nolint:errcheck
+
+	if capturedReq == nil {
+		t.Fatal("HTTP client was never called")
+	}
+	if te := capturedReq.TransferEncoding; len(te) != 0 {
+		t.Errorf("outgoing TransferEncoding = %v; want none", te)
+	}
+}
+
 func TestHTTPForward_targetUnreachable_returns502(t *testing.T) {
 	t.Parallel()
 

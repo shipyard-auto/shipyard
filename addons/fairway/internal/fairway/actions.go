@@ -214,9 +214,21 @@ func (e *executor) executeHTTPForward(ctx context.Context, route Route, req *htt
 		method = http.MethodPost
 	}
 
+	// Buffer the incoming body so the outgoing request has a concrete type
+	// (*bytes.Reader) that net/http knows how to measure. Without this
+	// net/http falls back to Transfer-Encoding: chunked, which some
+	// downstreams (Python http.server, minimal HTTP/1.0 stacks) do not
+	// accept — they read strictly by Content-Length and see an empty body.
 	var bodyReader io.Reader
 	if req.Body != nil {
-		bodyReader = io.LimitReader(req.Body, MaxSubprocessOutput)
+		buf, err := io.ReadAll(io.LimitReader(req.Body, MaxSubprocessOutput+1))
+		if err != nil {
+			return Result{HTTPStatus: 400, ExitCode: -1, Duration: e.cfg.Now().Sub(start)}, nil
+		}
+		if int64(len(buf)) > MaxSubprocessOutput {
+			return Result{HTTPStatus: 413, ExitCode: -1, Duration: e.cfg.Now().Sub(start)}, nil
+		}
+		bodyReader = bytes.NewReader(buf)
 	}
 
 	outReq, err := http.NewRequestWithContext(ctx, method, route.Action.URL, bodyReader)
