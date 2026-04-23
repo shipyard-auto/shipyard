@@ -259,6 +259,70 @@ func TestHandshake_versionMismatch_returnsError_closesConn(t *testing.T) {
 	}
 }
 
+func TestHandshake_sameMajorMinorDrift_succeeds(t *testing.T) {
+	t.Parallel()
+
+	// Daemon at 1.1.5, client at 1.1.7 — distinct minor/patch within major 1.
+	// Matches the real-world scenario where shipyard core and the fairway
+	// addon release on independent cadences within a compatible major.
+	sockPath := startSocket(t, defaultSocketCfg("1.1.5", newTestRouter(t), nil))
+
+	conn, err := net.Dial("unix", sockPath)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	scanner := bufio.NewScanner(conn)
+	sendRPC(t, conn, 1, "handshake", map[string]string{"version": "1.1.7"})
+
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if !scanner.Scan() {
+		t.Fatalf("scan: %v", scanner.Err())
+	}
+	_ = conn.SetReadDeadline(time.Time{})
+
+	var resp fairway.Response
+	if err := json.Unmarshal(scanner.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp.Error != nil {
+		t.Fatalf("expected success, got error: %+v", resp.Error)
+	}
+	if resp.Result == nil {
+		t.Fatal("expected result payload on success")
+	}
+}
+
+func TestHandshake_majorDrift_returnsMismatch(t *testing.T) {
+	t.Parallel()
+
+	// Daemon at 1.x, client at 2.x — socket contract may have broken.
+	sockPath := startSocket(t, defaultSocketCfg("1.9.9", newTestRouter(t), nil))
+
+	conn, err := net.Dial("unix", sockPath)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	scanner := bufio.NewScanner(conn)
+	sendRPC(t, conn, 1, "handshake", map[string]string{"version": "2.0.0"})
+
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if !scanner.Scan() {
+		t.Fatalf("scan: %v", scanner.Err())
+	}
+	_ = conn.SetReadDeadline(time.Time{})
+
+	var resp fairway.Response
+	json.Unmarshal(scanner.Bytes(), &resp)
+
+	if resp.Error == nil || resp.Error.Code != fairway.ErrCodeVersionMismatch {
+		t.Fatalf("error = %+v; want code %d", resp.Error, fairway.ErrCodeVersionMismatch)
+	}
+}
+
 func TestHandshake_timeout_closesConn(t *testing.T) {
 	t.Parallel()
 

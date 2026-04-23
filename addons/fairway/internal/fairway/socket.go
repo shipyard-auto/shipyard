@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -214,7 +215,7 @@ func (s *SocketServer) handleConn(ctx context.Context, conn net.Conn) {
 		return
 	}
 
-	if hsParams.Version != s.version {
+	if !compatibleVersion(s.version, hsParams.Version) {
 		_ = cw.write(errResp(req.ID, ErrCodeVersionMismatch, "version mismatch", map[string]string{
 			"daemon": s.version,
 			"client": hsParams.Version,
@@ -383,4 +384,32 @@ func isTimeoutErr(err error) bool {
 	}
 	var ne net.Error
 	return errors.As(err, &ne) && ne.Timeout()
+}
+
+// compatibleVersion returns true iff the daemon and client versions share the
+// same semantic major. Versions that cannot be parsed as semver fall back to
+// strict string equality. This mirrors the policy used by the crew daemon so
+// that addon and core release cadences can evolve independently within a major.
+func compatibleVersion(server, client string) bool {
+	sM, sOK := parseMajor(server)
+	cM, cOK := parseMajor(client)
+	if !sOK || !cOK {
+		return server == client
+	}
+	return sM == cM
+}
+
+func parseMajor(v string) (int, bool) {
+	s := strings.TrimPrefix(strings.TrimSpace(v), "v")
+	if s == "" {
+		return 0, false
+	}
+	if i := strings.IndexAny(s, ".-+"); i >= 0 {
+		s = s[:i]
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		return 0, false
+	}
+	return n, true
 }
