@@ -69,6 +69,7 @@ type runtimeDeps struct {
 	RunService   func(ctx context.Context, opts daemon.Options) (int, error)
 	RunOnDemand  func(ctx context.Context, req onDemandRequest) (int, error)
 	RunReconcile func(ctx context.Context, req reconcileRequest) (int, error)
+	RunMCPServe  func(ctx context.Context, req mcpServeRequest) (int, error)
 }
 
 type onDemandRequest struct {
@@ -102,6 +103,10 @@ func run(ctx context.Context, deps runtimeDeps) int {
 
 	if len(deps.Args) > 0 && deps.Args[0] == "reconcile" {
 		return runReconcileMode(ctx, deps, deps.Args[1:])
+	}
+
+	if len(deps.Args) > 0 && deps.Args[0] == "mcp-serve" {
+		return runMCPServeMode(ctx, deps, deps.Args[1:])
 	}
 
 	fs := flag.NewFlagSet("shipyard-crew", flag.ContinueOnError)
@@ -323,6 +328,9 @@ func (d runtimeDeps) withDefaults() runtimeDeps {
 	}
 	if d.RunReconcile == nil {
 		d.RunReconcile = defaultRunReconcile
+	}
+	if d.RunMCPServe == nil {
+		d.RunMCPServe = defaultRunMCPServe
 	}
 	return d
 }

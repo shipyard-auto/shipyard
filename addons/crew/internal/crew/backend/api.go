@@ -13,6 +13,7 @@ import (
 
 	"github.com/shipyard-auto/shipyard/addons/crew/internal/crew"
 	"github.com/shipyard-auto/shipyard/addons/crew/internal/crew/conversation"
+	"github.com/shipyard-auto/shipyard/addons/crew/internal/crew/tools"
 )
 
 const (
@@ -281,13 +282,13 @@ func (b *APIBackend) call(ctx context.Context, apiKey string, body apiRequest) (
 	return &out, nil
 }
 
-func toolsToAPI(tools []crew.Tool) []apiToolDef {
-	if len(tools) == 0 {
+func toolsToAPI(ts []crew.Tool) []apiToolDef {
+	if len(ts) == 0 {
 		return nil
 	}
-	out := make([]apiToolDef, 0, len(tools))
-	for _, t := range tools {
-		schema := buildJSONSchema(t.InputSchema)
+	out := make([]apiToolDef, 0, len(ts))
+	for _, t := range ts {
+		schema := tools.BuildJSONSchema(t.InputSchema)
 		raw, _ := json.Marshal(schema)
 		out = append(out, apiToolDef{
 			Name:        t.Name,
@@ -296,32 +297,6 @@ func toolsToAPI(tools []crew.Tool) []apiToolDef {
 		})
 	}
 	return out
-}
-
-func buildJSONSchema(schema map[string]string) map[string]any {
-	props := map[string]any{}
-	for name, typ := range schema {
-		props[name] = map[string]any{"type": mapType(typ)}
-	}
-	return map[string]any{
-		"type":       "object",
-		"properties": props,
-	}
-}
-
-func mapType(t string) string {
-	switch t {
-	case "number":
-		return "number"
-	case "boolean":
-		return "boolean"
-	case "object":
-		return "object"
-	case "array":
-		return "array"
-	default:
-		return "string"
-	}
 }
 
 func historyToAPI(h conversation.History) []apiMessage {

@@ -19,4 +19,18 @@ conversation:
 
 triggers: []
 
+# Tools this agent can call. Two styles are supported:
+#   - Inline definition (same fields as a library entry)
+#   - Library reference: "- ref: <tool-name>"
+#     (loaded from ~/.shipyard/crew/tools/<tool-name>.yaml)
+# See `shipyard crew tool add --help` to manage the library.
 tools: []
+
+# External MCP servers to expose alongside this agent's tools. Each entry
+# is a ref to a key defined in ~/.claude.json (root-level mcpServers).
+# Missing refs hard-fail at run-time so the agent cannot silently lose
+# capabilities.
+# Example:
+#   mcp_servers:
+#     - ref: chrome-devtools
+# mcp_servers: []

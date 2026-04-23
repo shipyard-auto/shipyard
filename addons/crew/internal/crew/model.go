@@ -16,6 +16,11 @@ const SchemaVersion = "1"
 var (
 	AgentNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,62}$`)
 	ToolNameRe  = regexp.MustCompile(`^[a-z][a-z0-9_]{0,62}$`)
+	// MCPRefRe matches the identifier of an MCP server declared under the
+	// root "mcpServers" map of ~/.claude.json. It accepts letters, digits,
+	// dots, underscores and hyphens — the character set Claude Code itself
+	// allows when registering a server via `claude mcp add`.
+	MCPRefRe = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.\-]{0,62}$`)
 )
 
 type BackendType string
@@ -54,15 +59,16 @@ const (
 )
 
 type Agent struct {
-	Name         string       `yaml:"name"`
-	Description  string       `yaml:"description"`
-	Backend      Backend      `yaml:"backend"`
-	Execution    Execution    `yaml:"execution"`
-	Conversation Conversation `yaml:"conversation"`
-	Triggers     []Trigger    `yaml:"triggers"`
-	Tools        []Tool       `yaml:"tools"`
-	PromptPath   string       `yaml:"-"`
-	Dir          string       `yaml:"-"`
+	Name         string         `yaml:"name"`
+	Description  string         `yaml:"description"`
+	Backend      Backend        `yaml:"backend"`
+	Execution    Execution      `yaml:"execution"`
+	Conversation Conversation   `yaml:"conversation"`
+	Triggers     []Trigger      `yaml:"triggers"`
+	Tools        []Tool         `yaml:"tools"`
+	MCPServers   []MCPServerRef `yaml:"mcp_servers"`
+	PromptPath   string         `yaml:"-"`
+	Dir          string         `yaml:"-"`
 }
 
 type Backend struct {
@@ -93,15 +99,30 @@ type Trigger struct {
 }
 
 type Tool struct {
-	Name        string            `yaml:"name"`
-	Protocol    ToolProtocol      `yaml:"protocol"`
-	Description string            `yaml:"description,omitempty"`
-	InputSchema map[string]string `yaml:"input_schema,omitempty"`
-	Command     []string          `yaml:"command,omitempty"`
-	Method      string            `yaml:"method,omitempty"`
-	URL         string            `yaml:"url,omitempty"`
-	Headers     map[string]string `yaml:"headers,omitempty"`
-	Body        string            `yaml:"body,omitempty"`
+	Name         string            `yaml:"name"`
+	Protocol     ToolProtocol      `yaml:"protocol"`
+	Description  string            `yaml:"description,omitempty"`
+	InputSchema  map[string]string `yaml:"input_schema,omitempty"`
+	OutputSchema map[string]string `yaml:"output_schema,omitempty"`
+	Command      []string          `yaml:"command,omitempty"`
+	Method       string            `yaml:"method,omitempty"`
+	URL          string            `yaml:"url,omitempty"`
+	Headers      map[string]string `yaml:"headers,omitempty"`
+	Body         string            `yaml:"body,omitempty"`
+}
+
+// MCPServerRef points to an MCP server that the user already configured
+// elsewhere (today: the root "mcpServers" map in ~/.claude.json). When a
+// crew agent declares one of these, the crew runtime passes the resolved
+// server definition through to Claude Code via --mcp-config, so the agent
+// can call that MCP's tools alongside its own.
+//
+// Client-side filtering (e.g. "expose only take_screenshot of chrome-devtools")
+// is intentionally out of scope in v1: it would require a proxy MCP server
+// between Claude and the real one. See docs/crew/roadmap.md for the
+// follow-up item.
+type MCPServerRef struct {
+	Ref string `yaml:"ref"`
 }
 
 func (a Agent) Validate() error {
@@ -141,6 +162,29 @@ func (a Agent) Validate() error {
 			return fmt.Errorf("agent.triggers: duplicate trigger at index %d", i)
 		}
 		seenTrig[key] = struct{}{}
+	}
+	seenRef := map[string]struct{}{}
+	for i, m := range a.MCPServers {
+		if err := m.Validate(); err != nil {
+			return fmt.Errorf("agent.mcp_servers[%d]: %w", i, err)
+		}
+		if _, dup := seenRef[m.Ref]; dup {
+			return fmt.Errorf("agent.mcp_servers: duplicate ref %q at index %d", m.Ref, i)
+		}
+		if _, clash := names[m.Ref]; clash {
+			return fmt.Errorf("agent.mcp_servers[%d]: ref %q collides with tools[].name", i, m.Ref)
+		}
+		seenRef[m.Ref] = struct{}{}
+	}
+	return nil
+}
+
+// Validate enforces the server-ref identifier regex. Resolution against
+// ~/.claude.json happens later, in the backend — the domain layer only
+// ensures the reference is syntactically sane.
+func (m MCPServerRef) Validate() error {
+	if !MCPRefRe.MatchString(m.Ref) {
+		return fmt.Errorf("ref %q: must match %s", m.Ref, MCPRefRe)
 	}
 	return nil
 }
@@ -254,6 +298,14 @@ func (t Tool) Validate() error {
 	for field, typ := range t.InputSchema {
 		if !isValidSchemaType(typ) {
 			return fmt.Errorf("input_schema[%q]: invalid type %q (allowed: string,number,boolean,object,array)", field, typ)
+		}
+	}
+	for field, typ := range t.OutputSchema {
+		if strings.TrimSpace(field) == "" {
+			return errors.New("output_schema: empty field name")
+		}
+		if !isValidSchemaType(typ) {
+			return fmt.Errorf("output_schema[%q]: invalid type %q (allowed: string,number,boolean,object,array)", field, typ)
 		}
 	}
 	return nil

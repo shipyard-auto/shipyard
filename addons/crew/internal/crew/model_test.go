@@ -54,6 +54,27 @@ func TestAgentValidate(t *testing.T) {
 		{"duplicate trigger", func(a *Agent) {
 			a.Triggers = append(a.Triggers, Trigger{Type: TriggerCron, Schedule: "0 */3 * * *"})
 		}, "duplicate trigger"},
+		{"mcp_servers ok", func(a *Agent) {
+			a.MCPServers = []MCPServerRef{{Ref: "chrome-devtools"}}
+		}, ""},
+		{"mcp_servers empty ref", func(a *Agent) {
+			a.MCPServers = []MCPServerRef{{Ref: ""}}
+		}, "mcp_servers[0]"},
+		{"mcp_servers bad ref chars", func(a *Agent) {
+			a.MCPServers = []MCPServerRef{{Ref: "has space"}}
+		}, "mcp_servers[0]"},
+		{"mcp_servers duplicate", func(a *Agent) {
+			a.MCPServers = []MCPServerRef{{Ref: "x"}, {Ref: "x"}}
+		}, "duplicate ref"},
+		{"mcp_servers collides with tool", func(a *Agent) {
+			a.MCPServers = []MCPServerRef{{Ref: "scraper"}}
+		}, "collides with tools"},
+		{"tool output_schema ok", func(a *Agent) {
+			a.Tools[0].OutputSchema = map[string]string{"ok": "boolean"}
+		}, ""},
+		{"tool output_schema invalid type", func(a *Agent) {
+			a.Tools[0].OutputSchema = map[string]string{"ok": "datetime"}
+		}, "output_schema"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -207,6 +228,9 @@ func TestToolValidate(t *testing.T) {
 		{"http with command", Tool{Name: "x", Protocol: ToolHTTP, Method: "GET", URL: "https://a", Command: []string{"y"}}, "must not set command"},
 		{"bad protocol", Tool{Name: "x", Protocol: "foo"}, "invalid protocol"},
 		{"schema invalid", Tool{Name: "x", Protocol: ToolExec, Command: []string{"y"}, InputSchema: map[string]string{"f": "date"}}, "invalid type"},
+		{"output_schema ok", Tool{Name: "x", Protocol: ToolExec, Command: []string{"y"}, OutputSchema: map[string]string{"f": "object"}}, ""},
+		{"output_schema invalid", Tool{Name: "x", Protocol: ToolExec, Command: []string{"y"}, OutputSchema: map[string]string{"f": "datetime"}}, "output_schema"},
+		{"output_schema empty field", Tool{Name: "x", Protocol: ToolExec, Command: []string{"y"}, OutputSchema: map[string]string{"   ": "string"}}, "output_schema"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -230,5 +254,38 @@ func TestToolValidate_AllSchemaTypes(t *testing.T) {
 		if err := tl.Validate(); err != nil {
 			t.Fatalf("type %s unexpected err: %v", typ, err)
 		}
+	}
+}
+
+func TestMCPServerRefValidate(t *testing.T) {
+	tests := []struct {
+		name    string
+		ref     string
+		wantErr string
+	}{
+		{"simple", "github", ""},
+		{"with dash", "chrome-devtools", ""},
+		{"with dot", "company.internal", ""},
+		{"with underscore", "my_mcp", ""},
+		{"digits only", "42", ""},
+		{"empty", "", "must match"},
+		{"leading dash", "-foo", "must match"},
+		{"space", "foo bar", "must match"},
+		{"slash", "foo/bar", "must match"},
+		{"too long", strings.Repeat("a", 64), "must match"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := MCPServerRef{Ref: tc.ref}.Validate()
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("unexpected: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("want %q, got %v", tc.wantErr, err)
+			}
+		})
 	}
 }

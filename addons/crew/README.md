@@ -92,6 +92,8 @@ The binary is installed at `~/.local/bin/shipyard-crew`. The artifact is downloa
 ~/.shipyard/
 ├── crew/
 │   ├── config.yaml              # global config (pools, concurrency, queue)
+│   ├── tools/
+│   │   └── <tool>.yaml          # reusable tool definitions (library)
 │   └── <name>/
 │       ├── agent.yaml           # agent configuration
 │       ├── prompt.md            # system prompt
@@ -126,15 +128,18 @@ All agents declare `schema_version: "1"` at the top. Unknown fields are rejected
 | `triggers[].type` | enum | no | — | `cron` or `webhook` |
 | `triggers[].schedule` | string | if `cron` | — | Cron expression (5-field standard) |
 | `triggers[].route` | string | if `webhook` | — | Fairway route, must start with `/` |
-| `tools[].name` | string | yes | — | Must match `^[a-z][a-z0-9_]{0,62}$` |
+| `tools[].name` | string | yes (if inline) | — | Must match `^[a-z][a-z0-9_]{0,62}$` |
+| `tools[].ref` | string | yes (if library) | — | Loads `~/.shipyard/crew/tools/<ref>.yaml`. Mutually exclusive with inline fields. |
 | `tools[].protocol` | enum | yes | — | `exec` or `http` |
 | `tools[].description` | string | no | `""` | Human description of the tool |
 | `tools[].input_schema` | map[string]string | no | `{}` | Field name → type (`string`, `number`, `boolean`, `object`, `array`) |
+| `tools[].output_schema` | map[string]string | no | `{}` | Declares the shape inside `data` of the tool envelope, used to build the MCP `outputSchema` |
 | `tools[].command` | []string | if `protocol=exec` | — | Argv to execute |
 | `tools[].method` | string | if `protocol=http` | — | One of `GET`, `POST`, `PUT`, `PATCH`, `DELETE` |
 | `tools[].url` | string | if `protocol=http` | — | Tool endpoint |
 | `tools[].headers` | map[string]string | no | `{}` | HTTP headers; values support templates |
 | `tools[].body` | string | no | `""` | HTTP body; supports templates |
+| `mcp_servers[].ref` | string | no | — | Key from `~/.claude.json` `mcpServers` to expose verbatim on this agent's MCP config |
 
 Validation rules enforced by the loader:
 
@@ -227,6 +232,32 @@ Protocol mapping:
 
 Shipyard never shells out to `curl`/`wget` — HTTP is native in Go. `exec` is reserved for code the user wrote.
 
+### MCP bridge (backend `cli`)
+
+When an agent with `backend.type=cli` runs, Shipyard inspects `tools` and `mcp_servers`. If either is non-empty, it writes a temporary `--mcp-config` JSON file and passes `--mcp-config <path> --strict-mcp-config` to the external CLI (e.g. `claude --print`).
+
+The synthesised config always has the same shape:
+
+```jsonc
+{
+  "mcpServers": {
+    // Declared when the agent has any tools. Bridges the LLM back into
+    // the crew process so tool calls hit `tools.Dispatcher` and produce
+    // the exact envelope above.
+    "shipyard-crew-internal": {
+      "type": "stdio",
+      "command": "<path to shipyard-crew>",
+      "args": ["mcp-serve", "--agent", "<name>"]
+    },
+    // Any entry listed in agent.yaml::mcp_servers[] is copied byte-for-byte
+    // from ~/.claude.json.mcpServers.<ref>. A missing ref is a hard error.
+    "chrome-devtools": { "type": "stdio", "command": "npx", "args": ["-y", "chrome-devtools-mcp"] }
+  }
+}
+```
+
+Each tool's `input_schema` / `output_schema` is translated to a JSON-Schema `inputSchema` / `outputSchema` on the MCP descriptor; the envelope's `data` field becomes `CallToolResult.structuredContent`, `ok=false` becomes `isError: true`. Agents that declare no tools and no `mcp_servers` pay nothing — the CLI is invoked exactly as before.
+
 ## Template engine
 
 Placeholders use `{{namespace.field}}`. Supported namespaces:
@@ -273,7 +304,13 @@ shipyard crew apply     <name> [--dry-run] [--json]
 shipyard crew list      [--json] [--long] [-v|--verbose]
 shipyard crew run       <name> [--input JSON] [--input-file PATH] [--timeout DUR] [--json]
 shipyard crew logs      <name> [-f|--follow] [--since DUR] [--tail N] [--json]
+shipyard crew tool add  <name> --protocol exec|http [--command ... | --method/--url/--header/--body] [--description TEXT] [--force]
+shipyard crew tool list [--json]
+shipyard crew tool show <name> [--json]
+shipyard crew tool rm   <name> [--yes]
 ```
+
+The `tool` subcommand group manages the reusable tool library under `~/.shipyard/crew/tools/`. Any agent can reuse a library tool with `tools: [{ref: <tool-name>}]`; inline definitions remain supported and can be mixed freely with refs. `tool rm` refuses removal when an agent references the tool, unless `--yes` is passed.
 
 Notes on flags:
 
@@ -310,6 +347,10 @@ The runtime binary — invoked directly by `shipyard crew run`, `shipyard servic
 
 Binary flags: `--agent <name>` (required), `--service` (run as daemon), `--config <path>`, `--log-dir <path>`, `--version`.
 
+Subcommands (preceding flags):
+- `shipyard-crew reconcile --agent <name>` — reconciles cron + fairway triggers.
+- `shipyard-crew mcp-serve --agent <name>` — internal MCP stdio server spawned by the CLI backend when declared tools exist; not intended to be called directly by users.
+
 ## Observability
 
 `shipyard crew logs <name>` reads the per-day JSONL files under `~/.shipyard/logs/crew/`, filters by agent and prints them. Flags:
@@ -328,7 +369,10 @@ The roadmap at `docs/crew/roadmap.md` has the full list. Highlights:
 - No subagents (§2.1).
 - No multi-agent communication / `crew_call` tool (§2.2).
 - No integrated secrets manager; use `{{env.*}}` and shell-level injection (§2.3).
-- Backend `cli` does **not** provision an MCP server for declared tools — the user configures their CLI's MCP manually (§1.2).
+- Backend `cli` exposes declared tools through an auto-provisioned MCP stdio bridge (Task 34), but:
+  - `mcp_servers[]` does not yet support an `only:` filter; referencing an external MCP exposes all of its tools (§1.7).
+  - Only the root `mcpServers` of `~/.claude.json` is consumed; per-project scopes (`projects.<path>.mcpServers`) are ignored (§1.7).
+  - In `execution.mode: service`, the internal MCP subprocess is still cold-started per turn (§1.7).
 - The `ollama` pool is documented as an example in `config.yaml` but has no dedicated backend driver in v1 (§2.5).
 - Log format is provisional (§1.1).
 - `shipyard crew uninstall` only warns (does not abort) when agents are still registered with OS services (§1.5.1).

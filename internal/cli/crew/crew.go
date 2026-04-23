@@ -28,6 +28,7 @@ func NewCrewCmd() *cobra.Command {
 	cmd.AddCommand(newListCmd())
 	cmd.AddCommand(runCmd)
 	cmd.AddCommand(newLogsCmd())
+	cmd.AddCommand(newToolCmd())
 
 	return cmd
 }
