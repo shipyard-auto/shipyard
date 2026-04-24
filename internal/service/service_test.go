@@ -1,11 +1,12 @@
 package service
 
 import (
+	"context"
 	"errors"
+	"log/slog"
+	"sync"
 	"testing"
 	"time"
-
-	yardlogs "github.com/shipyard-auto/shipyard/internal/logs"
 )
 
 type memoryRepo struct {
@@ -89,19 +90,42 @@ func (g fakeIDGen) NewID(existing map[string]struct{}) (string, error) {
 	return g.id, nil
 }
 
-type fakeLogger struct {
-	events []yardlogs.Event
+// recordingHandler captures every slog.Record passed through Handle so
+// tests can assert on event names emitted by the service.
+type recordingHandler struct {
+	mu      sync.Mutex
+	records []slog.Record
 }
 
-func (l *fakeLogger) Write(event yardlogs.Event) error {
-	l.events = append(l.events, event)
+func (h *recordingHandler) Enabled(_ context.Context, _ slog.Level) bool { return true }
+func (h *recordingHandler) Handle(_ context.Context, r slog.Record) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.records = append(h.records, r.Clone())
 	return nil
+}
+func (h *recordingHandler) WithAttrs(_ []slog.Attr) slog.Handler { return h }
+func (h *recordingHandler) WithGroup(_ string) slog.Handler     { return h }
+
+func (h *recordingHandler) events() []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	out := make([]string, len(h.records))
+	for i, r := range h.records {
+		out[i] = r.Message
+	}
+	return out
+}
+
+func newTestLogger() (*slog.Logger, *recordingHandler) {
+	h := &recordingHandler{}
+	return slog.New(h), h
 }
 
 func TestServiceAdd(t *testing.T) {
 	repo := &memoryRepo{store: Store{Notice: storeNotice, Version: storeVersion, Services: []ServiceRecord{}}}
 	manager := &fakeManager{}
-	logger := &fakeLogger{}
+	logger, captured := newTestLogger()
 	service := Service{Repo: repo, Manager: manager, IDGen: fakeIDGen{id: "AB12CD"}, Now: time.Now, Logger: logger}
 	name, cmd := "Heartbeat", "/bin/echo ok"
 	record, err := service.Add(ServiceInput{Name: &name, Command: &cmd})
@@ -111,15 +135,16 @@ func TestServiceAdd(t *testing.T) {
 	if record.ID != "AB12CD" || len(repo.store.Services) != 1 {
 		t.Fatalf("unexpected record/store: %+v %+v", record, repo.store)
 	}
-	if len(logger.events) == 0 || logger.events[0].Event != "service_created" {
-		t.Fatalf("unexpected log events: %+v", logger.events)
+	events := captured.events()
+	if len(events) == 0 || events[0] != "service_created" {
+		t.Fatalf("unexpected log events: %v", events)
 	}
 }
 
 func TestServiceAddRollbackOnSyncFailure(t *testing.T) {
 	repo := &memoryRepo{store: Store{Notice: storeNotice, Version: storeVersion, Services: []ServiceRecord{}}}
 	manager := &fakeManager{syncErr: errors.New("boom")}
-	logger := &fakeLogger{}
+	logger, captured := newTestLogger()
 	service := Service{Repo: repo, Manager: manager, IDGen: fakeIDGen{id: "AB12CD"}, Now: time.Now, Logger: logger}
 	name, cmd := "Heartbeat", "/bin/echo ok"
 	if _, err := service.Add(ServiceInput{Name: &name, Command: &cmd}); err == nil {
@@ -128,8 +153,9 @@ func TestServiceAddRollbackOnSyncFailure(t *testing.T) {
 	if len(repo.store.Services) != 0 {
 		t.Fatalf("expected rollback, got %+v", repo.store.Services)
 	}
-	if len(logger.events) == 0 || logger.events[0].Event != "service_create_failed" {
-		t.Fatalf("unexpected log events: %+v", logger.events)
+	events := captured.events()
+	if len(events) == 0 || events[0] != "service_create_failed" {
+		t.Fatalf("unexpected log events: %v", events)
 	}
 }
 
@@ -138,7 +164,7 @@ func TestServiceUpdateOnlyNonNilFields(t *testing.T) {
 	repo := &memoryRepo{store: Store{Notice: storeNotice, Version: storeVersion, Services: []ServiceRecord{{
 		ID: "AB12CD", Name: "Heartbeat", Command: "/bin/echo ok", Enabled: true, CreatedAt: now, UpdatedAt: now,
 	}}}}
-	service := Service{Repo: repo, Manager: &fakeManager{}, IDGen: fakeIDGen{id: "ZZ99ZZ"}, Now: time.Now, Logger: &fakeLogger{}}
+	service := Service{Repo: repo, Manager: &fakeManager{}, IDGen: fakeIDGen{id: "ZZ99ZZ"}, Now: time.Now, Logger: slog.New(&recordingHandler{})}
 	name := "Renamed"
 	record, err := service.Update("AB12CD", ServiceInput{Name: &name})
 	if err != nil {
@@ -155,7 +181,7 @@ func TestServiceDelete(t *testing.T) {
 		ID: "AB12CD", Name: "Heartbeat", Command: "/bin/echo ok", Enabled: true, CreatedAt: now, UpdatedAt: now,
 	}}}}
 	manager := &fakeManager{}
-	service := Service{Repo: repo, Manager: manager, IDGen: fakeIDGen{id: "ZZ99ZZ"}, Now: time.Now, Logger: &fakeLogger{}}
+	service := Service{Repo: repo, Manager: manager, IDGen: fakeIDGen{id: "ZZ99ZZ"}, Now: time.Now, Logger: slog.New(&recordingHandler{})}
 	if err := service.Delete("AB12CD"); err != nil {
 		t.Fatal(err)
 	}
@@ -173,7 +199,7 @@ func TestServiceLifecycleAndStatus(t *testing.T) {
 		ID: "AB12CD", Name: "Heartbeat", Command: "/bin/echo ok", Enabled: true, CreatedAt: now, UpdatedAt: now,
 	}}}}
 	manager := &fakeManager{statuses: map[string]RuntimeStatus{"AB12CD": {State: "active", PID: 42}}}
-	service := Service{Repo: repo, Manager: manager, IDGen: fakeIDGen{id: "ZZ99ZZ"}, Now: time.Now, Logger: &fakeLogger{}}
+	service := Service{Repo: repo, Manager: manager, IDGen: fakeIDGen{id: "ZZ99ZZ"}, Now: time.Now, Logger: slog.New(&recordingHandler{})}
 	if _, err := service.Start("AB12CD"); err != nil {
 		t.Fatal(err)
 	}

@@ -389,7 +389,7 @@ func newCronRunCmd() *cobra.Command {
 				return err
 			}
 
-			job, output, err := service.Run(args[0])
+			job, output, err := service.Run(cmd.Context(), args[0])
 			if err != nil {
 				if output != "" {
 					ui.Printf(cmd.OutOrStdout(), "%s\n\n", ui.SectionTitle("Command Output"))

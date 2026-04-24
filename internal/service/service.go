@@ -1,9 +1,11 @@
 package service
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"slices"
 	"strings"
@@ -16,17 +18,13 @@ var ErrServiceNotFound = errors.New("service not found")
 
 const maxLoggedOutput = 4096
 
-type EventLogger interface {
-	Write(event yardlogs.Event) error
-}
-
 type Service struct {
 	Repo      Repository
 	Manager   Manager
 	IDGen     IDGenerator
 	Now       func() time.Time
 	StorePath string
-	Logger    EventLogger
+	Logger    *slog.Logger
 }
 
 func NewService() (Service, error) {
@@ -44,7 +42,7 @@ func NewService() (Service, error) {
 		IDGen:     RandomIDGenerator{},
 		Now:       time.Now,
 		StorePath: repo.Path,
-		Logger:    newLogger(),
+		Logger:    yardlogs.DefaultLogger(yardlogs.SourceService),
 	}, nil
 }
 
@@ -104,16 +102,16 @@ func (s Service) Add(input ServiceInput) (ServiceRecord, error) {
 	next := store
 	next.Services = append(next.Services, record)
 	if err := s.persist(store, next); err != nil {
-		s.logPersistFailure("service_create_failed", "Failed to create Shipyard service", record, err)
+		s.logPersistFailure(yardlogs.EventServiceCreateFailed, "Failed to create Shipyard service", record, err)
 		return ServiceRecord{}, err
 	}
 	if record.Enabled {
 		if err := s.Manager.Enable(record.ID); err != nil {
-			s.logFailure("service_create_failed", "Failed to create Shipyard service", record, err)
+			s.logFailure(yardlogs.EventServiceCreateFailed, "Failed to create Shipyard service", record, err)
 			return record, err
 		}
 	}
-	s.logEvent("info", "service_created", "Shipyard service created", record, nil)
+	s.logRecord(slog.LevelInfo, yardlogs.EventServiceCreated, "Shipyard service created", record)
 	return record, nil
 }
 
@@ -143,24 +141,24 @@ func (s Service) Update(id string, patch ServiceInput) (ServiceRecord, error) {
 	next := store
 	next.Services[index] = after
 	if err := s.persist(store, next); err != nil {
-		s.logPersistFailure("service_update_failed", "Failed to update Shipyard service", after, err)
+		s.logPersistFailure(yardlogs.EventServiceUpdateFailed, "Failed to update Shipyard service", after, err)
 		return ServiceRecord{}, err
 	}
 	if before.Enabled != after.Enabled {
 		if after.Enabled {
 			if err := s.Manager.Enable(after.ID); err != nil {
-				s.logFailure("service_update_failed", "Failed to update Shipyard service", after, err)
+				s.logFailure(yardlogs.EventServiceUpdateFailed, "Failed to update Shipyard service", after, err)
 				return after, err
 			}
 		} else {
 			if err := s.Manager.Disable(after.ID); err != nil {
-				s.logFailure("service_update_failed", "Failed to update Shipyard service", after, err)
+				s.logFailure(yardlogs.EventServiceUpdateFailed, "Failed to update Shipyard service", after, err)
 				return after, err
 			}
 		}
 	}
 	eventName, message := classifyUpdateEvent(before, after)
-	s.logEvent("info", eventName, message, after, nil)
+	s.logRecord(slog.LevelInfo, eventName, message, after)
 	return after, nil
 }
 
@@ -187,14 +185,14 @@ func (s Service) Delete(id string) error {
 	next := store
 	next.Services = nextRecords
 	if err := s.persist(store, next); err != nil {
-		s.logPersistFailure("service_delete_failed", "Failed to delete Shipyard service", removed, err)
+		s.logPersistFailure(yardlogs.EventServiceDeleteFailed, "Failed to delete Shipyard service", removed, err)
 		return err
 	}
 	if err := s.Manager.Remove(removed.ID); err != nil {
-		s.logFailure("service_delete_failed", "Failed to delete Shipyard service", removed, err)
+		s.logFailure(yardlogs.EventServiceDeleteFailed, "Failed to delete Shipyard service", removed, err)
 		return err
 	}
-	s.logEvent("info", "service_deleted", "Shipyard service deleted", removed, nil)
+	s.logRecord(slog.LevelInfo, yardlogs.EventServiceDeleted, "Shipyard service deleted", removed)
 	return nil
 }
 
@@ -212,10 +210,10 @@ func (s Service) Start(id string) (ServiceRecord, error) {
 		return ServiceRecord{}, err
 	}
 	if err := s.Manager.Start(record.ID); err != nil {
-		s.logFailure("service_start_failed", "Failed to start Shipyard service", record, err)
+		s.logFailure(yardlogs.EventServiceStartFailed, "Failed to start Shipyard service", record, err)
 		return ServiceRecord{}, err
 	}
-	s.logEvent("info", "service_started", "Shipyard service started", record, nil)
+	s.logRecord(slog.LevelInfo, yardlogs.EventServiceStarted, "Shipyard service started", record)
 	return record, nil
 }
 
@@ -225,10 +223,10 @@ func (s Service) Stop(id string) (ServiceRecord, error) {
 		return ServiceRecord{}, err
 	}
 	if err := s.Manager.Stop(record.ID); err != nil {
-		s.logFailure("service_stop_failed", "Failed to stop Shipyard service", record, err)
+		s.logFailure(yardlogs.EventServiceStopFailed, "Failed to stop Shipyard service", record, err)
 		return ServiceRecord{}, err
 	}
-	s.logEvent("info", "service_stopped", "Shipyard service stopped", record, nil)
+	s.logRecord(slog.LevelInfo, yardlogs.EventServiceStopped, "Shipyard service stopped", record)
 	return record, nil
 }
 
@@ -238,10 +236,10 @@ func (s Service) Restart(id string) (ServiceRecord, error) {
 		return ServiceRecord{}, err
 	}
 	if err := s.Manager.Restart(record.ID); err != nil {
-		s.logFailure("service_restart_failed", "Failed to restart Shipyard service", record, err)
+		s.logFailure(yardlogs.EventServiceRestartFailed, "Failed to restart Shipyard service", record, err)
 		return ServiceRecord{}, err
 	}
-	s.logEvent("info", "service_restarted", "Shipyard service restarted", record, nil)
+	s.logRecord(slog.LevelInfo, yardlogs.EventServiceRestarted, "Shipyard service restarted", record)
 	return record, nil
 }
 
@@ -346,49 +344,48 @@ func cloneEnvironment(value map[string]string) map[string]string {
 
 func boolptr(value bool) *bool { return &value }
 
-func loggableError(err error) map[string]any {
-	return map[string]any{"error": err.Error()}
-}
-
-func (s Service) logPersistFailure(eventName, message string, record ServiceRecord, err error) {
-	s.logEvent("error", eventName, message, record, loggableError(err))
-}
-
-func (s Service) logFailure(eventName, message string, record ServiceRecord, err error) {
-	s.logEvent("error", eventName, message, record, loggableError(err))
-}
-
-func (s Service) logEvent(level, eventName, message string, record ServiceRecord, data map[string]any) {
+func (s Service) logger() *slog.Logger {
 	if s.Logger == nil {
-		return
+		return slog.New(yardlogs.NopHandler())
 	}
-	_ = s.Logger.Write(yardlogs.Event{
-		Timestamp:  s.Now().UTC(),
-		Source:     yardlogs.DefaultSourceService,
-		Level:      level,
-		Event:      eventName,
-		Message:    message,
-		EntityType: "service",
-		EntityID:   record.ID,
-		EntityName: record.Name,
-		Data:       data,
-	})
+	return s.Logger
+}
+
+func recordAttrs(record ServiceRecord, extras ...slog.Attr) []slog.Attr {
+	attrs := make([]slog.Attr, 0, 3+len(extras))
+	attrs = append(attrs, yardlogs.EntityAttrs(yardlogs.EntityService, record.ID, record.Name)...)
+	attrs = append(attrs, extras...)
+	return attrs
+}
+
+func (s Service) logRecord(level slog.Level, event, message string, record ServiceRecord) {
+	s.logger().LogAttrs(context.Background(), level, event,
+		recordAttrs(record, slog.String(yardlogs.KeyMessage, message))...,
+	)
+}
+
+func (s Service) logFailure(event, message string, record ServiceRecord, err error) {
+	s.logger().LogAttrs(context.Background(), slog.LevelError, event,
+		recordAttrs(record,
+			slog.String(yardlogs.KeyMessage, message),
+			slog.String(yardlogs.KeyError, err.Error()),
+			slog.String(yardlogs.KeyErrorKind, fmt.Sprintf("%T", err)),
+		)...,
+	)
+}
+
+// Persist failures are functionally identical to operational failures —
+// kept as a separate name only for call-site readability.
+func (s Service) logPersistFailure(event, message string, record ServiceRecord, err error) {
+	s.logFailure(event, message, record, err)
 }
 
 func classifyUpdateEvent(before, after ServiceRecord) (string, string) {
 	if before.Enabled != after.Enabled {
 		if after.Enabled {
-			return "service_enabled", "Shipyard service enabled"
+			return yardlogs.EventServiceEnabled, "Shipyard service enabled"
 		}
-		return "service_disabled", "Shipyard service disabled"
+		return yardlogs.EventServiceDisabled, "Shipyard service disabled"
 	}
-	return "service_updated", "Shipyard service updated"
-}
-
-func newLogger() EventLogger {
-	service, err := yardlogs.NewService()
-	if err != nil {
-		return nil
-	}
-	return service
+	return yardlogs.EventServiceUpdated, "Shipyard service updated"
 }
