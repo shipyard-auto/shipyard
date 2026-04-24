@@ -25,6 +25,7 @@ import (
 
 	"github.com/shipyard-auto/shipyard/addons/fairway/internal/app"
 	"github.com/shipyard-auto/shipyard/addons/fairway/internal/fairway"
+	yardlogs "github.com/shipyard-auto/shipyard/internal/logs"
 )
 
 const (
@@ -168,12 +169,26 @@ func run(ctx context.Context, deps runDeps) int {
 	})
 
 	daemonLogger := slog.New(slog.NewTextHandler(deps.stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+	// Build the schema-v2 event logger that backs the HTTP middleware.
+	// Resolves to the canonical ~/.shipyard/logs root so entries land at
+	// <root>/fairway/YYYY-MM-DD.jsonl. During the parallel period (PR3-PR5)
+	// the legacy reqLogger keeps writing to the same daily file under the
+	// v1 schema; lines from both writers interleave but stay intact thanks
+	// to O_APPEND.
+	logsRoot := filepath.Dir(resolvedLogDir)
+	eventLogger := yardlogs.New(yardlogs.SourceFairway, yardlogs.Options{
+		Store:   yardlogs.NewStore(logsRoot),
+		Version: deps.version,
+	})
+
 	server := deps.newServer(fairway.ServerConfig{
-		Router:    router,
-		Executor:  executor,
-		Logger:    daemonLogger,
-		ReqLogger: reqLogger,
-		Stats:     stats,
+		Router:      router,
+		Executor:    executor,
+		Logger:      daemonLogger,
+		ReqLogger:   reqLogger,
+		EventLogger: eventLogger,
+		Stats:       stats,
 	})
 
 	socketPath := filepath.Join(runDir, "fairway.sock")

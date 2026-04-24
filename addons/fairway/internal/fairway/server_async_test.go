@@ -199,9 +199,9 @@ func TestServeHTTP_async_clientCancel_taskSurvives(t *testing.T) {
 	}
 }
 
-// ── sync parity: non-async route does not get the async treatment ────────────
+// ── sync parity: every response carries a trace id from the middleware ───────
 
-func TestServeHTTP_sync_noTraceIDHeader(t *testing.T) {
+func TestServeHTTP_sync_carriesTraceIDHeader(t *testing.T) {
 	t.Parallel()
 
 	exec := &fakeExecutor{result: fairway.Result{HTTPStatus: 200, Body: []byte("ok")}}
@@ -221,8 +221,8 @@ func TestServeHTTP_sync_noTraceIDHeader(t *testing.T) {
 	if w.Code != 200 {
 		t.Fatalf("sync status = %d; want 200", w.Code)
 	}
-	if trace := w.Header().Get("X-Trace-Id"); trace != "" {
-		t.Errorf("sync route must not set X-Trace-Id; got %q", trace)
+	if trace := w.Header().Get("X-Trace-Id"); trace == "" {
+		t.Error("sync route must echo X-Trace-Id from the middleware; got empty value")
 	}
 }
 
