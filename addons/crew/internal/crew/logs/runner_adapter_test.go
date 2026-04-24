@@ -3,8 +3,8 @@ package logs
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -12,38 +12,65 @@ import (
 	"github.com/shipyard-auto/shipyard/addons/crew/internal/crew/backend"
 	"github.com/shipyard-auto/shipyard/addons/crew/internal/crew/runner"
 	"github.com/shipyard-auto/shipyard/addons/crew/internal/crew/tools"
+	yardlogs "github.com/shipyard-auto/shipyard/internal/logs"
+	"github.com/shipyard-auto/shipyard/internal/logs/trace"
 )
 
-type recEmitter struct {
-	mu     sync.Mutex
-	starts []RunStartEvent
-	ends   []RunEndEvent
-	tools  []ToolCallEvent
-	errs   []ErrorEvent
-	closed atomic.Bool
+// recordedEntry pairs a slog.Record with the trace id derived from the ctx
+// it was emitted under. The production Handler injects trace as an attr at
+// write time; the test handler does the same so assertions can inspect it.
+type recordedEntry struct {
+	record  slog.Record
+	traceID string
 }
 
-func (r *recEmitter) RunStart(e RunStartEvent) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.starts = append(r.starts, e)
+type recordingHandler struct {
+	mu      sync.Mutex
+	entries []recordedEntry
 }
-func (r *recEmitter) RunEnd(e RunEndEvent) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.ends = append(r.ends, e)
+
+func (h *recordingHandler) Enabled(_ context.Context, _ slog.Level) bool { return true }
+func (h *recordingHandler) Handle(ctx context.Context, r slog.Record) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.entries = append(h.entries, recordedEntry{record: r.Clone(), traceID: trace.ID(ctx)})
+	return nil
 }
-func (r *recEmitter) ToolCall(e ToolCallEvent) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.tools = append(r.tools, e)
+func (h *recordingHandler) WithAttrs(_ []slog.Attr) slog.Handler { return h }
+func (h *recordingHandler) WithGroup(_ string) slog.Handler     { return h }
+
+func (h *recordingHandler) snapshot() []recordedEntry {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	out := make([]recordedEntry, len(h.entries))
+	copy(out, h.entries)
+	return out
 }
-func (r *recEmitter) Error(e ErrorEvent) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.errs = append(r.errs, e)
+
+// findAttr returns the value of the first attr matching key, or nil.
+func findAttr(r slog.Record, key string) (slog.Value, bool) {
+	var (
+		val   slog.Value
+		found bool
+	)
+	r.Attrs(func(a slog.Attr) bool {
+		if a.Key == key {
+			val = a.Value
+			found = true
+			return false
+		}
+		return true
+	})
+	return val, found
 }
-func (r *recEmitter) Close() error { r.closed.Store(true); return nil }
+
+func newAdapter(t *testing.T, step time.Duration) (*RunnerAdapter, *recordingHandler) {
+	t.Helper()
+	rec := &recordingHandler{}
+	ad := NewRunnerAdapter(slog.New(rec))
+	ad.now = stepClock(time.Date(2026, 4, 22, 10, 0, 0, 0, time.UTC), step)
+	return ad, rec
+}
 
 func sampleAgent() *crew.Agent {
 	return &crew.Agent{
@@ -65,10 +92,16 @@ func stepClock(start time.Time, step time.Duration) func() time.Time {
 	}
 }
 
+func eventsByName(entries []recordedEntry) map[string][]recordedEntry {
+	out := make(map[string][]recordedEntry)
+	for _, e := range entries {
+		out[e.record.Message] = append(out[e.record.Message], e)
+	}
+	return out
+}
+
 func TestRunnerAdapter_RunSuccess_EmitsStartAndEnd(t *testing.T) {
-	rec := &recEmitter{}
-	ad := NewRunnerAdapter(rec)
-	ad.now = stepClock(time.Date(2026, 4, 22, 10, 0, 0, 0, time.UTC), 50*time.Millisecond)
+	ad, rec := newAdapter(t, 50*time.Millisecond)
 
 	ag := sampleAgent()
 	ctx := context.Background()
@@ -78,73 +111,106 @@ func TestRunnerAdapter_RunSuccess_EmitsStartAndEnd(t *testing.T) {
 		nil,
 	)
 
-	if len(rec.starts) != 1 || rec.starts[0].TraceID != "trace-1" || rec.starts[0].Source != "manual" || rec.starts[0].Agent != "alpha" {
-		t.Fatalf("RunStart not propagated correctly: %+v", rec.starts)
+	byName := eventsByName(rec.snapshot())
+
+	starts := byName[yardlogs.EventRunStart]
+	if len(starts) != 1 {
+		t.Fatalf("RunStart: got %d records, want 1", len(starts))
 	}
-	if len(rec.ends) != 1 {
-		t.Fatalf("want 1 RunEnd got %d", len(rec.ends))
+	if starts[0].traceID != "trace-1" {
+		t.Errorf("RunStart trace_id = %q, want trace-1", starts[0].traceID)
 	}
-	end := rec.ends[0]
-	if end.Status != "success" {
-		t.Errorf("Status=%q, want success", end.Status)
+	if v, ok := findAttr(starts[0].record, "agent"); !ok || v.String() != "alpha" {
+		t.Errorf("RunStart agent attr = %v (ok=%v), want alpha", v, ok)
 	}
-	if end.InputTokens != 3 || end.OutputTokens != 7 {
-		t.Errorf("usage not propagated: %+v", end)
+	if v, ok := findAttr(starts[0].record, "crew_source"); !ok || v.String() != "manual" {
+		t.Errorf("RunStart crew_source = %v, want manual", v)
 	}
-	if end.DurationMS != 50 {
-		t.Errorf("DurationMS=%d, want 50", end.DurationMS)
+
+	ends := byName[yardlogs.EventRunEnd]
+	if len(ends) != 1 {
+		t.Fatalf("RunEnd: got %d records, want 1", len(ends))
 	}
-	if len(rec.errs) != 0 {
-		t.Errorf("no Error events expected on success, got %d", len(rec.errs))
+	endRec := ends[0].record
+	if v, ok := findAttr(endRec, "status"); !ok || v.String() != "success" {
+		t.Errorf("RunEnd status = %v, want success", v)
+	}
+	if v, ok := findAttr(endRec, yardlogs.KeyDurationMs); !ok || v.Int64() != 50 {
+		t.Errorf("RunEnd duration_ms = %v, want 50", v)
+	}
+	if v, ok := findAttr(endRec, yardlogs.KeyTokensInput); !ok || v.Int64() != 3 {
+		t.Errorf("RunEnd tokens_input = %v, want 3", v)
+	}
+	if v, ok := findAttr(endRec, yardlogs.KeyTokensOutput); !ok || v.Int64() != 7 {
+		t.Errorf("RunEnd tokens_output = %v, want 7", v)
+	}
+	if errs := byName[yardlogs.EventRunError]; len(errs) != 0 {
+		t.Errorf("no run_error expected on success, got %d", len(errs))
 	}
 }
 
 func TestRunnerAdapter_RunError_EmitsRunEndAndErrorEvent(t *testing.T) {
-	rec := &recEmitter{}
-	ad := NewRunnerAdapter(rec)
-	ad.now = stepClock(time.Date(2026, 4, 22, 10, 0, 0, 0, time.UTC), 100*time.Millisecond)
+	ad, rec := newAdapter(t, 100*time.Millisecond)
 
 	ag := sampleAgent()
 	ctx := context.Background()
 	ad.RunStart(ctx, ag, "trace-2", "cron")
 	ad.RunEnd(ctx, ag, "trace-2", runner.Output{TraceID: "trace-2"}, errors.New("boom"))
 
-	if len(rec.ends) != 1 || rec.ends[0].Status != "error" || rec.ends[0].ErrorMessage != "boom" {
-		t.Fatalf("RunEnd error not propagated: %+v", rec.ends)
+	byName := eventsByName(rec.snapshot())
+	ends := byName[yardlogs.EventRunEnd]
+	if len(ends) != 1 {
+		t.Fatalf("RunEnd: got %d records, want 1", len(ends))
 	}
-	if len(rec.errs) != 1 || rec.errs[0].Message != "boom" || rec.errs[0].TraceID != "trace-2" {
-		t.Fatalf("Error event missing or wrong: %+v", rec.errs)
+	if v, ok := findAttr(ends[0].record, "status"); !ok || v.String() != "error" {
+		t.Errorf("status = %v, want error", v)
+	}
+	if v, ok := findAttr(ends[0].record, yardlogs.KeyError); !ok || v.String() != "boom" {
+		t.Errorf("error = %v, want boom", v)
+	}
+
+	errEvents := byName[yardlogs.EventRunError]
+	if len(errEvents) != 1 {
+		t.Fatalf("run_error: got %d records, want 1", len(errEvents))
+	}
+	if errEvents[0].traceID != "trace-2" {
+		t.Errorf("run_error trace_id = %q, want trace-2", errEvents[0].traceID)
 	}
 }
 
-func TestRunnerAdapter_ToolCall_EmitsOnEndOnly(t *testing.T) {
-	rec := &recEmitter{}
-	ad := NewRunnerAdapter(rec)
-	ad.now = stepClock(time.Date(2026, 4, 22, 10, 0, 0, 0, time.UTC), 25*time.Millisecond)
+func TestRunnerAdapter_ToolCall_EmitsStartAndEnd(t *testing.T) {
+	ad, rec := newAdapter(t, 25*time.Millisecond)
 
 	ag := sampleAgent()
 	ctx := context.Background()
 	ad.ToolCallStart(ctx, ag, "trace-3", "fetch", map[string]any{"url": "x"})
 	ad.ToolCallEnd(ctx, ag, "trace-3", "fetch", tools.Success(map[string]any{"ok": 1}), nil)
 
-	if len(rec.tools) != 1 {
-		t.Fatalf("want 1 ToolCall got %d", len(rec.tools))
+	byName := eventsByName(rec.snapshot())
+	if got := len(byName[yardlogs.EventToolCallStart]); got != 1 {
+		t.Fatalf("tool_call_start: got %d, want 1", got)
 	}
-	tc := rec.tools[0]
-	if tc.ToolName != "fetch" || tc.Protocol != "http" {
-		t.Errorf("tool/protocol wrong: %+v", tc)
+	ends := byName[yardlogs.EventToolCallEnd]
+	if len(ends) != 1 {
+		t.Fatalf("tool_call_end: got %d, want 1", len(ends))
 	}
-	if !tc.Ok || tc.Error != "" {
-		t.Errorf("expected ok=true and no error: %+v", tc)
+	endRec := ends[0].record
+	if v, ok := findAttr(endRec, yardlogs.KeyToolName); !ok || v.String() != "fetch" {
+		t.Errorf("tool_name = %v, want fetch", v)
 	}
-	if tc.DurationMS != 25 {
-		t.Errorf("DurationMS=%d, want 25", tc.DurationMS)
+	if v, ok := findAttr(endRec, yardlogs.KeyToolProtocol); !ok || v.String() != "http" {
+		t.Errorf("tool_protocol = %v, want http", v)
+	}
+	if v, ok := findAttr(endRec, yardlogs.KeyToolOK); !ok || !v.Bool() {
+		t.Errorf("tool_ok = %v, want true", v)
+	}
+	if v, ok := findAttr(endRec, yardlogs.KeyDurationMs); !ok || v.Int64() != 25 {
+		t.Errorf("duration_ms = %v, want 25", v)
 	}
 }
 
 func TestRunnerAdapter_ToolCallFailure_PropagatesError(t *testing.T) {
-	rec := &recEmitter{}
-	ad := NewRunnerAdapter(rec)
+	ad, rec := newAdapter(t, 25*time.Millisecond)
 	ag := sampleAgent()
 	ctx := context.Background()
 
@@ -156,14 +222,23 @@ func TestRunnerAdapter_ToolCallFailure_PropagatesError(t *testing.T) {
 	ad.ToolCallStart(ctx, ag, "t", "ls", nil)
 	ad.ToolCallEnd(ctx, ag, "t", "ls", tools.Envelope{}, errors.New("exec failed"))
 
-	if len(rec.tools) != 2 {
-		t.Fatalf("want 2 ToolCall got %d", len(rec.tools))
+	ends := eventsByName(rec.snapshot())[yardlogs.EventToolCallEnd]
+	if len(ends) != 2 {
+		t.Fatalf("tool_call_end: got %d, want 2", len(ends))
 	}
-	if rec.tools[0].Ok || rec.tools[0].Error != "upstream 500" {
-		t.Errorf("envelope failure not surfaced: %+v", rec.tools[0])
+
+	if v, ok := findAttr(ends[0].record, yardlogs.KeyToolOK); !ok || v.Bool() {
+		t.Errorf("[0] tool_ok = %v, want false", v)
 	}
-	if rec.tools[1].Ok || rec.tools[1].Error != "exec failed" {
-		t.Errorf("transport failure not surfaced: %+v", rec.tools[1])
+	if v, ok := findAttr(ends[0].record, yardlogs.KeyError); !ok || v.String() != "upstream 500" {
+		t.Errorf("[0] error = %v, want upstream 500", v)
+	}
+
+	if v, ok := findAttr(ends[1].record, yardlogs.KeyToolOK); !ok || v.Bool() {
+		t.Errorf("[1] tool_ok = %v, want false", v)
+	}
+	if v, ok := findAttr(ends[1].record, yardlogs.KeyError); !ok || v.String() != "exec failed" {
+		t.Errorf("[1] error = %v, want exec failed", v)
 	}
 }
 
@@ -180,11 +255,31 @@ func TestRunnerAdapter_NilSafe(t *testing.T) {
 }
 
 func TestRunnerAdapter_ProtocolFallbackEmpty(t *testing.T) {
-	rec := &recEmitter{}
-	ad := NewRunnerAdapter(rec)
+	ad, rec := newAdapter(t, 1*time.Millisecond)
 	ad.ToolCallStart(context.Background(), sampleAgent(), "t", "unknown", nil)
 	ad.ToolCallEnd(context.Background(), sampleAgent(), "t", "unknown", tools.Envelope{Ok: true}, nil)
-	if rec.tools[0].Protocol != "" {
-		t.Errorf("Protocol for unknown tool: want empty, got %q", rec.tools[0].Protocol)
+
+	ends := eventsByName(rec.snapshot())[yardlogs.EventToolCallEnd]
+	if len(ends) != 1 {
+		t.Fatalf("tool_call_end: got %d, want 1", len(ends))
+	}
+	if v, ok := findAttr(ends[0].record, yardlogs.KeyToolProtocol); !ok || v.String() != "" {
+		t.Errorf("tool_protocol = %v, want empty", v)
+	}
+}
+
+// TestRunnerAdapter_TraceIDPropagatesViaContext asserts that when a trace
+// id is present on the parent ctx it is preserved end-to-end and not
+// overridden by the trailing string argument.
+func TestRunnerAdapter_TraceIDPropagatesViaContext(t *testing.T) {
+	ad, rec := newAdapter(t, 1*time.Millisecond)
+	ctx := trace.WithID(context.Background(), "ctx-trace")
+	ad.RunStart(ctx, sampleAgent(), "arg-trace", "manual")
+	entries := rec.snapshot()
+	if len(entries) != 1 {
+		t.Fatalf("got %d records, want 1", len(entries))
+	}
+	if entries[0].traceID != "ctx-trace" {
+		t.Errorf("trace propagation: got %q, want ctx-trace", entries[0].traceID)
 	}
 }

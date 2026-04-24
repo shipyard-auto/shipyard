@@ -26,6 +26,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -38,6 +39,7 @@ import (
 	"github.com/shipyard-auto/shipyard/addons/crew/internal/crew/daemon"
 	"github.com/shipyard-auto/shipyard/addons/crew/internal/crew/logs"
 	"github.com/shipyard-auto/shipyard/addons/crew/internal/crew/runner"
+	yardlogs "github.com/shipyard-auto/shipyard/internal/logs"
 )
 
 const (
@@ -239,15 +241,22 @@ func defaultRunOnDemand(ctx context.Context, req onDemandRequest) (int, error) {
 		return ExitBuildRuntime, fmt.Errorf("build runtime: %w", err)
 	}
 
-	emitter, emErr := logs.NewFileEmitter(req.LogDir)
-	if emErr != nil {
-		// Logs are best-effort: fall back to nop so a broken filesystem does
-		// not fail the agent run. The envelope still carries the trace_id.
-		emitter = logs.NewNopEmitter()
-		fmt.Fprintf(req.Stderr, "shipyard-crew: logs disabled: %s\n", emErr)
+	// LogDir points at <SHIPYARD_HOME>/logs/crew; the schema-v2 Store is
+	// rooted one level up so entries land at <root>/crew/YYYY-MM-DD.jsonl.
+	// When LogDir is empty (tests, embedded callers) skip the file Store
+	// and use a no-op logger so nothing leaks to the cwd.
+	if req.LogDir == "" {
+		rn.Logs = logs.NewRunnerAdapter(slog.New(yardlogs.NopHandler()))
+	} else {
+		logsRoot := filepath.Dir(req.LogDir)
+		store := yardlogs.NewStore(logsRoot)
+		defer store.Close()
+		logger := yardlogs.New(yardlogs.SourceCrew, yardlogs.Options{
+			Store:   store,
+			Version: app.Version,
+		})
+		rn.Logs = logs.NewRunnerAdapter(logger)
 	}
-	defer emitter.Close()
-	rn.Logs = logs.NewRunnerAdapter(emitter)
 
 	out, runErr := rn.Run(ctx, runner.Input{Data: req.Input, Source: "on-demand"})
 	env := map[string]any{
