@@ -31,6 +31,7 @@ type EventData struct {
 	AuthType   string `json:"authType"`
 	AuthResult string `json:"authResult"`
 	Truncated  bool   `json:"truncated"`
+	TraceID    string `json:"traceId,omitempty"`
 }
 
 // RequestLogger writes RequestEvents to daily-rotating JSONL files under dir.

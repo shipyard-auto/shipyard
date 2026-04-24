@@ -54,6 +54,7 @@ type addRouteInput struct {
 	url        string
 	method     string
 	timeout    string
+	async      bool
 	fromFile   string
 }
 
@@ -154,6 +155,7 @@ func newFairwayRouteAddCmdWith(deps routeDeps) *cobra.Command {
 	cmd.Flags().StringVar(&input.url, "url", "", "Destination URL for http.forward")
 	cmd.Flags().StringVar(&input.method, "method", "", "HTTP method for http.forward")
 	cmd.Flags().StringVar(&input.timeout, "timeout", "", "Per-route timeout (e.g. 30s)")
+	cmd.Flags().BoolVar(&input.async, "async", false, "Respond 202 Accepted immediately and run the action detached in the background")
 	cmd.Flags().StringVar(&input.fromFile, "from-file", "", "Load route definition from JSON file")
 	return cmd
 }
@@ -324,6 +326,7 @@ func buildRouteFromAddInput(input addRouteInput, deps routeDeps) (fairwayctl.Rou
 			URL:      input.url,
 			Method:   input.method,
 		},
+		Async: input.async,
 	}
 
 	if input.timeout != "" {
@@ -344,13 +347,17 @@ func renderRouteListHuman(w io.Writer, routes []fairwayctl.Route) {
 	}
 	sort.Slice(routes, func(i, j int) bool { return routes[i].Path < routes[j].Path })
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "PATH\tAUTH\tACTION\tTIMEOUT")
+	fmt.Fprintln(tw, "PATH\tAUTH\tACTION\tTIMEOUT\tMODE")
 	for _, route := range routes {
 		timeout := "-"
 		if route.Timeout > 0 {
 			timeout = route.Timeout.String()
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", route.Path, route.Auth.Type, formatRouteAction(route.Action), timeout)
+		mode := "sync"
+		if route.Async {
+			mode = "async"
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", route.Path, route.Auth.Type, formatRouteAction(route.Action), timeout, mode)
 	}
 	_ = tw.Flush()
 }

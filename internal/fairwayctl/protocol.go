@@ -101,6 +101,7 @@ type Route struct {
 	Auth    Auth          `json:"auth"`
 	Action  Action        `json:"action"`
 	Timeout time.Duration `json:"timeout,omitempty"`
+	Async   bool          `json:"async,omitempty"`
 }
 
 // ── Result types returned by RPC methods ─────────────────────────────────────

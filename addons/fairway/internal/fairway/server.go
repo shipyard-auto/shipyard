@@ -3,6 +3,8 @@ package fairway
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -56,6 +58,10 @@ type Server struct {
 
 	authCacheMu sync.RWMutex
 	authCache   map[string]Authenticator
+
+	// asyncWG tracks goroutines spawned for async routes so a graceful
+	// shutdown can wait for them to complete before returning.
+	asyncWG sync.WaitGroup
 }
 
 // NewServer creates an HTTP server from cfg.
@@ -109,12 +115,24 @@ func (s *Server) Serve(ctx context.Context) error {
 	s.addr = lis.Addr().String()
 	s.addrMu.Unlock()
 
-	// Graceful shutdown goroutine.
+	// Graceful shutdown goroutine. Waits for:
+	//   1. active HTTP connections to drain (httpSrv.Shutdown);
+	//   2. in-flight async goroutines to finish, up to the remaining budget.
 	go func() {
 		<-ctx.Done()
 		shutCtx, cancel := context.WithTimeout(context.Background(), httpShutdownTimeout)
 		defer cancel()
 		_ = s.httpSrv.Shutdown(shutCtx)
+
+		done := make(chan struct{})
+		go func() {
+			s.asyncWG.Wait()
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-shutCtx.Done():
+		}
 	}()
 
 	err = s.httpSrv.Serve(lis)
@@ -232,9 +250,10 @@ func (s *Server) handleRouted(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Read and cap request body before passing to executor.
+	var bodyBytes []byte
 	if r.Body != nil {
 		limited := http.MaxBytesReader(sc, r.Body, MaxSubprocessOutput)
-		bodyBytes, readErr := io.ReadAll(limited)
+		readBytes, readErr := io.ReadAll(limited)
 		if readErr != nil {
 			var maxBytesErr *http.MaxBytesError
 			if errors.As(readErr, &maxBytesErr) {
@@ -254,7 +273,13 @@ func (s *Server) handleRouted(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
+		bodyBytes = readBytes
 		r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+	}
+
+	if route.Async {
+		s.dispatchAsync(sc, r, route, authType, start, bodyBytes)
+		return
 	}
 
 	result, err := s.executor.Execute(r.Context(), route, r)
@@ -299,6 +324,75 @@ func (s *Server) handleRouted(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// dispatchAsync handles routes flagged with Async=true. It responds
+// 202 Accepted immediately (with an X-Trace-Id header for correlation)
+// and runs the action in a detached goroutine so the caller is not blocked
+// by the action's latency. The observer sees a single record per request,
+// reflecting the real ExitCode and duration of the action, but with
+// Status=202 (what the client actually received).
+func (s *Server) dispatchAsync(sc *statusCapture, r *http.Request, route Route, authType string, start time.Time, bodyBytes []byte) {
+	traceID := newTraceID()
+
+	// Determine the effective timeout for the detached action.
+	timeout := route.Timeout
+	if timeout == 0 {
+		timeout = DefaultActionTimeout
+	}
+
+	// Clone the request against a fresh, detached context so the work
+	// survives the client disconnect and the ServeHTTP return.
+	asyncCtx, cancel := context.WithTimeout(context.Background(), timeout)
+	reqCopy := r.Clone(asyncCtx)
+	if bodyBytes != nil {
+		reqCopy.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+	} else {
+		reqCopy.Body = http.NoBody
+	}
+
+	// Captura snapshot dos campos que serão usados após ServeHTTP retornar.
+	method := r.Method
+	remoteAddr := r.RemoteAddr
+
+	sc.Header().Set("X-Trace-Id", traceID)
+	sc.Header().Set("Content-Type", "application/json")
+	sc.WriteHeader(http.StatusAccepted)
+	_, _ = sc.Write([]byte(fmt.Sprintf(`{"status":"accepted","trace_id":%q}`, traceID)))
+
+	s.asyncWG.Add(1)
+	go func() {
+		defer s.asyncWG.Done()
+		defer cancel()
+
+		result, execErr := s.executor.Execute(asyncCtx, route, reqCopy)
+
+		obs := requestObservation{
+			Route:      route,
+			Method:     method,
+			Status:     http.StatusAccepted,
+			Duration:   time.Since(start),
+			RemoteAddr: remoteAddr,
+			AuthType:   authType,
+			AuthResult: "ok",
+			TraceID:    traceID,
+		}
+		if execErr != nil {
+			obs.ExitCode = -1
+		} else {
+			obs.ExitCode = result.ExitCode
+			obs.Truncated = result.Truncated
+		}
+		s.observeRequest(obs)
+	}()
+}
+
+// newTraceID returns a random 16-char hex identifier used to correlate
+// async requests across the ack response and the final log entry.
+func newTraceID() string {
+	var b [8]byte
+	_, _ = rand.Read(b[:])
+	return hex.EncodeToString(b[:])
+}
+
 type requestObservation struct {
 	Route      Route
 	Method     string
@@ -309,6 +403,7 @@ type requestObservation struct {
 	AuthResult string
 	ExitCode   int
 	Truncated  bool
+	TraceID    string
 }
 
 // observeRequest records a completed request in stats and the request logger.
@@ -335,6 +430,7 @@ func (s *Server) observeRequest(obs requestObservation) {
 				AuthType:   obs.AuthType,
 				AuthResult: obs.AuthResult,
 				Truncated:  obs.Truncated,
+				TraceID:    obs.TraceID,
 			},
 		}
 		// Log errors are intentionally ignored to avoid blocking HTTP responses.

@@ -129,6 +129,37 @@ func TestParseAdd_localOnly_disallowsToken(t *testing.T) {
 	}
 }
 
+func TestParseAdd_asyncFlag_setsAsyncTrue(t *testing.T) {
+	route, err := buildRouteFromAddInput(addRouteInput{
+		path:       "/hooks/agent",
+		authType:   "local-only",
+		actionType: "crew.run",
+		target:     "agent-x",
+		async:      true,
+	}, routeDeps{})
+	if err != nil {
+		t.Fatalf("buildRouteFromAddInput() error = %v", err)
+	}
+	if !route.Async {
+		t.Fatalf("route.Async = false; want true when --async is set")
+	}
+}
+
+func TestParseAdd_asyncDefault_false(t *testing.T) {
+	route, err := buildRouteFromAddInput(addRouteInput{
+		path:       "/hooks/agent",
+		authType:   "local-only",
+		actionType: "crew.run",
+		target:     "agent-x",
+	}, routeDeps{})
+	if err != nil {
+		t.Fatalf("buildRouteFromAddInput() error = %v", err)
+	}
+	if route.Async {
+		t.Fatalf("route.Async = true; want false by default")
+	}
+}
+
 func TestParseAdd_invalidTimeout_error(t *testing.T) {
 	_, err := buildRouteFromAddInput(addRouteInput{
 		path:       "/hooks/github",

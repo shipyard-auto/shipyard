@@ -52,6 +52,7 @@ var (
 	ErrInvalidActionType   = errors.New("invalid action type")
 	ErrMissingActionTarget = errors.New("action requires a non-empty target")
 	ErrInvalidActionURL    = errors.New("http.forward requires a valid http/https URL")
+	ErrInvalidAsyncForward = errors.New("async routing is not supported for http.forward")
 )
 
 // AuthType enumerates the supported authentication strategies for a route.
@@ -171,6 +172,13 @@ type Route struct {
 
 	// Timeout overrides DefaultActionTimeout for this route. Zero means use default.
 	Timeout time.Duration `json:"timeout,omitempty"`
+
+	// Async, when true, makes the route respond 202 Accepted immediately and
+	// run the action in a detached goroutine. The caller does not receive the
+	// action's body or status; side effects are observed out-of-band (logs,
+	// subsequent calls, external APIs invoked by the action). Not compatible
+	// with http.forward, whose value is precisely the proxied response.
+	Async bool `json:"async,omitempty"`
 }
 
 // Validate checks all fields of Route.
@@ -195,7 +203,15 @@ func (r Route) Validate() error {
 		return err
 	}
 
-	return r.Action.Validate()
+	if err := r.Action.Validate(); err != nil {
+		return err
+	}
+
+	if r.Async && r.Action.Type == ActionHTTPForward {
+		return ErrInvalidAsyncForward
+	}
+
+	return nil
 }
 
 // Auth holds the authentication configuration for a route.

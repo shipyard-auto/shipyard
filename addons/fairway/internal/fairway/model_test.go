@@ -226,6 +226,38 @@ func TestRoute_Validate(t *testing.T) {
 			mutate:  func(r *fairway.Route) { r.Timeout = 0 },
 			wantErr: nil,
 		},
+		{
+			name: "asyncWithCrewRunAllowed",
+			mutate: func(r *fairway.Route) {
+				r.Async = true
+				r.Action = fairway.Action{Type: fairway.ActionCrewRun, Target: "agent-x"}
+			},
+			wantErr: nil,
+		},
+		{
+			name: "asyncWithCronRunAllowed",
+			mutate: func(r *fairway.Route) {
+				r.Async = true
+				r.Action = fairway.Action{Type: fairway.ActionCronRun, Target: "job-1"}
+			},
+			wantErr: nil,
+		},
+		{
+			name: "asyncWithHTTPForwardRejected",
+			mutate: func(r *fairway.Route) {
+				r.Async = true
+				r.Action = fairway.Action{Type: fairway.ActionHTTPForward, URL: "https://example.com"}
+			},
+			wantErr: fairway.ErrInvalidAsyncForward,
+		},
+		{
+			name: "syncWithHTTPForwardAllowed",
+			mutate: func(r *fairway.Route) {
+				r.Async = false
+				r.Action = fairway.Action{Type: fairway.ActionHTTPForward, URL: "https://example.com"}
+			},
+			wantErr: nil,
+		},
 	}
 
 	for _, tc := range tests {
@@ -446,6 +478,49 @@ func TestConfig_MarshalStable(t *testing.T) {
 	}
 }
 
+func TestConfig_MarshalStable_async(t *testing.T) {
+	t.Parallel()
+
+	original := fairway.Config{
+		SchemaVersion: fairway.SchemaVersion,
+		Port:          9876,
+		Bind:          "127.0.0.1",
+		MaxInFlight:   16,
+		Routes: []fairway.Route{
+			{
+				Path:   "/agent",
+				Auth:   fairway.Auth{Type: fairway.AuthLocalOnly},
+				Action: fairway.Action{Type: fairway.ActionCrewRun, Target: "agent-x"},
+				Async:  true,
+			},
+		},
+	}
+
+	data, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("json.Marshal error: %v", err)
+	}
+	if !strings.Contains(string(data), `"async":true`) {
+		t.Fatalf(`marshaled Config must contain "async":true; got: %s`, data)
+	}
+
+	var decoded fairway.Config
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("json.Unmarshal error: %v", err)
+	}
+	if !decoded.Routes[0].Async {
+		t.Fatalf("round-trip lost Async=true")
+	}
+
+	data2, err := json.Marshal(decoded)
+	if err != nil {
+		t.Fatalf("json.Marshal(decoded) error: %v", err)
+	}
+	if string(data) != string(data2) {
+		t.Fatalf("marshal not stable:\n  first:  %s\n  second: %s", data, data2)
+	}
+}
+
 func TestConfig_MarshalOmitsEmpty(t *testing.T) {
 	t.Parallel()
 
@@ -476,7 +551,7 @@ func TestConfig_MarshalOmitsEmpty(t *testing.T) {
 	}
 
 	s := string(data)
-	for _, forbidden := range []string{`"maxInFlight"`, `"token"`, `"value"`, `"header"`, `"query"`, `"target"`, `"provider"`, `"url"`, `"method"`, `"headers"`, `"timeout"`} {
+	for _, forbidden := range []string{`"maxInFlight"`, `"token"`, `"value"`, `"header"`, `"query"`, `"target"`, `"provider"`, `"url"`, `"method"`, `"headers"`, `"timeout"`, `"async"`} {
 		if strings.Contains(s, forbidden) {
 			t.Errorf("expected %q to be omitted but found it in: %s", forbidden, s)
 		}

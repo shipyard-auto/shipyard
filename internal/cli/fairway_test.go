@@ -177,4 +177,3 @@ func TestFairwayUninstallCommand_purgeFlagRemovesState(t *testing.T) {
 		t.Errorf("expected 'purged' in output, got: %q", out)
 	}
 }
-
