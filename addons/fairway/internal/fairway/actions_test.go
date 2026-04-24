@@ -735,8 +735,67 @@ func TestBuildArgs_crewRun_correctCLI(t *testing.T) {
 	e.Execute(context.Background(), route, req) //nolint:errcheck
 
 	call := cr.lastCall()
-	if len(call.Args) < 3 || call.Args[0] != "crew" || call.Args[1] != "run" || call.Args[2] != "promo-hunter" {
-		t.Errorf("args = %v; want [crew run promo-hunter ...]", call.Args)
+	wantArgs := []string{"crew", "run", "promo-hunter", "--input-file", "/dev/stdin"}
+	if len(call.Args) != len(wantArgs) {
+		t.Fatalf("args = %v; want %v", call.Args, wantArgs)
+	}
+	for i, w := range wantArgs {
+		if call.Args[i] != w {
+			t.Errorf("args[%d] = %q; want %q (full: %v)", i, call.Args[i], w, call.Args)
+		}
+	}
+}
+
+func TestBuildArgs_crewRun_bodyViaStdin(t *testing.T) {
+	t.Parallel()
+
+	// crew.run should pass the HTTP body via stdin so the agent can consume
+	// it through `shipyard crew run --input-file /dev/stdin`. We fake that by
+	// having the helper echo stdin to stdout and asserting Body carries it.
+	echoRunner := helperRunner("GO_HELPER_ECHO_STDIN=1", "GO_HELPER_EXIT=0")
+	cfg := fairway.ExecutorConfig{
+		MaxInFlight:    4,
+		QueueTimeout:   200 * time.Millisecond,
+		DefaultTimeout: 5 * time.Second,
+		Run:            echoRunner,
+		HTTP:           &fakeHTTPClient{},
+	}
+	e := fairway.NewExecutor(cfg)
+
+	route := subprocessRoute(fairway.ActionCrewRun, "issue-triager")
+	payload := `{"action":"opened","issue":{"number":42,"title":"hello"}}`
+	req := httptest.NewRequest(http.MethodPost, "/test", strings.NewReader(payload))
+
+	result, err := e.Execute(context.Background(), route, req)
+	if err != nil {
+		t.Fatalf("Execute() error: %v", err)
+	}
+	if result.HTTPStatus != 200 {
+		t.Fatalf("HTTPStatus = %d; want 200", result.HTTPStatus)
+	}
+	if !strings.Contains(string(result.Body), payload) {
+		t.Errorf("body = %q; expected stdin payload echoed to stdout", result.Body)
+	}
+}
+
+func TestBuildArgs_crewRun_emptyBody_noError(t *testing.T) {
+	t.Parallel()
+
+	// An empty POST (no body) must still dispatch cleanly: stdin is an
+	// immediate EOF reader, the agent's `--input-file /dev/stdin` reads
+	// zero bytes, exit 0.
+	cfg := defaultExec(helperRunner("GO_HELPER_EXIT=0"))
+	e := fairway.NewExecutor(*cfg)
+
+	route := subprocessRoute(fairway.ActionCrewRun, "issue-triager")
+	req := httptest.NewRequest(http.MethodPost, "/test", nil)
+
+	result, err := e.Execute(context.Background(), route, req)
+	if err != nil {
+		t.Fatalf("Execute() error: %v", err)
+	}
+	if result.HTTPStatus != 200 {
+		t.Fatalf("HTTPStatus = %d; want 200 for empty-body crew.run", result.HTTPStatus)
 	}
 }
 

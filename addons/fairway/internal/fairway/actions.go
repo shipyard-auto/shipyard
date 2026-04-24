@@ -298,7 +298,7 @@ func buildArgs(action Action, body []byte) (args []string, stdin io.Reader) {
 	case ActionServiceRestart:
 		return []string{"service", "restart", action.Target}, nil
 	case ActionCrewRun:
-		return []string{"crew", "run", action.Target}, nil
+		return []string{"crew", "run", action.Target, "--input-file", "/dev/stdin"}, bytes.NewReader(body)
 	case ActionMessageSend:
 		return []string{"message", "send", fmt.Sprintf("--text=%s", string(body))}, nil
 	case ActionTelegramHandle:
