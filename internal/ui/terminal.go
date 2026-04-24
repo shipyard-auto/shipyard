@@ -58,7 +58,7 @@ func Muted(text string) string {
 }
 
 func Highlight(text string) string {
-	return Paint(text, StyleBold, StyleYellow)
+	return Paint(text, StyleBold, StyleGreen)
 }
 
 func Emphasis(text string) string {
