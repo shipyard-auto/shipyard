@@ -37,9 +37,6 @@ type ServerConfig struct {
 	// Logger is used for structured daemon logging.
 	Logger *slog.Logger
 
-	// ReqLogger writes a JSONL line for every completed HTTP request. Optional.
-	ReqLogger *RequestLogger
-
 	// EventLogger emits structured request events to the unified shipyard log
 	// store (schema v2). When set, an http_request line is written by the
 	// middleware for every completed request and an async_dispatch_finished
@@ -59,7 +56,6 @@ type Server struct {
 	router      *Router
 	executor    Executor
 	logger      *slog.Logger
-	reqLogger   *RequestLogger
 	eventLogger *slog.Logger
 	stats       *Stats
 	httpSrv   *http.Server
@@ -82,7 +78,6 @@ func NewServer(cfg ServerConfig) *Server {
 		router:      cfg.Router,
 		executor:    cfg.Executor,
 		logger:      cfg.Logger,
-		reqLogger:   cfg.ReqLogger,
 		eventLogger: cfg.EventLogger,
 		stats:       cfg.Stats,
 		authCache:   make(map[string]Authenticator),
@@ -128,12 +123,6 @@ func (s *Server) Serve(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("listen %s:%d: %w", s.bind, s.port, err)
 	}
-	if s.reqLogger != nil {
-		defer func() {
-			_ = s.reqLogger.Close()
-		}()
-	}
-
 	s.addrMu.Lock()
 	s.addr = lis.Addr().String()
 	s.addrMu.Unlock()
@@ -469,35 +458,12 @@ type requestObservation struct {
 	TraceID    string
 }
 
-// observeRequest records a completed request in stats and the request logger.
+// observeRequest records a completed request in stats. Structured logging
+// is handled by the unified middleware (yardlogs.Middleware) — this hook
+// only feeds the in-memory counter.
 func (s *Server) observeRequest(obs requestObservation) {
 	if s.stats != nil {
 		s.stats.ObserveResult(obs.Route.Path, obs.Status, obs.ExitCode, obs.Duration)
-	}
-	if s.reqLogger != nil {
-		event := RequestEvent{
-			Timestamp: time.Now().UTC().Format(time.RFC3339),
-			Source:    "fairway",
-			Level:     "info",
-			Event:     "http_request",
-			Message:   "fairway HTTP request handled",
-			Data: EventData{
-				Method:     obs.Method,
-				Path:       obs.Route.Path,
-				Status:     obs.Status,
-				DurationMs: obs.Duration.Milliseconds(),
-				RemoteAddr: obs.RemoteAddr,
-				Action:     string(obs.Route.Action.Type),
-				Target:     obs.Route.Action.Target,
-				ExitCode:   obs.ExitCode,
-				AuthType:   obs.AuthType,
-				AuthResult: obs.AuthResult,
-				Truncated:  obs.Truncated,
-				TraceID:    obs.TraceID,
-			},
-		}
-		// Log errors are intentionally ignored to avoid blocking HTTP responses.
-		_ = s.reqLogger.Log(event)
 	}
 }
 

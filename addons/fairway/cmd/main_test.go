@@ -96,8 +96,7 @@ func unitDeps(t *testing.T) (runDeps, *bytes.Buffer, *bytes.Buffer) {
 		newRouter: func(fairway.Repository) (*fairway.Router, error) {
 			return router, nil
 		},
-		newRequestLogger: fairway.NewRequestLogger,
-		newStats:         fairway.NewStats,
+		newStats: fairway.NewStats,
 		newExecutor: func(cfg fairway.ExecutorConfig) fairway.Executor {
 			return fairway.NewExecutor(cfg)
 		},
@@ -189,23 +188,6 @@ func TestRun_invalidConfig_exit20(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "carregar config") {
 		t.Fatalf("stderr = %q; want config failure", stderr.String())
-	}
-}
-
-func TestRun_loggerInit_exit30(t *testing.T) {
-	t.Parallel()
-
-	deps, _, stderr := unitDeps(t)
-	deps.newRequestLogger = func(string, func() time.Time) (*fairway.RequestLogger, error) {
-		return nil, errors.New("logger boom")
-	}
-
-	code := run(context.Background(), deps)
-	if code != exitLoggerInit {
-		t.Fatalf("run() = %d; want %d", code, exitLoggerInit)
-	}
-	if !strings.Contains(stderr.String(), "inicializar logger") {
-		t.Fatalf("stderr = %q; want logger failure", stderr.String())
 	}
 }
 
