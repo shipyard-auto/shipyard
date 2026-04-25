@@ -31,7 +31,24 @@ type Options struct {
 	// Extra is composed in addition to the file Store; useful in dev to
 	// also emit to stderr. Pass slog.NewTextHandler(os.Stderr, ...) etc.
 	Extra slog.Handler
+
+	// Sampler, when non-nil, decides whether a record is persisted. Returning
+	// false drops the record before it reaches the Store. Nil keeps every
+	// record (the default for production today). Wired up but unused — kept
+	// here so callers can opt-in without a downstream API change.
+	Sampler Sampler
 }
+
+// Sampler decides whether a record should be persisted. Implementations must
+// be safe for concurrent use.
+type Sampler interface {
+	Keep(ctx context.Context, r slog.Record) bool
+}
+
+// SamplerFunc adapts a plain function to the Sampler interface.
+type SamplerFunc func(ctx context.Context, r slog.Record) bool
+
+func (f SamplerFunc) Keep(ctx context.Context, r slog.Record) bool { return f(ctx, r) }
 
 // New builds a *slog.Logger that writes to the configured Store under the
 // given source name. Standard host/process attributes are baked in.
@@ -52,6 +69,9 @@ func New(source string, opts Options) *slog.Logger {
 	}
 
 	var h slog.Handler = NewHandler(opts.Store, source, opts.Level)
+	if opts.Sampler != nil {
+		h = samplingHandler{inner: h, sampler: opts.Sampler}
+	}
 	if opts.Extra != nil {
 		h = extraMulti{primary: h, extra: opts.Extra}
 	}
@@ -94,4 +114,31 @@ func (m extraMulti) WithGroup(name string) slog.Handler {
 		primary: m.primary.WithGroup(name),
 		extra:   m.extra.WithGroup(name),
 	}
+}
+
+// samplingHandler drops records for which the configured Sampler returns
+// false. Enabled is delegated to the inner handler so callers still see the
+// same level filter regardless of sampling.
+type samplingHandler struct {
+	inner   slog.Handler
+	sampler Sampler
+}
+
+func (s samplingHandler) Enabled(ctx context.Context, lvl slog.Level) bool {
+	return s.inner.Enabled(ctx, lvl)
+}
+
+func (s samplingHandler) Handle(ctx context.Context, r slog.Record) error {
+	if !s.sampler.Keep(ctx, r) {
+		return nil
+	}
+	return s.inner.Handle(ctx, r)
+}
+
+func (s samplingHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return samplingHandler{inner: s.inner.WithAttrs(attrs), sampler: s.sampler}
+}
+
+func (s samplingHandler) WithGroup(name string) slog.Handler {
+	return samplingHandler{inner: s.inner.WithGroup(name), sampler: s.sampler}
 }
