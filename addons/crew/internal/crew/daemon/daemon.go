@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
@@ -29,6 +30,7 @@ import (
 	"github.com/shipyard-auto/shipyard/addons/crew/internal/crew/runner"
 	"github.com/shipyard-auto/shipyard/addons/crew/internal/crew/socket"
 	"github.com/shipyard-auto/shipyard/addons/crew/internal/crew/tools"
+	yardlogs "github.com/shipyard-auto/shipyard/internal/logs"
 )
 
 // Exit codes returned by Run. They mirror the public contract documented in
@@ -198,16 +200,16 @@ type runtime struct {
 	mu       sync.RWMutex
 	agentDir string
 	rn       *runner.Runner
-	em       logs.Emitter // owned by runtime; closed in closeLogs.
+	store    *yardlogs.Store // owned by runtime; closed in closeLogs.
 }
 
-// closeLogs releases the file descriptor owned by the JSONL emitter.
-// Safe to call when no emitter was attached.
+// closeLogs releases the file descriptors owned by the JSONL Store.
+// Safe to call when no Store was attached.
 func (r *runtime) closeLogs() {
-	if r == nil || r.em == nil {
+	if r == nil || r.store == nil {
 		return
 	}
-	_ = r.em.Close()
+	_ = r.store.Close()
 }
 
 func (r *runtime) Run(ctx context.Context, p socket.RunParams) (socket.RunResult, error) {
@@ -251,13 +253,24 @@ func buildRuntime(a *crew.Agent, opts Options) (*runtime, error) {
 	if err != nil {
 		return nil, err
 	}
-	em, emErr := logs.NewFileEmitter(opts.LogDir)
-	if emErr != nil {
-		// Logs are best-effort; never block the daemon.
-		em = logs.NewNopEmitter()
+	rt := &runtime{rn: rn, agentDir: opts.AgentDir}
+	// When LogDir is empty (most tests) skip the file-backed Store and
+	// hand the runner a no-op logger so nothing leaks to the cwd.
+	if opts.LogDir == "" {
+		rn.Logs = logs.NewRunnerAdapter(slog.New(yardlogs.NopHandler()))
+		return rt, nil
 	}
-	rn.Logs = logs.NewRunnerAdapter(em)
-	return &runtime{rn: rn, agentDir: opts.AgentDir, em: em}, nil
+	// LogDir points at <SHIPYARD_HOME>/logs/crew; the schema-v2 Store is
+	// rooted one level up so entries land at <root>/crew/YYYY-MM-DD.jsonl.
+	logsRoot := filepath.Dir(opts.LogDir)
+	store := yardlogs.NewStore(logsRoot)
+	logger := yardlogs.New(yardlogs.SourceCrew, yardlogs.Options{
+		Store:   store,
+		Version: opts.Version,
+	})
+	rn.Logs = logs.NewRunnerAdapter(logger)
+	rt.store = store
+	return rt, nil
 }
 
 // NewRunner wires the dependencies a crew runner needs (config, pool, backend,

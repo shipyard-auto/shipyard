@@ -1,7 +1,6 @@
 package fairway_test
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -9,8 +8,6 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -199,9 +196,9 @@ func TestServeHTTP_async_clientCancel_taskSurvives(t *testing.T) {
 	}
 }
 
-// ── sync parity: non-async route does not get the async treatment ────────────
+// ── sync parity: every response carries a trace id from the middleware ───────
 
-func TestServeHTTP_sync_noTraceIDHeader(t *testing.T) {
+func TestServeHTTP_sync_carriesTraceIDHeader(t *testing.T) {
 	t.Parallel()
 
 	exec := &fakeExecutor{result: fairway.Result{HTTPStatus: 200, Body: []byte("ok")}}
@@ -221,85 +218,13 @@ func TestServeHTTP_sync_noTraceIDHeader(t *testing.T) {
 	if w.Code != 200 {
 		t.Fatalf("sync status = %d; want 200", w.Code)
 	}
-	if trace := w.Header().Get("X-Trace-Id"); trace != "" {
-		t.Errorf("sync route must not set X-Trace-Id; got %q", trace)
+	if trace := w.Header().Get("X-Trace-Id"); trace == "" {
+		t.Error("sync route must echo X-Trace-Id from the middleware; got empty value")
 	}
 }
 
-// ── observation: async logs one entry with real ExitCode and trace_id ────────
-
-func TestServeHTTP_async_observeCarriesFinalExitCodeAndTraceID(t *testing.T) {
-	t.Parallel()
-
-	dir := t.TempDir()
-	fixed := time.Date(2026, 4, 23, 10, 0, 0, 0, time.UTC)
-	rl, err := fairway.NewRequestLogger(dir, func() time.Time { return fixed })
-	if err != nil {
-		t.Fatalf("NewRequestLogger: %v", err)
-	}
-	defer rl.Close() //nolint:errcheck
-
-	exec := newAsyncFakeExecutor(30*time.Millisecond, fairway.Result{HTTPStatus: 200, ExitCode: 0})
-	route := fairway.Route{
-		Path:   "/async-log",
-		Auth:   fairway.Auth{Type: fairway.AuthLocalOnly},
-		Action: fairway.Action{Type: fairway.ActionCrewRun, Target: "agent"},
-		Async:  true,
-	}
-
-	srv := buildServerWithLogger(t, exec, rl, nil, route)
-	handler := fairway.ServerHandlerForTest(srv)
-
-	w := httptest.NewRecorder()
-	r := httptest.NewRequest(http.MethodPost, "/async-log", strings.NewReader("{}"))
-	r.RemoteAddr = "127.0.0.1:1"
-	handler.ServeHTTP(w, r)
-
-	if w.Code != http.StatusAccepted {
-		t.Fatalf("async ack status = %d; want 202", w.Code)
-	}
-	wantTrace := w.Header().Get("X-Trace-Id")
-
-	exec.waitDone(t, 2*time.Second)
-
-	// Give the observer goroutine a beat to flush the log line.
-	time.Sleep(50 * time.Millisecond)
-	_ = rl.Close()
-
-	logFile := filepath.Join(dir, "2026-04-23.jsonl")
-	f, err := os.Open(logFile)
-	if err != nil {
-		t.Fatalf("open log file: %v", err)
-	}
-	defer f.Close()
-
-	scanner := bufio.NewScanner(f)
-	var events []fairway.RequestEvent
-	for scanner.Scan() {
-		var evt fairway.RequestEvent
-		if err := json.Unmarshal(scanner.Bytes(), &evt); err != nil {
-			t.Fatalf("invalid JSON: %v", err)
-		}
-		events = append(events, evt)
-	}
-
-	if len(events) != 1 {
-		t.Fatalf("observer wrote %d events for async request; want exactly 1", len(events))
-	}
-	evt := events[0]
-	if evt.Data.Status != http.StatusAccepted {
-		t.Errorf("Data.Status = %d; want 202 (what the client actually received)", evt.Data.Status)
-	}
-	if evt.Data.ExitCode != 0 {
-		t.Errorf("Data.ExitCode = %d; want 0 (real action exit code)", evt.Data.ExitCode)
-	}
-	if evt.Data.TraceID == "" {
-		t.Errorf("Data.TraceID empty; want matching ack header %q", wantTrace)
-	}
-	if evt.Data.TraceID != wantTrace {
-		t.Errorf("Data.TraceID = %q; want %q (ack header)", evt.Data.TraceID, wantTrace)
-	}
-}
+// Legacy v1 async observe test removed — equivalent schema-v2 coverage
+// lives in server_event_logger_test.go.
 
 // ── graceful shutdown waits for async goroutines ─────────────────────────────
 

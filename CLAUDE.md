@@ -498,6 +498,18 @@ shipyard crew tool rm my-tool
 
 ---
 
+## Logs subsystem (schema v2)
+
+All four sources (`cron`, `service`, `fairway`, `crew`) write through `internal/logs` (a `log/slog` handler) to `~/.shipyard/logs/<source>/YYYY-MM-DD.jsonl`. One JSONL line per event, flat snake_case keys — no nested groups.
+
+Required fields on every line: `ts`, `level`, `source`, `event`, `message`, `hostname`, `pid`, `service_version`. Optional fields are domain-specific (`trace_id`, `entity_id`, `entity_name`, `duration_ms`, `error`, `http_method`, `http_path`, `http_status`, `route_action`, `route_target`, `tool_name`, `tokens_input/output`, …). Event names and attribute keys live as constants in `internal/logs/events.go` — use those constants, never string literals.
+
+Trace correlation flows via `context.Context`. The fairway HTTP middleware reads `X-Trace-Id` (or generates one), stores it via `internal/logs/trace.WithID`, and the slog handler injects it on every record. Downstream calls (`crew.run`, `cron run`) inherit the trace through ctx, so a single request shows up across HTTP, runner, and tool-call lines under the same `trace_id`.
+
+Reading: `shipyard logs show|tail` reads all sources by default; filter with `--source`, `--trace`, `--id`, `--level`, `--since`, `--limit`. `shipyard fairway logs` and `shipyard crew logs <name>` are thin aliases that preset `--source`. Add `--json` to emit raw JSONL instead of pretty output.
+
+Sampling is plumbed (`logs.Options.Sampler`) but disabled by default; production keeps every record.
+
 ## Architecture Rules
 
 - Keep business logic in `internal/`; keep `cmd/` thin.

@@ -25,6 +25,7 @@ import (
 
 	"github.com/shipyard-auto/shipyard/addons/fairway/internal/app"
 	"github.com/shipyard-auto/shipyard/addons/fairway/internal/fairway"
+	yardlogs "github.com/shipyard-auto/shipyard/internal/logs"
 )
 
 const (
@@ -32,7 +33,6 @@ const (
 	exitFlagError      = 1
 	exitAlreadyRunning = 10
 	exitInvalidConfig  = 20
-	exitLoggerInit     = 30
 	exitFatalServer    = 40
 	exitShutdownHang   = 50
 
@@ -65,14 +65,13 @@ type runDeps struct {
 	notifyContext     func(context.Context, ...os.Signal) (context.Context, context.CancelFunc)
 	mkdirAll          func(string, os.FileMode) error
 
-	acquirePID       func(fairway.PIDFileOptions) (pidReleaser, error)
-	newRepo          func(string) fairway.Repository
-	newRouter        func(fairway.Repository) (*fairway.Router, error)
-	newRequestLogger func(string, func() time.Time) (*fairway.RequestLogger, error)
-	newStats         func(time.Time) *fairway.Stats
-	newExecutor      func(fairway.ExecutorConfig) fairway.Executor
-	newServer        func(fairway.ServerConfig) serverRunner
-	newSocketServer  func(path string, router *fairway.Router, server serverRunner, stats *fairway.Stats, version string, now func() time.Time) socketRunner
+	acquirePID      func(fairway.PIDFileOptions) (pidReleaser, error)
+	newRepo         func(string) fairway.Repository
+	newRouter       func(fairway.Repository) (*fairway.Router, error)
+	newStats        func(time.Time) *fairway.Stats
+	newExecutor     func(fairway.ExecutorConfig) fairway.Executor
+	newServer       func(fairway.ServerConfig) serverRunner
+	newSocketServer func(path string, router *fairway.Router, server serverRunner, stats *fairway.Stats, version string, now func() time.Time) socketRunner
 
 	version      string
 	versionInfo  func() string
@@ -153,13 +152,6 @@ func run(ctx context.Context, deps runDeps) int {
 		return exitInvalidConfig
 	}
 
-	reqLogger, err := deps.newRequestLogger(resolvedLogDir, deps.now)
-	if err != nil {
-		deps.bootstrapLog.Printf("bootstrap falhou: inicializar logger: %v", err)
-		return exitLoggerInit
-	}
-	defer func() { _ = reqLogger.Close() }()
-
 	stats := deps.newStats(deps.now())
 	executor := deps.newExecutor(fairway.ExecutorConfig{
 		ShipyardBinary: resolveShipyardBinary(),
@@ -168,12 +160,22 @@ func run(ctx context.Context, deps runDeps) int {
 	})
 
 	daemonLogger := slog.New(slog.NewTextHandler(deps.stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+	// Build the schema-v2 event logger that backs the HTTP middleware.
+	// Resolves to the canonical ~/.shipyard/logs root so entries land at
+	// <root>/fairway/YYYY-MM-DD.jsonl.
+	logsRoot := filepath.Dir(resolvedLogDir)
+	eventLogger := yardlogs.New(yardlogs.SourceFairway, yardlogs.Options{
+		Store:   yardlogs.NewStore(logsRoot),
+		Version: deps.version,
+	})
+
 	server := deps.newServer(fairway.ServerConfig{
-		Router:    router,
-		Executor:  executor,
-		Logger:    daemonLogger,
-		ReqLogger: reqLogger,
-		Stats:     stats,
+		Router:      router,
+		Executor:    executor,
+		Logger:      daemonLogger,
+		EventLogger: eventLogger,
+		Stats:       stats,
 	})
 
 	socketPath := filepath.Join(runDir, "fairway.sock")
@@ -305,9 +307,6 @@ func (d runDeps) withDefaults() runDeps {
 	}
 	if d.newRouter == nil {
 		d.newRouter = fairway.NewRouter
-	}
-	if d.newRequestLogger == nil {
-		d.newRequestLogger = fairway.NewRequestLogger
 	}
 	if d.newStats == nil {
 		d.newStats = fairway.NewStats

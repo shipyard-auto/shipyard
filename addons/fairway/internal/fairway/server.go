@@ -14,6 +14,9 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	yardlogs "github.com/shipyard-auto/shipyard/internal/logs"
+	"github.com/shipyard-auto/shipyard/internal/logs/trace"
 )
 
 const (
@@ -34,8 +37,13 @@ type ServerConfig struct {
 	// Logger is used for structured daemon logging.
 	Logger *slog.Logger
 
-	// ReqLogger writes a JSONL line for every completed HTTP request. Optional.
-	ReqLogger *RequestLogger
+	// EventLogger emits structured request events to the unified shipyard log
+	// store (schema v2). When set, an http_request line is written by the
+	// middleware for every completed request and an async_dispatch_finished
+	// line is written when an async route's detached goroutine finishes.
+	// Optional; when nil the middleware still wraps the mux to inject trace
+	// ids but emits no log lines.
+	EventLogger *slog.Logger
 
 	// Stats tracks per-route request counters. Optional.
 	Stats *Stats
@@ -45,11 +53,11 @@ type ServerConfig struct {
 // requests against the routing table, authenticates them, and dispatches
 // the configured action via the Executor.
 type Server struct {
-	router    *Router
-	executor  Executor
-	logger    *slog.Logger
-	reqLogger *RequestLogger
-	stats     *Stats
+	router      *Router
+	executor    Executor
+	logger      *slog.Logger
+	eventLogger *slog.Logger
+	stats       *Stats
 	httpSrv   *http.Server
 	bind      string
 	port      int
@@ -67,12 +75,12 @@ type Server struct {
 // NewServer creates an HTTP server from cfg.
 func NewServer(cfg ServerConfig) *Server {
 	s := &Server{
-		router:    cfg.Router,
-		executor:  cfg.Executor,
-		logger:    cfg.Logger,
-		reqLogger: cfg.ReqLogger,
-		stats:     cfg.Stats,
-		authCache: make(map[string]Authenticator),
+		router:      cfg.Router,
+		executor:    cfg.Executor,
+		logger:      cfg.Logger,
+		eventLogger: cfg.EventLogger,
+		stats:       cfg.Stats,
+		authCache:   make(map[string]Authenticator),
 	}
 
 	if s.logger == nil {
@@ -87,8 +95,18 @@ func NewServer(cfg ServerConfig) *Server {
 	mux.HandleFunc("/_health", s.handleHealth)
 	mux.HandleFunc("/", s.handleRouted)
 
+	// Always wrap with the trace-injecting middleware so every request gets
+	// a trace id propagated via context and echoed in the response header.
+	// When no EventLogger is configured we still wrap, falling back to a nop
+	// logger so the structured log line is silently dropped.
+	mwLogger := s.eventLogger
+	if mwLogger == nil {
+		mwLogger = slog.New(yardlogs.NopHandler())
+	}
+	handler := yardlogs.Middleware(mwLogger)(mux)
+
 	s.httpSrv = &http.Server{
-		Handler:           mux,
+		Handler:           handler,
 		ReadHeaderTimeout: httpReadHeaderTimeout,
 		ReadTimeout:       httpReadTimeout,
 		WriteTimeout:      httpWriteTimeout,
@@ -105,12 +123,6 @@ func (s *Server) Serve(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("listen %s:%d: %w", s.bind, s.port, err)
 	}
-	if s.reqLogger != nil {
-		defer func() {
-			_ = s.reqLogger.Close()
-		}()
-	}
-
 	s.addrMu.Lock()
 	s.addr = lis.Addr().String()
 	s.addrMu.Unlock()
@@ -331,7 +343,13 @@ func (s *Server) handleRouted(w http.ResponseWriter, r *http.Request) {
 // reflecting the real ExitCode and duration of the action, but with
 // Status=202 (what the client actually received).
 func (s *Server) dispatchAsync(sc *statusCapture, r *http.Request, route Route, authType string, start time.Time, bodyBytes []byte) {
-	traceID := newTraceID()
+	// Prefer the trace id injected by the logging middleware (canonical
+	// path). Fall back to generating one only when the middleware was
+	// somehow bypassed, so async paths still produce correlatable logs.
+	traceID := trace.ID(r.Context())
+	if traceID == "" {
+		traceID = newTraceID()
+	}
 
 	// Determine the effective timeout for the detached action.
 	timeout := route.Timeout
@@ -340,8 +358,11 @@ func (s *Server) dispatchAsync(sc *statusCapture, r *http.Request, route Route, 
 	}
 
 	// Clone the request against a fresh, detached context so the work
-	// survives the client disconnect and the ServeHTTP return.
+	// survives the client disconnect and the ServeHTTP return. We propagate
+	// the trace id explicitly because the new context does not inherit from
+	// r.Context().
 	asyncCtx, cancel := context.WithTimeout(context.Background(), timeout)
+	asyncCtx = trace.WithID(asyncCtx, traceID)
 	reqCopy := r.Clone(asyncCtx)
 	if bodyBytes != nil {
 		reqCopy.Body = io.NopCloser(bytes.NewReader(bodyBytes))
@@ -382,7 +403,38 @@ func (s *Server) dispatchAsync(sc *statusCapture, r *http.Request, route Route, 
 			obs.Truncated = result.Truncated
 		}
 		s.observeRequest(obs)
+		s.logAsyncDispatch(asyncCtx, obs, execErr)
 	}()
+}
+
+// logAsyncDispatch emits a structured async_dispatch_finished line via the
+// event logger so async routes can be correlated with the synchronous 202
+// already logged by the middleware (same trace_id).
+func (s *Server) logAsyncDispatch(ctx context.Context, obs requestObservation, execErr error) {
+	if s.eventLogger == nil {
+		return
+	}
+	attrs := []slog.Attr{
+		slog.String(yardlogs.KeyHTTPMethod, obs.Method),
+		slog.String(yardlogs.KeyHTTPPath, obs.Route.Path),
+		slog.Int(yardlogs.KeyHTTPStatus, obs.Status),
+		slog.Int64(yardlogs.KeyDurationMs, obs.Duration.Milliseconds()),
+		slog.String(yardlogs.KeyHTTPRemoteAddr, obs.RemoteAddr),
+		slog.String(yardlogs.KeyRouteAction, string(obs.Route.Action.Type)),
+		slog.String(yardlogs.KeyRouteTarget, obs.Route.Action.Target),
+		slog.Int(yardlogs.KeyRouteExitCode, obs.ExitCode),
+		slog.String(yardlogs.KeyAuthType, obs.AuthType),
+		slog.String(yardlogs.KeyAuthResult, obs.AuthResult),
+	}
+	level := slog.LevelInfo
+	if execErr != nil {
+		level = slog.LevelError
+		attrs = append(attrs,
+			slog.String(yardlogs.KeyError, execErr.Error()),
+			slog.String(yardlogs.KeyErrorKind, fmt.Sprintf("%T", execErr)),
+		)
+	}
+	s.eventLogger.LogAttrs(ctx, level, yardlogs.EventAsyncDispatch, attrs...)
 }
 
 // newTraceID returns a random 16-char hex identifier used to correlate
@@ -406,35 +458,12 @@ type requestObservation struct {
 	TraceID    string
 }
 
-// observeRequest records a completed request in stats and the request logger.
+// observeRequest records a completed request in stats. Structured logging
+// is handled by the unified middleware (yardlogs.Middleware) — this hook
+// only feeds the in-memory counter.
 func (s *Server) observeRequest(obs requestObservation) {
 	if s.stats != nil {
 		s.stats.ObserveResult(obs.Route.Path, obs.Status, obs.ExitCode, obs.Duration)
-	}
-	if s.reqLogger != nil {
-		event := RequestEvent{
-			Timestamp: time.Now().UTC().Format(time.RFC3339),
-			Source:    "fairway",
-			Level:     "info",
-			Event:     "http_request",
-			Message:   "fairway HTTP request handled",
-			Data: EventData{
-				Method:     obs.Method,
-				Path:       obs.Route.Path,
-				Status:     obs.Status,
-				DurationMs: obs.Duration.Milliseconds(),
-				RemoteAddr: obs.RemoteAddr,
-				Action:     string(obs.Route.Action.Type),
-				Target:     obs.Route.Action.Target,
-				ExitCode:   obs.ExitCode,
-				AuthType:   obs.AuthType,
-				AuthResult: obs.AuthResult,
-				Truncated:  obs.Truncated,
-				TraceID:    obs.TraceID,
-			},
-		}
-		// Log errors are intentionally ignored to avoid blocking HTTP responses.
-		_ = s.reqLogger.Log(event)
 	}
 }
 

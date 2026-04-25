@@ -1,6 +1,7 @@
 package cron
 
 import (
+	"context"
 	"errors"
 	"os/exec"
 	"strings"
@@ -236,7 +237,7 @@ func TestServiceRunExecutesCommand(t *testing.T) {
 		},
 	}
 
-	job, output, err := service.Run("AB12CD")
+	job, output, err := service.Run(context.Background(), "AB12CD")
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}

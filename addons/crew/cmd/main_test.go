@@ -418,11 +418,14 @@ func TestDefaultRunOnDemandWritesLogs(t *testing.T) {
 		if err := json.Unmarshal([]byte(line), &ev); err != nil {
 			t.Fatalf("parse line %q: %v", line, err)
 		}
-		switch ev["type"] {
+		if ev["source"] != "crew" {
+			t.Errorf("source=%v, want crew", ev["source"])
+		}
+		switch ev["event"] {
 		case "run_start":
 			startSeen = true
-			if ev["source"] != "on-demand" {
-				t.Errorf("source=%v, want on-demand", ev["source"])
+			if ev["crew_source"] != "on-demand" {
+				t.Errorf("crew_source=%v, want on-demand", ev["crew_source"])
 			}
 		case "run_end":
 			endSeen = true

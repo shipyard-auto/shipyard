@@ -1,6 +1,7 @@
 package cronwiz
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -147,7 +148,7 @@ func (s *runScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		s.running = true
 		s.startedAt = time.Now()
 		return s, tea.Batch(s.spinner.Init(), func() tea.Msg {
-			job, output, err := s.service.Run(s.target.ID)
+			job, output, err := s.service.Run(context.Background(), s.target.ID)
 			return runResultMsg{
 				job:      job,
 				output:   output,

@@ -1,6 +1,7 @@
 package cronwiz
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -19,7 +20,7 @@ type CronService interface {
 	Update(id string, patch cron.JobInput) (cron.Job, error)
 	Enable(id string) (cron.Job, error)
 	Disable(id string) (cron.Job, error)
-	Run(id string) (cron.Job, string, error)
+	Run(ctx context.Context, id string) (cron.Job, string, error)
 	Delete(id string) error
 }
 

@@ -9,9 +9,11 @@ require (
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/charmbracelet/x/exp/teatest v0.0.0-20260413165052-6921c759c913
+	github.com/felixge/httpsnoop v1.0.4
 	github.com/muesli/termenv v0.16.0
 	github.com/spf13/cobra v1.9.1
 	golang.org/x/term v0.42.0
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
@@ -39,5 +41,4 @@ require (
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
 	golang.org/x/sys v0.43.0 // indirect
 	golang.org/x/text v0.28.0 // indirect
-	gopkg.in/yaml.v3 v3.0.1 // indirect
 )

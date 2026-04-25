@@ -2,6 +2,7 @@ package cronwiz
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"strings"
 	"testing"
@@ -70,7 +71,7 @@ func (f *fakeCronService) Update(id string, input cron.JobInput) (cron.Job, erro
 }
 func (f *fakeCronService) Enable(id string) (cron.Job, error)  { return f.Get(id) }
 func (f *fakeCronService) Disable(id string) (cron.Job, error) { return f.Get(id) }
-func (f *fakeCronService) Run(id string) (cron.Job, string, error) {
+func (f *fakeCronService) Run(_ context.Context, id string) (cron.Job, string, error) {
 	f.ran = append(f.ran, id)
 	j, err := f.Get(id)
 	return j, "ok", err

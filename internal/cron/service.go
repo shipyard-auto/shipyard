@@ -1,9 +1,11 @@
 package cron
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"slices"
@@ -17,10 +19,6 @@ var ErrJobNotFound = errors.New("cron job not found")
 
 const maxLoggedOutput = 4096
 
-type EventLogger interface {
-	Write(event yardlogs.Event) error
-}
-
 type Service struct {
 	Repo      Repository
 	Crontab   Crontab
@@ -28,7 +26,7 @@ type Service struct {
 	Now       func() time.Time
 	StorePath string
 	Exec      func(name string, args ...string) *exec.Cmd
-	Logger    EventLogger
+	Logger    *slog.Logger
 }
 
 func NewService() (Service, error) {
@@ -44,7 +42,7 @@ func NewService() (Service, error) {
 		Now:       time.Now,
 		StorePath: repo.Path,
 		Exec:      exec.Command,
-		Logger:    newLogger(),
+		Logger:    yardlogs.DefaultLogger(yardlogs.SourceCron),
 	}, nil
 }
 
@@ -112,11 +110,11 @@ func (s Service) Add(input JobInput) (Job, error) {
 	next := store
 	next.Jobs = append(next.Jobs, job)
 	if err := s.persist(store, next); err != nil {
-		s.logPersistFailure("cron_job_create_failed", "Failed to create Shipyard cron job", job, err)
+		s.logFailure(yardlogs.EventCronJobCreateFailed, "Failed to create Shipyard cron job", job, "", err)
 		return Job{}, err
 	}
 
-	s.logEvent("info", "cron_job_created", "Shipyard cron job created", job, "", nil)
+	s.logJob(slog.LevelInfo, yardlogs.EventCronJobCreated, "Shipyard cron job created", job, "")
 	return job, nil
 }
 
@@ -149,12 +147,12 @@ func (s Service) Update(id string, patch JobInput) (Job, error) {
 	next := store
 	next.Jobs[index] = after
 	if err := s.persist(store, next); err != nil {
-		s.logPersistFailure("cron_job_update_failed", "Failed to update Shipyard cron job", after, err)
+		s.logFailure(yardlogs.EventCronJobUpdateFailed, "Failed to update Shipyard cron job", after, "", err)
 		return Job{}, err
 	}
 
 	eventName, message := classifyUpdateEvent(before, after)
-	s.logEvent("info", eventName, message, after, "", nil)
+	s.logJob(slog.LevelInfo, eventName, message, after, "")
 	return after, nil
 }
 
@@ -183,11 +181,11 @@ func (s Service) Delete(id string) error {
 	next := store
 	next.Jobs = nextJobs
 	if err := s.persist(store, next); err != nil {
-		s.logPersistFailure("cron_job_delete_failed", "Failed to delete Shipyard cron job", removed, err)
+		s.logFailure(yardlogs.EventCronJobDeleteFailed, "Failed to delete Shipyard cron job", removed, "", err)
 		return err
 	}
 
-	s.logEvent("info", "cron_job_deleted", "Shipyard cron job deleted", removed, "", nil)
+	s.logJob(slog.LevelInfo, yardlogs.EventCronJobDeleted, "Shipyard cron job deleted", removed, "")
 	return nil
 }
 
@@ -199,7 +197,12 @@ func (s Service) Disable(id string) (Job, error) {
 	return s.Update(id, JobInput{Enabled: boolptr(false)})
 }
 
-func (s Service) Run(id string) (Job, string, error) {
+func (s Service) Run(ctx context.Context, id string) (Job, string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx = yardlogs.EnsureTraceID(ctx)
+
 	job, err := s.Get(id)
 	if err != nil {
 		return Job{}, "", err
@@ -210,26 +213,34 @@ func (s Service) Run(id string) (Job, string, error) {
 		return Job{}, "", err
 	}
 	startedAt := s.Now().UTC()
-	s.logEvent("info", "cron_job_run_started", "Shipyard cron job run started", job, runID, map[string]any{
-		"schedule": job.Schedule,
-	})
+	s.logger().LogAttrs(ctx, slog.LevelInfo, yardlogs.EventCronJobRunStarted,
+		jobAttrs(job, runID, slog.String("schedule", job.Schedule))...,
+	)
 
 	cmd := s.Exec("/bin/sh", "-lc", job.Command)
 	output, err := cmd.CombinedOutput()
 	durationMs := s.Now().UTC().Sub(startedAt).Milliseconds()
+	text, truncated := truncateOutput(string(output))
 	if err != nil {
-		s.logEvent("error", "cron_job_run_failed", "Shipyard cron job run failed", job, runID, map[string]any{
-			"durationMs": durationMs,
-			"output":     truncateOutput(string(output)),
-			"error":      err.Error(),
-		})
+		s.logger().LogAttrs(ctx, slog.LevelError, yardlogs.EventCronJobRunFailed,
+			jobAttrs(job, runID,
+				slog.Int64(yardlogs.KeyDurationMs, durationMs),
+				slog.String("output", text),
+				slog.Bool("output_truncated", truncated),
+				slog.String(yardlogs.KeyError, err.Error()),
+				slog.String(yardlogs.KeyErrorKind, fmt.Sprintf("%T", err)),
+			)...,
+		)
 		return job, string(output), fmt.Errorf("run cron job %s: %w", job.ID, err)
 	}
 
-	s.logEvent("info", "cron_job_run_finished", "Shipyard cron job run finished", job, runID, map[string]any{
-		"durationMs": durationMs,
-		"output":     truncateOutput(string(output)),
-	})
+	s.logger().LogAttrs(ctx, slog.LevelInfo, yardlogs.EventCronJobRunFinished,
+		jobAttrs(job, runID,
+			slog.Int64(yardlogs.KeyDurationMs, durationMs),
+			slog.String("output", text),
+			slog.Bool("output_truncated", truncated),
+		)...,
+	)
 	return job, string(output), nil
 }
 
@@ -307,67 +318,55 @@ func boolptr(value bool) *bool {
 	return &value
 }
 
-func loggableError(err error) map[string]any {
-	return map[string]any{"error": err.Error()}
-}
-
-func (s Service) logPersistFailure(eventName, message string, job Job, err error) {
-	s.logEvent("error", eventName, message, job, "", loggableError(err))
-}
-
-func (s Service) logEvent(level, eventName, message string, job Job, runID string, data map[string]any) {
+func (s Service) logger() *slog.Logger {
 	if s.Logger == nil {
-		return
+		return slog.New(yardlogs.NopHandler())
 	}
+	return s.Logger
+}
 
-	_ = s.Logger.Write(yardlogs.Event{
-		Timestamp:  s.Now().UTC(),
-		Source:     yardlogs.DefaultSourceCron,
-		Level:      level,
-		Event:      eventName,
-		Message:    message,
-		EntityType: "cron_job",
-		EntityID:   job.ID,
-		EntityName: job.Name,
-		RunID:      runID,
-		Data:       data,
-	})
+// jobAttrs assembles the standard attribute set for a cron job event,
+// optionally extended with extras.
+func jobAttrs(job Job, runID string, extras ...slog.Attr) []slog.Attr {
+	attrs := make([]slog.Attr, 0, 4+len(extras))
+	attrs = append(attrs, yardlogs.EntityAttrs(yardlogs.EntityCronJob, job.ID, job.Name)...)
+	if runID != "" {
+		attrs = append(attrs, slog.String(yardlogs.KeyRunID, runID))
+	}
+	attrs = append(attrs, extras...)
+	return attrs
+}
+
+func (s Service) logJob(level slog.Level, event, message string, job Job, runID string) {
+	s.logger().LogAttrs(context.Background(), level, event,
+		jobAttrs(job, runID, slog.String(yardlogs.KeyMessage, message))...,
+	)
+}
+
+func (s Service) logFailure(event, message string, job Job, runID string, err error) {
+	s.logger().LogAttrs(context.Background(), slog.LevelError, event,
+		jobAttrs(job, runID,
+			slog.String(yardlogs.KeyMessage, message),
+			slog.String(yardlogs.KeyError, err.Error()),
+			slog.String(yardlogs.KeyErrorKind, fmt.Sprintf("%T", err)),
+		)...,
+	)
 }
 
 func classifyUpdateEvent(before, after Job) (string, string) {
 	if before.Enabled != after.Enabled {
 		if after.Enabled {
-			return "cron_job_enabled", "Shipyard cron job enabled"
+			return yardlogs.EventCronJobEnabled, "Shipyard cron job enabled"
 		}
-		return "cron_job_disabled", "Shipyard cron job disabled"
+		return yardlogs.EventCronJobDisabled, "Shipyard cron job disabled"
 	}
-	return "cron_job_updated", "Shipyard cron job updated"
+	return yardlogs.EventCronJobUpdated, "Shipyard cron job updated"
 }
 
-func truncateOutput(output string) map[string]any {
+func truncateOutput(output string) (text string, truncated bool) {
 	clean := strings.TrimSpace(output)
-	if clean == "" {
-		return map[string]any{
-			"text":      "",
-			"truncated": false,
-		}
-	}
 	if len(clean) <= maxLoggedOutput {
-		return map[string]any{
-			"text":      clean,
-			"truncated": false,
-		}
+		return clean, false
 	}
-	return map[string]any{
-		"text":      clean[:maxLoggedOutput],
-		"truncated": true,
-	}
-}
-
-func newLogger() EventLogger {
-	service, err := yardlogs.NewService()
-	if err != nil {
-		return nil
-	}
-	return service
+	return clean[:maxLoggedOutput], true
 }
