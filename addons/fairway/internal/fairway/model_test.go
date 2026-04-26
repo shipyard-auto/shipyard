@@ -213,12 +213,12 @@ func TestRoute_Validate(t *testing.T) {
 		},
 		{
 			name:    "invalidTimeoutTooLong",
-			mutate:  func(r *fairway.Route) { r.Timeout = 6 * time.Minute },
+			mutate:  func(r *fairway.Route) { r.Timeout = 46 * time.Minute },
 			wantErr: fairway.ErrInvalidTimeout,
 		},
 		{
 			name:    "validTimeoutAtMax",
-			mutate:  func(r *fairway.Route) { r.Timeout = 5 * time.Minute },
+			mutate:  func(r *fairway.Route) { r.Timeout = 45 * time.Minute },
 			wantErr: nil,
 		},
 		{

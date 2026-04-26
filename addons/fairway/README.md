@@ -218,7 +218,7 @@ shipyard fairway stats --by-status
 Every action dispatch is bounded so a misbehaving subprocess cannot drown the daemon:
 
 - **Subprocess pool**: up to 16 concurrent executions. Requests wait up to 5s for a free slot; if the queue stays full, fairway replies `503`.
-- **Per-action timeout**: defaults to 30s; overridable per-route (`timeout`, max 5m). Exceeded timeouts return `504` and the subprocess is killed.
+- **Per-action timeout**: defaults to 30s; overridable per-route (`timeout`, max 45m). Exceeded timeouts return `504` and the subprocess is killed. The 45m cap supports long-running AI agent invocations via `crew.run`; routes that do not use agents should keep the default 30s. **Note**: if a reverse proxy (nginx, Cloudflare, etc.) sits in front of fairway, its `proxy_read_timeout` (or equivalent) must also be raised to cover the configured route timeout; otherwise the proxy will close the connection before the action completes.
 - **Captured output**: stdout and stderr are captured and merged into the request log, capped at **4 MB per invocation**. Output beyond the cap is silently discarded and the log entry is marked `truncated: true` — the subprocess is not killed and its exit code is still honored.
 - **Body forwarding**: the incoming request body is also read up to 4 MB before being handed to the action (stdin for `telegram.handle`, `--text=` for `message.send`, piped verbatim for `http.forward`).
 

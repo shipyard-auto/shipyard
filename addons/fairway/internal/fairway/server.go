@@ -22,7 +22,7 @@ import (
 const (
 	httpReadHeaderTimeout = 10 * time.Second
 	httpReadTimeout       = 10 * time.Second
-	httpWriteTimeout      = DefaultActionTimeout + 5*time.Second
+	httpWriteTimeout      = MaxRouteTimeout + 30*time.Second
 	httpShutdownTimeout   = 10 * time.Second
 )
 
@@ -58,11 +58,11 @@ type Server struct {
 	logger      *slog.Logger
 	eventLogger *slog.Logger
 	stats       *Stats
-	httpSrv   *http.Server
-	bind      string
-	port      int
-	addr      string     // real address after Listen (set in Serve)
-	addrMu    sync.Mutex // protects addr
+	httpSrv     *http.Server
+	bind        string
+	port        int
+	addr        string     // real address after Listen (set in Serve)
+	addrMu      sync.Mutex // protects addr
 
 	authCacheMu sync.RWMutex
 	authCache   map[string]Authenticator

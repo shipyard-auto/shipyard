@@ -34,8 +34,8 @@ func (r Route) Validate() error {
 	if r.Timeout < 0 {
 		return fmt.Errorf("%w: must be >= 0, got %s", ErrInvalidTimeout, r.Timeout)
 	}
-	if r.Timeout > 5*time.Minute {
-		return fmt.Errorf("%w: must be <= 5m, got %s", ErrInvalidTimeout, r.Timeout)
+	if r.Timeout > 45*time.Minute {
+		return fmt.Errorf("%w: must be <= 45m, got %s", ErrInvalidTimeout, r.Timeout)
 	}
 	if err := r.Auth.Validate(); err != nil {
 		return err

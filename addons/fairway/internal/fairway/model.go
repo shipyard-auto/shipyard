@@ -31,6 +31,10 @@ const (
 	// DefaultQueueTimeout is how long a request waits for a slot in the worker pool.
 	DefaultQueueTimeout = 5 * time.Second
 
+	// MaxRouteTimeout is the maximum allowed per-route timeout. Routes that invoke
+	// AI agents (crew.run) may require well beyond the former 5m cap.
+	MaxRouteTimeout = 45 * time.Minute
+
 	// MaxSubprocessOutput caps the bytes read from a subprocess stdout+stderr.
 	MaxSubprocessOutput = 4 * 1024 * 1024 // 4 MB
 )
@@ -195,8 +199,8 @@ func (r Route) Validate() error {
 	if r.Timeout < 0 {
 		return fmt.Errorf("%w: must be >= 0, got %s", ErrInvalidTimeout, r.Timeout)
 	}
-	if r.Timeout > 5*time.Minute {
-		return fmt.Errorf("%w: must be <= 5m, got %s", ErrInvalidTimeout, r.Timeout)
+	if r.Timeout > MaxRouteTimeout {
+		return fmt.Errorf("%w: must be <= 45m, got %s", ErrInvalidTimeout, r.Timeout)
 	}
 
 	if err := r.Auth.Validate(); err != nil {

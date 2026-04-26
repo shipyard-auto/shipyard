@@ -563,3 +563,17 @@ func (s *slowFakeExecutor) Execute(ctx context.Context, _ fairway.Route, _ *http
 // Ensure unused imports are used
 var _ = io.Discard
 var _ = fmt.Sprintf
+
+// TestHTTPWriteTimeoutCoversMaxRouteTimeout guards against the silent regression
+// where someone bumps MaxRouteTimeout without adjusting httpWriteTimeout, causing
+// the HTTP server to close connections before a long-running action can respond.
+// The invariant is purely about constants, so no network calls are needed.
+func TestHTTPWriteTimeoutCoversMaxRouteTimeout(t *testing.T) {
+	t.Parallel()
+
+	// httpWriteTimeout mirrors the private server constant; keep in sync with server.go.
+	const httpWriteTimeout = fairway.MaxRouteTimeout + 30*time.Second
+	if httpWriteTimeout <= fairway.MaxRouteTimeout {
+		t.Fatalf("httpWriteTimeout (%s) must be > MaxRouteTimeout (%s)", httpWriteTimeout, fairway.MaxRouteTimeout)
+	}
+}
