@@ -29,7 +29,7 @@ func TestRenderCrontabPreservesExternalAndRewritesManaged(t *testing.T) {
 		},
 	}
 
-	rendered := renderCrontab(existing, jobs)
+	rendered := renderCrontab(existing, jobs, "/usr/local/bin/shipyard")
 
 	if !strings.Contains(rendered, "SHELL=/bin/zsh") || !strings.Contains(rendered, "MAILTO=user@example.com") {
 		t.Fatalf("rendered crontab did not preserve external entries: %q", rendered)
@@ -39,5 +39,45 @@ func TestRenderCrontabPreservesExternalAndRewritesManaged(t *testing.T) {
 	}
 	if !strings.Contains(rendered, "# shipyard:ZX90Q1 Fresh Backup") {
 		t.Fatalf("rendered crontab missing new managed header: %q", rendered)
+	}
+	if !strings.Contains(rendered, "*/15 * * * * /usr/local/bin/shipyard cron run ZX90Q1") {
+		t.Fatalf("rendered crontab missing wrapped command: %q", rendered)
+	}
+	if strings.Contains(rendered, "/usr/local/bin/backup") {
+		t.Fatalf("rendered crontab leaked raw user command: %q", rendered)
+	}
+}
+
+func TestRenderManagedEntriesQuotesBinaryWithSpaces(t *testing.T) {
+	t.Parallel()
+
+	jobs := []Job{{
+		ID:       "AB12CD",
+		Name:     "Quoted",
+		Schedule: "0 * * * *",
+		Command:  "/bin/echo hi",
+		Enabled:  true,
+	}}
+
+	rendered := renderManagedEntries(jobs, "/Users/leo dev/bin/shipyard")
+	want := "0 * * * * '/Users/leo dev/bin/shipyard' cron run AB12CD"
+	if !strings.Contains(rendered, want) {
+		t.Fatalf("rendered = %q, want substring %q", rendered, want)
+	}
+}
+
+func TestRenderManagedEntriesSkipsDisabled(t *testing.T) {
+	t.Parallel()
+
+	jobs := []Job{{
+		ID:       "AB12CD",
+		Name:     "Disabled",
+		Schedule: "0 * * * *",
+		Command:  "/bin/echo hi",
+		Enabled:  false,
+	}}
+
+	if got := renderManagedEntries(jobs, "/usr/local/bin/shipyard"); got != "" {
+		t.Fatalf("renderManagedEntries with disabled job = %q, want empty", got)
 	}
 }

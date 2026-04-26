@@ -8,11 +8,13 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
 
 	yardlogs "github.com/shipyard-auto/shipyard/internal/logs"
+	"github.com/shipyard-auto/shipyard/internal/metadata"
 )
 
 var ErrJobNotFound = errors.New("cron job not found")
@@ -27,6 +29,13 @@ type Service struct {
 	StorePath string
 	Exec      func(name string, args ...string) *exec.Cmd
 	Logger    *slog.Logger
+	// BinaryPath is the absolute path to the shipyard binary used to wrap
+	// crontab entries as `<binary> cron run <id>`. When empty, ResolveBinary
+	// is consulted (or a default resolver via install.json/os.Executable).
+	BinaryPath string
+	// ResolveBinary is an optional override used when BinaryPath is empty.
+	// Mostly a testing seam.
+	ResolveBinary func() (string, error)
 }
 
 func NewService() (Service, error) {
@@ -263,6 +272,11 @@ func (s Service) persist(previous, next Store) error {
 		return err
 	}
 
+	binary, err := s.resolveBinary()
+	if err != nil {
+		return fmt.Errorf("resolve shipyard binary for crontab: %w", err)
+	}
+
 	if err := s.Repo.Save(next); err != nil {
 		return err
 	}
@@ -273,13 +287,42 @@ func (s Service) persist(previous, next Store) error {
 		return err
 	}
 
-	rendered := renderCrontab(existing, next.Jobs)
+	rendered := renderCrontab(existing, next.Jobs, binary)
 	if err := s.Crontab.Write(rendered); err != nil {
 		_ = s.Repo.Save(previous)
 		return err
 	}
 
 	return nil
+}
+
+func (s Service) resolveBinary() (string, error) {
+	if path := strings.TrimSpace(s.BinaryPath); path != "" {
+		return path, nil
+	}
+	if s.ResolveBinary != nil {
+		return s.ResolveBinary()
+	}
+	return defaultResolveBinary()
+}
+
+func defaultResolveBinary() (string, error) {
+	if home, err := metadata.DefaultHomeDir(); err == nil {
+		if manifest, err := metadata.Read(home); err == nil {
+			if path := strings.TrimSpace(manifest.BinaryPath); path != "" {
+				return path, nil
+			}
+		}
+	}
+
+	exe, err := os.Executable()
+	if err != nil {
+		return "", fmt.Errorf("locate shipyard binary: %w", err)
+	}
+	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
+		return resolved, nil
+	}
+	return filepath.Clean(exe), nil
 }
 
 func applyPatch(job *Job, patch JobInput) {

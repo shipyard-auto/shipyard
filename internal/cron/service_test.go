@@ -54,10 +54,11 @@ func TestServiceAddPersistsAndSyncsCrontab(t *testing.T) {
 	now := time.Date(2026, time.April, 14, 12, 0, 0, 0, time.UTC)
 
 	service := Service{
-		Repo:    repo,
-		Crontab: crontab,
-		IDGen:   fakeIDGen{id: "AB12CD"},
-		Now:     func() time.Time { return now },
+		Repo:       repo,
+		Crontab:    crontab,
+		IDGen:      fakeIDGen{id: "AB12CD"},
+		Now:        func() time.Time { return now },
+		BinaryPath: "/usr/local/bin/shipyard",
 	}
 
 	job, err := service.Add(JobInput{
@@ -75,8 +76,11 @@ func TestServiceAddPersistsAndSyncsCrontab(t *testing.T) {
 	if len(repo.store.Jobs) != 1 {
 		t.Fatalf("len(repo.store.Jobs) = %d, want 1", len(repo.store.Jobs))
 	}
-	if crontab.written == "" || !containsAll(crontab.written, "MAILTO=user@example.com", "# shipyard:AB12CD Backup", "0 * * * * /usr/local/bin/backup") {
+	if crontab.written == "" || !containsAll(crontab.written, "MAILTO=user@example.com", "# shipyard:AB12CD Backup", "0 * * * * /usr/local/bin/shipyard cron run AB12CD") {
 		t.Fatalf("crontab sync missing expected content: %q", crontab.written)
+	}
+	if strings.Contains(crontab.written, "/usr/local/bin/backup") {
+		t.Fatalf("crontab leaked raw user command: %q", crontab.written)
 	}
 }
 
@@ -99,10 +103,11 @@ func TestServiceUpdateDisablesJobInCrontab(t *testing.T) {
 	crontab := &fakeCrontab{readValue: "# shipyard:AB12CD Backup\n0 * * * * /usr/local/bin/backup\n"}
 
 	service := Service{
-		Repo:    repo,
-		Crontab: crontab,
-		IDGen:   fakeIDGen{id: "AB12CD"},
-		Now:     func() time.Time { return now.Add(time.Hour) },
+		Repo:       repo,
+		Crontab:    crontab,
+		IDGen:      fakeIDGen{id: "AB12CD"},
+		Now:        func() time.Time { return now.Add(time.Hour) },
+		BinaryPath: "/usr/local/bin/shipyard",
 	}
 
 	updated, err := service.Update("AB12CD", JobInput{Enabled: boolptrTest(false)})
@@ -136,7 +141,7 @@ func TestServiceDeleteRemovesJob(t *testing.T) {
 	}}
 	crontab := &fakeCrontab{readValue: "# shipyard:AB12CD Backup\n0 * * * * /usr/local/bin/backup\n"}
 
-	service := Service{Repo: repo, Crontab: crontab, IDGen: fakeIDGen{id: "ZZ99ZZ"}, Now: time.Now}
+	service := Service{Repo: repo, Crontab: crontab, IDGen: fakeIDGen{id: "ZZ99ZZ"}, Now: time.Now, BinaryPath: "/usr/local/bin/shipyard"}
 
 	if err := service.Delete("AB12CD"); err != nil {
 		t.Fatalf("Delete() error = %v", err)
@@ -208,6 +213,62 @@ func TestServiceUpdateRejectsInvalidSchedule(t *testing.T) {
 	_, err := service.Update("AB12CD", JobInput{Schedule: strptr("99 * * * *")})
 	if err == nil || !strings.Contains(err.Error(), "schedule") {
 		t.Fatalf("Update() error = %v, want schedule validation error", err)
+	}
+}
+
+func TestServiceAddUsesResolveBinaryFallback(t *testing.T) {
+	t.Parallel()
+
+	repo := &memoryRepo{store: Store{Version: storeVersion, Jobs: []Job{}}}
+	crontab := &fakeCrontab{}
+	now := time.Date(2026, time.April, 14, 12, 0, 0, 0, time.UTC)
+
+	service := Service{
+		Repo:          repo,
+		Crontab:       crontab,
+		IDGen:         fakeIDGen{id: "AB12CD"},
+		Now:           func() time.Time { return now },
+		ResolveBinary: func() (string, error) { return "/opt/shipyard/bin/shipyard", nil },
+	}
+
+	if _, err := service.Add(JobInput{
+		Name:     strptr("Backup"),
+		Schedule: strptr("0 * * * *"),
+		Command:  strptr("/usr/local/bin/backup"),
+	}); err != nil {
+		t.Fatalf("Add() error = %v", err)
+	}
+
+	if !strings.Contains(crontab.written, "0 * * * * /opt/shipyard/bin/shipyard cron run AB12CD") {
+		t.Fatalf("crontab missing wrapper from ResolveBinary fallback: %q", crontab.written)
+	}
+}
+
+func TestServiceAddFailsWhenBinaryUnresolvable(t *testing.T) {
+	t.Parallel()
+
+	repo := &memoryRepo{store: Store{Version: storeVersion, Jobs: []Job{}}}
+	crontab := &fakeCrontab{}
+	now := time.Date(2026, time.April, 14, 12, 0, 0, 0, time.UTC)
+
+	service := Service{
+		Repo:          repo,
+		Crontab:       crontab,
+		IDGen:         fakeIDGen{id: "AB12CD"},
+		Now:           func() time.Time { return now },
+		ResolveBinary: func() (string, error) { return "", errors.New("boom") },
+	}
+
+	_, err := service.Add(JobInput{
+		Name:     strptr("Backup"),
+		Schedule: strptr("0 * * * *"),
+		Command:  strptr("/usr/local/bin/backup"),
+	})
+	if err == nil || !strings.Contains(err.Error(), "resolve shipyard binary") {
+		t.Fatalf("Add() error = %v, want resolve shipyard binary error", err)
+	}
+	if crontab.written != "" {
+		t.Fatalf("crontab.written = %q, want empty when binary resolution fails", crontab.written)
 	}
 }
 
