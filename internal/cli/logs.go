@@ -44,7 +44,11 @@ func newLogsCmd() *cobra.Command {
 func newLogsListCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "list",
-		Short: "List known Shipyard log sources",
+		Short: "List all log sources with file count and size on disk",
+		Long: `Scans ~/.shipyard/logs/ and reports each discovered source (cron, service,
+fairway, crew) with its JSONL file count, total size in bytes, and the
+date of the newest file. Use this to get an overview before running
+show or tail.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			reader, err := newLogReader()
 			if err != nil {
@@ -77,7 +81,11 @@ func newLogsShowCmd() *cobra.Command {
 	opts := logShowOptions{}
 	cmd := &cobra.Command{
 		Use:   "show",
-		Short: "Show recent log entries",
+		Short: "Print recent log entries from one or more sources",
+		Long: `Reads JSONL logs under ~/.shipyard/logs/. By default merges all sources
+(cron, service, fairway, crew); filter with --source. Use --trace to follow
+a single request across subsystems (e.g. an HTTP call that triggered an
+agent that ran a shell tool), or --id to scope to a specific entity.`,
 		Example: strings.Join([]string{
 			"shipyard logs show --source cron",
 			"shipyard logs show --source cron --id AB12CD --limit 20",
@@ -98,7 +106,10 @@ func newLogsTailCmd() *cobra.Command {
 	opts := logShowOptions{}
 	cmd := &cobra.Command{
 		Use:   "tail",
-		Short: "Tail live Shipyard logs",
+		Short: "Stream live log entries as they are written",
+		Long: `Follows ~/.shipyard/logs/ and prints new entries as each subsystem writes
+them. Press Ctrl+C to stop. Supports the same --source, --trace, --id,
+and --level filters as "shipyard logs show".`,
 		Example: strings.Join([]string{
 			"shipyard logs tail --source cron",
 			"shipyard logs tail --source cron --id AB12CD",
@@ -282,7 +293,11 @@ func newLogReader() (*logs.Reader, error) {
 func newLogsPruneCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "prune",
-		Short: "Delete logs older than the retention policy",
+		Short: "Delete log files older than the configured retention period",
+		Long: `Removes JSONL log files under ~/.shipyard/logs/ that are older than the
+current retention setting (default 30 days). Reports the number of files
+deleted and bytes freed. Adjust the retention period with
+"shipyard logs config set retention-days <n>".`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			service, err := logs.NewService()
 			if err != nil {
@@ -304,6 +319,10 @@ func newLogsConfigCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "config",
 		Short: "Show or update logs configuration",
+		Long: `Without arguments and with a TTY, opens an interactive panel to view and
+update log settings. For scripting, use the "set" subcommand, e.g.
+"shipyard logs config set retention-days 30". The only configurable setting
+today is retention-days, which controls how long log files are kept.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 && tuitype.IsInteractive(tuitype.StdinFD()) {
 				service, err := logs.NewService()

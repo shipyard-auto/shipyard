@@ -25,8 +25,12 @@ func newLogsCmd() *cobra.Command {
 	)
 	cmd := &cobra.Command{
 		Use:   "logs <name>",
-		Short: "Show logs for a crew member",
-		Args:  cobra.MaximumNArgs(1),
+		Short: "Show execution logs for one or all AI agents",
+		Long: `Reads JSONL execution logs from ~/.shipyard/logs/crew/. Without a name
+argument, shows entries for all agents. Filter by level (--level), trace
+ID (--trace), or time window (--since). Use --follow to stream live output
+as new agent runs complete.`,
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			reader, err := newCrewReader()
 			if err != nil {

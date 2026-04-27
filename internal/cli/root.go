@@ -14,7 +14,7 @@ import (
 func NewRootCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:           app.Name,
-		Short:         "Shipyard command line tool",
+		Short:         "Local automation toolkit for cron, services, HTTP and AI agents",
 		Long:          app.Description,
 		SilenceUsage:  true,
 		SilenceErrors: true,

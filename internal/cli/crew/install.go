@@ -29,7 +29,11 @@ func newInstallCmdWith(inst *crewctl.Installer) *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "install",
-		Short: "Install the shipyard-crew addon binary",
+		Short: "Download and install the AI agent runtime",
+		Long: `Downloads the shipyard-crew binary for the current platform and installs it to
+~/.local/bin/. Once installed, the agent runtime is available but no agents
+are active until you run "shipyard crew hire" and "shipyard crew apply". Use
+--force to reinstall an already-present version.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			target := inst
 			if target == nil {

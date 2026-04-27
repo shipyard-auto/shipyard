@@ -31,8 +31,13 @@ type hireFlags struct {
 func newHireCmd() *cobra.Command {
 	var f hireFlags
 	cmd := &cobra.Command{
-		Use:     "hire <name>",
-		Short:   "Create a new crew member scaffold",
+		Use:   "hire <name>",
+		Short: "Scaffold a new AI agent definition",
+		Long: `Creates a new AI agent under ~/.shipyard/crew/<name>/ with starter
+agent.yaml and prompt.md files. The agent is inert until you register it
+with the running daemon via "shipyard crew apply". Use --backend to choose
+between the Claude CLI and the Anthropic API, and --mode for on-demand or
+persistent-service execution.`,
 		Args:    cobra.ExactArgs(1),
 		PreRunE: requireInstalled,
 		RunE: func(cmd *cobra.Command, args []string) error {

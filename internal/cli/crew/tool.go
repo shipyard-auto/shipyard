@@ -55,8 +55,10 @@ func newToolCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "tool",
 		Short: "Manage reusable tools for crew agents",
-		Long: "Tools live in ~/.shipyard/crew/tools/<name>.yaml and can be referenced from\n" +
-			"any agent via `tools: [{ref: <name>}]`. This command group CRUDs that library.",
+		Long: `Tools are reusable functions — either a shell command (--protocol exec) or an
+HTTP request (--protocol http) — stored in ~/.shipyard/crew/tools/<name>.yaml.
+Any AI agent can invoke a tool by listing it in agent.yaml with
+tools: [{ref: <name>}]. Tools are validated by the crew runtime at load time.`,
 		RunE: func(cmd *cobra.Command, args []string) error { return cmd.Help() },
 	}
 	cmd.AddCommand(newToolAddCmd())
@@ -84,8 +86,12 @@ type toolAddFlags struct {
 func newToolAddCmd() *cobra.Command {
 	var f toolAddFlags
 	cmd := &cobra.Command{
-		Use:     "add <name>",
-		Short:   "Create a new tool in the library",
+		Use:   "add <name>",
+		Short: "Define a reusable function for AI agents to invoke",
+		Long: `Adds a tool to ~/.shipyard/crew/tools/<name>.yaml. Tools are reusable
+functions — either a shell command (--protocol exec) or an HTTP request
+(--protocol http) — that any agent can call by referencing them with
+tools: [{ref: <name>}] in its agent.yaml.`,
 		Args:    cobra.ExactArgs(1),
 		PreRunE: requireInstalled,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -257,8 +263,12 @@ func newToolListCmd() *cobra.Command {
 	var f toolListFlags
 	cmd := &cobra.Command{
 		Use:   "list",
-		Short: "List tools available in the library",
-		Args:  cobra.NoArgs,
+		Short: "List all reusable tool functions in the library",
+		Long: `Reads ~/.shipyard/crew/tools/ and prints each tool's name, protocol (exec or
+http), and description. Files that fail to parse are silently skipped; use
+"shipyard crew tool show <name>" to inspect a specific tool and diagnose
+parse errors.`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runToolList(cmd.OutOrStdout(), f)
 		},
@@ -347,8 +357,11 @@ func newToolShowCmd() *cobra.Command {
 	var asJSON bool
 	cmd := &cobra.Command{
 		Use:   "show <name>",
-		Short: "Print a tool's definition",
-		Args:  cobra.ExactArgs(1),
+		Short: "Print the full definition of a tool",
+		Long: `Reads ~/.shipyard/crew/tools/<name>.yaml and prints it as YAML (default) or
+JSON (--json). Useful to verify the exact spec before referencing a tool
+in an agent.yaml.`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runToolShow(cmd.OutOrStdout(), args[0], asJSON)
 		},
@@ -395,8 +408,11 @@ type toolRmFlags struct {
 func newToolRmCmd() *cobra.Command {
 	var f toolRmFlags
 	cmd := &cobra.Command{
-		Use:     "rm <name>",
-		Short:   "Remove a tool from the library",
+		Use:   "rm <name>",
+		Short: "Remove a reusable tool from the library",
+		Long: `Deletes ~/.shipyard/crew/tools/<name>.yaml. Before removing, scans all
+agent definitions to check whether any agent references this tool and
+refuses if it finds a match. Use --yes to skip the scan and force removal.`,
 		Args:    cobra.ExactArgs(1),
 		PreRunE: requireInstalled,
 		RunE: func(cmd *cobra.Command, args []string) error {

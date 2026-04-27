@@ -66,8 +66,12 @@ func newApplyCmd() *cobra.Command {
 func newApplyCmdWith(deps applyDeps) *cobra.Command {
 	var f applyFlags
 	cmd := &cobra.Command{
-		Use:           "apply <name>",
-		Short:         "Reconcile a crew member's triggers with cron and fairway",
+		Use:   "apply <name>",
+		Short: "Sync an AI agent's schedules and webhook routes",
+		Long: `Reads the agent's agent.yaml and registers its scheduled runs as Shipyard
+cron jobs and its webhook endpoints as fairway routes. Run this after
+editing an agent definition or after "shipyard crew hire". Use --dry-run
+to preview changes without applying them.`,
 		Args:          cobra.ExactArgs(1),
 		SilenceUsage:  true,
 		SilenceErrors: true,

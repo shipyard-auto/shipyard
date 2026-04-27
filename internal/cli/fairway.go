@@ -21,6 +21,10 @@ func newFairwayCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "fairway",
 		Short: "Manage the shipyard-fairway HTTP gateway addon",
+		Long: `Fairway is the HTTP gateway daemon bundled with Shipyard. It listens on a
+configurable address, matches incoming requests to routes, and dispatches
+them to AI agents (crew.run), shell commands (exec), or upstream URLs
+(http.forward). Route definitions and state persist under ~/.shipyard/fairway/.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return cmd.Help()
 		},
@@ -73,6 +77,10 @@ func newFairwayInstallCmdWith(installer *fairwayctl.Installer) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "install",
 		Short: "Install the shipyard-fairway HTTP gateway daemon",
+		Long: `Downloads the shipyard-fairway binary for the current platform and registers
+it as a user-level service that starts automatically on login. Route
+definitions and state are stored under ~/.shipyard/fairway/. Use --version
+to pin a specific release or --force to reinstall an existing one.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			inst := installer
 			if inst == nil {
@@ -136,6 +144,10 @@ func newFairwayUninstallCmdWith(installer *fairwayctl.Installer) *cobra.Command 
 	cmd := &cobra.Command{
 		Use:   "uninstall",
 		Short: "Remove the shipyard-fairway daemon and deregister its service",
+		Long: `Stops and removes the shipyard-fairway binary and deregisters it from the
+platform service manager (systemd on Linux, launchd on macOS). Route
+definitions and logs under ~/.shipyard/fairway/ are preserved by default;
+use --purge to delete them as well.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			inst := installer
 			if inst == nil {
