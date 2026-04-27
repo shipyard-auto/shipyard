@@ -102,8 +102,12 @@ func newFairwayStatusCmdWith(deps fairwayStatusDeps) *cobra.Command {
 	var jsonOutput bool
 
 	cmd := &cobra.Command{
-		Use:           "status",
-		Short:         "Show fairway installation, service, and daemon status",
+		Use:   "status",
+		Short: "Show fairway installation, service, and daemon status",
+		Long: `Reports whether the fairway daemon is installed, registered as a user service,
+and currently running. When the daemon is live, also shows the bound address,
+uptime, active route count, and a 24-hour traffic summary. Use --json for
+machine-readable output.`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {

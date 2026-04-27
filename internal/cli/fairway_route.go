@@ -65,7 +65,11 @@ func newFairwayRouteCmd() *cobra.Command {
 func newFairwayRouteCmdWith(deps routeDeps) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "route",
-		Short: "Manage fairway routes through the daemon socket",
+		Short: "Manage HTTP routes in the fairway gateway",
+		Long: `Routes map incoming HTTP paths to an action: run an AI agent (crew.run),
+execute a shell command (exec), or proxy the request to an upstream URL
+(http.forward). Changes take effect immediately via the daemon socket and
+persist across daemon restarts.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return cmd.Help()
 		},
@@ -80,8 +84,11 @@ func newFairwayRouteCmdWith(deps routeDeps) *cobra.Command {
 func newFairwayRouteListCmdWith(deps routeDeps) *cobra.Command {
 	var jsonOutput bool
 	cmd := &cobra.Command{
-		Use:           "list",
-		Short:         "List fairway routes",
+		Use:   "list",
+		Short: "List all registered routes in the fairway gateway",
+		Long: `Fetches the current route table from the running fairway daemon and prints
+each route's path, auth type, action, timeout, and sync/async mode. Use
+--json to emit the raw JSON array for scripting.`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		PreRunE:       addon.RequirePreRun(addon.KindFairway),
@@ -111,8 +118,12 @@ func newFairwayRouteListCmdWith(deps routeDeps) *cobra.Command {
 func newFairwayRouteAddCmdWith(deps routeDeps) *cobra.Command {
 	input := &addRouteInput{}
 	cmd := &cobra.Command{
-		Use:           "add",
-		Short:         "Add a new fairway route",
+		Use:   "add",
+		Short: "Register an HTTP route in the fairway gateway",
+		Long: `Maps an incoming HTTP path on the fairway daemon to an action: invoke an AI
+agent (action=crew.run), execute a shell command (action=exec), or proxy
+the request to an upstream URL (action=http.forward). Routes persist across
+daemon restarts.`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		PreRunE:       addon.RequirePreRun(addon.KindFairway),
@@ -163,8 +174,11 @@ func newFairwayRouteAddCmdWith(deps routeDeps) *cobra.Command {
 func newFairwayRouteDeleteCmdWith(deps routeDeps) *cobra.Command {
 	var yes bool
 	cmd := &cobra.Command{
-		Use:           "delete <path>",
-		Short:         "Delete a fairway route",
+		Use:   "delete <path>",
+		Short: "Remove an HTTP route from the fairway gateway",
+		Long: `Deletes the route for the given path from the running fairway daemon. The
+change is immediate and persists across restarts. In non-interactive mode
+(no TTY), use --yes to confirm deletion without a prompt.`,
 		Args:          cobra.ExactArgs(1),
 		SilenceUsage:  true,
 		SilenceErrors: true,
@@ -213,8 +227,12 @@ func newFairwayRouteTestCmdWith(deps routeDeps) *cobra.Command {
 	var headerFlags []string
 
 	cmd := &cobra.Command{
-		Use:           "test <path>",
-		Short:         "Test a fairway route through the daemon",
+		Use:   "test <path>",
+		Short: "Send a test request through a fairway route",
+		Long: `Sends a synthetic HTTP request to the fairway daemon to exercise a route's
+auth and action without an external HTTP client. Prints the response status
+and body. Use --method, --body-file, and --header to simulate different
+request shapes.`,
 		Args:          cobra.ExactArgs(1),
 		SilenceUsage:  true,
 		SilenceErrors: true,

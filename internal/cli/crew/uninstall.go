@@ -30,7 +30,11 @@ func newUninstallCmdWith(inst *crewctl.Installer) *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "uninstall",
-		Short: "Remove the shipyard-crew binary (preserves ~/.shipyard/crew/)",
+		Short: "Remove the shipyard-crew AI agent runtime binary",
+		Long: `Removes the shipyard-crew binary from ~/.local/bin/. Agent definitions under
+~/.shipyard/crew/ are preserved so you can reinstall and resume where you left
+off. To deregister individual agents before uninstalling, run "shipyard crew
+fire <name>" for each one. Use --yes to skip the confirmation prompt.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			target := inst
 			if target == nil {

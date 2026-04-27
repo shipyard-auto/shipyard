@@ -29,6 +29,9 @@ func newVersionCmdWith(inst *crewctl.Installer, coreVersion string) *cobra.Comma
 	cmd := &cobra.Command{
 		Use:   "version",
 		Short: "Show shipyard and shipyard-crew versions",
+		Long: `Prints the installed versions of the shipyard core binary and the
+shipyard-crew AI agent runtime addon. Use --json to emit machine-readable
+output suitable for scripts or bug reports.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			core := coreVersion
 			if core == "" {

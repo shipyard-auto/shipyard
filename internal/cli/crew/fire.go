@@ -92,8 +92,12 @@ func newFireCmd() *cobra.Command {
 func newFireCmdWith(deps fireDeps) *cobra.Command {
 	var yes, keepLogs bool
 	cmd := &cobra.Command{
-		Use:           "fire <name>",
-		Short:         "Remove a crew member and clean up its triggers and service",
+		Use:   "fire <name>",
+		Short: "Delete an AI agent and deregister its schedules and routes",
+		Long: `Removes the agent definition directory ~/.shipyard/crew/<name>/, cancels its
+Shipyard cron jobs, deletes its fairway webhook routes, and stops the agent
+service if it runs as one. Logs in ~/.shipyard/logs/crew/<name>/ are also
+removed unless --keep-logs is set.`,
 		Args:          cobra.ExactArgs(1),
 		SilenceUsage:  true,
 		SilenceErrors: true,

@@ -141,8 +141,13 @@ func NewRunCmd() *cobra.Command {
 func newRunCmdWith(deps runDeps) *cobra.Command {
 	flags := &runFlags{}
 	cmd := &cobra.Command{
-		Use:           "run <name>",
-		Short:         "Run a crew member once",
+		Use:   "run <name>",
+		Short: "Invoke an AI agent once and stream its output",
+		Long: `Executes the named AI agent a single time with optional JSON input. If the
+agent runs as a persistent service, the request is dispatched via the daemon
+socket; otherwise shipyard-crew is spawned as a subprocess. Use --input or
+--input-file to pass structured context, and --timeout to override the
+default five-minute limit.`,
 		Args:          cobra.ExactArgs(1),
 		SilenceUsage:  true,
 		SilenceErrors: true,

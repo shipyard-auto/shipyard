@@ -10,7 +10,10 @@ func NewCrewCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "crew",
 		Short: "Manage the shipyard-crew LLM agents addon",
-		Long:  "shipyard crew lets you create, configure, and run LLM-backed agents that automate tasks.",
+		Long: `Crew is the AI agent subsystem of Shipyard. Use it to define LLM-backed agents
+that automate tasks on a schedule or in response to HTTP webhooks. Agent
+definitions live under ~/.shipyard/crew/<name>/ and are registered with the
+running daemon via "shipyard crew apply".`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return cmd.Help()
 		},

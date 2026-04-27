@@ -41,8 +41,12 @@ func newFairwayStatsCmdWith(deps fairwayStatsDeps) *cobra.Command {
 	var byStatus bool
 
 	cmd := &cobra.Command{
-		Use:           "stats",
-		Short:         "Show fairway request statistics from the daemon",
+		Use:   "stats",
+		Short: "Show fairway request statistics from the running daemon",
+		Long: `Queries the fairway daemon for live request counters: total request count,
+per-route call counts and error rates, and HTTP status code distribution.
+Use --by-route for a full per-route breakdown, --by-status for the status
+distribution, or --json for the raw snapshot.`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		PreRunE:       addon.RequirePreRun(addon.KindFairway),

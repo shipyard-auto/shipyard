@@ -12,7 +12,11 @@ import (
 func newFairwayLogsCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "logs",
-		Short: "Show fairway request logs (alias for `shipyard logs show --source fairway`)",
+		Short: "Inspect HTTP request logs from the fairway gateway",
+		Long: `Reads JSONL access and event logs written by the fairway daemon to
+~/.shipyard/logs/fairway/. Supports the same --trace, --id, and --level
+filters as "shipyard logs show". This command group is a focused alias
+that pre-selects the fairway source.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return cmd.Help()
 		},
@@ -29,7 +33,11 @@ func newFairwayLogsShowCmd() *cobra.Command {
 	}
 	cmd := &cobra.Command{
 		Use:   "show",
-		Short: "Show recent fairway log entries",
+		Short: "Print recent HTTP request logs from the fairway gateway",
+		Long: `Reads the most recent JSONL entries from ~/.shipyard/logs/fairway/. Use
+--limit to control how many entries are shown, --trace to follow a single
+request, or --level to filter by severity. Add --json to emit raw JSONL
+instead of pretty output.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if len(opts.filter.sources) == 0 {
 				opts.filter.sources = []string{logs.SourceFairway}
@@ -49,7 +57,10 @@ func newFairwayLogsTailCmd() *cobra.Command {
 	}
 	cmd := &cobra.Command{
 		Use:   "tail",
-		Short: "Tail live fairway log entries",
+		Short: "Stream live HTTP request logs from the fairway gateway",
+		Long: `Follows ~/.shipyard/logs/fairway/ and prints new JSONL entries as they
+arrive. Press Ctrl+C to stop. Supports --trace, --id, and --level filters
+to narrow the stream. Add --json to emit raw JSONL instead of pretty output.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if len(opts.filter.sources) == 0 {
 				opts.filter.sources = []string{logs.SourceFairway}

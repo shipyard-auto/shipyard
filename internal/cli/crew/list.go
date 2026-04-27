@@ -84,8 +84,12 @@ func newListCmdWith(deps listDeps) *cobra.Command {
 	flags := &listFlags{}
 	cmd := &cobra.Command{
 		Use:   "list",
-		Short: "List registered crew members",
-		Args:  cobra.NoArgs,
+		Short: "List all defined AI agents and their current state",
+		Long: `Scans ~/.shipyard/crew/ and reads each agent.yaml to build a table of AI
+agents. Columns include backend type, execution mode, configured triggers,
+and runtime state (running/stopped for service-mode agents). Use --json for
+machine-readable output or --long to include the description column.`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			d := deps
 			d.Verbose = flags.Verbose
