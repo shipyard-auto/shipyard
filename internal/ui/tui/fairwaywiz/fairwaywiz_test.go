@@ -11,7 +11,10 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/exp/teatest"
 
+	"github.com/shipyard-auto/shipyard/internal/addon"
+	"github.com/shipyard-auto/shipyard/internal/crewctl"
 	"github.com/shipyard-auto/shipyard/internal/fairwayctl"
+	"github.com/shipyard-auto/shipyard/internal/ui/tui/components"
 	"github.com/shipyard-auto/shipyard/internal/ui/tui/theme"
 )
 
@@ -658,5 +661,219 @@ func TestForm_metadataNavigationAndSections(t *testing.T) {
 	}
 	if !strings.Contains(screen.submitPanel(), "save route") {
 		t.Fatalf("unexpected submit panel: %q", screen.submitPanel())
+	}
+}
+
+// ====== X-03 picker tests ======
+
+func stubCrewPicker(t *testing.T, installed bool, agents []crewctl.AgentInfo, listErr error) {
+	t.Helper()
+	origList := listCrewAgents
+	origDetect := detectCrewAddon
+	listCrewAgents = func() ([]crewctl.AgentInfo, error) { return agents, listErr }
+	detectCrewAddon = func() addon.Info { return addon.Info{Kind: addon.KindCrew, Installed: installed} }
+	t.Cleanup(func() {
+		listCrewAgents = origList
+		detectCrewAddon = origDetect
+	})
+}
+
+func newCrewRunFormScreen(t *testing.T) *formScreen {
+	t.Helper()
+	scr := newFormScreen(theme.New(), nil, nil).(*formScreen)
+	scr.actionType.SetSelectedByKey(string(fairwayctl.ActionCrewRun))
+	scr.focus = fieldActionTarget
+	return scr
+}
+
+func TestFormScreen_crewRun_listsAgents(t *testing.T) {
+	stubCrewPicker(t, true, []crewctl.AgentInfo{
+		{Name: "alpha", Description: "first agent"},
+		{Name: "beta", Description: "second agent"},
+	}, nil)
+
+	scr := newCrewRunFormScreen(t)
+	view := scr.renderCurrentStep()
+
+	if !strings.Contains(view, "alpha") || !strings.Contains(view, "beta") {
+		t.Fatalf("menu must list both agents:\n%s", view)
+	}
+	if !scr.crewPickerActive() {
+		t.Fatalf("crewPickerActive must be true with installed crew + non-empty list")
+	}
+	if scr.crewMenu.Selected().Key != "alpha" {
+		t.Errorf("default selection should be the first agent, got %q", scr.crewMenu.Selected().Key)
+	}
+}
+
+func TestFormScreen_crewRun_emptyFallsBackToInput(t *testing.T) {
+	stubCrewPicker(t, true, nil, nil)
+
+	scr := newCrewRunFormScreen(t)
+	_ = scr.renderCurrentStep() // triggers loadCrewAgentsOnce
+
+	if scr.crewPickerActive() {
+		t.Fatalf("picker must be inactive when list is empty")
+	}
+	view := scr.renderCurrentStep()
+	if !strings.Contains(view, "shipyard crew hire") {
+		t.Errorf("fallback hint should mention `shipyard crew hire`:\n%s", view)
+	}
+}
+
+func TestFormScreen_crewRun_crewMissingFallsBackToInput(t *testing.T) {
+	stubCrewPicker(t, false, nil, nil)
+
+	// Simula edição legada: a rota original tinha crew.run, mas o crew foi
+	// desinstalado depois. allowCrewRun=true no construtor mantém a opção
+	// habilitada e a seleção pré-existente sobrevive — caímos no fallback do
+	// step Target porque s.crewAddon.Installed=false.
+	original := &fairwayctl.Route{
+		Path:   "/hooks/legacy",
+		Auth:   fairwayctl.Auth{Type: fairwayctl.AuthLocalOnly},
+		Action: fairwayctl.Action{Type: fairwayctl.ActionCrewRun},
+	}
+	scr := newFormScreen(theme.New(), nil, original).(*formScreen)
+	scr.focus = fieldActionTarget
+	_ = scr.renderCurrentStep()
+
+	if scr.crewPickerActive() {
+		t.Fatalf("picker must be inactive when crew addon is not installed")
+	}
+	view := scr.renderCurrentStep()
+	if !strings.Contains(view, "shipyard crew install") {
+		t.Errorf("fallback hint should mention `shipyard crew install`:\n%s", view)
+	}
+}
+
+func TestFormScreen_crewRun_preselectsExistingTarget(t *testing.T) {
+	stubCrewPicker(t, true, []crewctl.AgentInfo{
+		{Name: "alpha"},
+		{Name: "beta"},
+		{Name: "gamma"},
+	}, nil)
+
+	original := &fairwayctl.Route{
+		Path: "/hooks/x",
+		Auth: fairwayctl.Auth{Type: fairwayctl.AuthLocalOnly},
+		Action: fairwayctl.Action{
+			Type:   fairwayctl.ActionCrewRun,
+			Target: "beta",
+		},
+	}
+	scr := newFormScreen(theme.New(), nil, original).(*formScreen)
+	scr.focus = fieldActionTarget
+
+	_ = scr.renderCurrentStep() // triggers load
+	if got := scr.crewMenu.Selected().Key; got != "beta" {
+		t.Errorf("preselection failed: got %q want %q", got, "beta")
+	}
+}
+
+// findActionOption busca um MenuItem por Key dentro de uma slice retornada
+// por buildActionOptions. Testamos a função pura em vez de inspecionar o
+// estado interno do Menu, porque Menu.SetSelectedByKey pula items Disabled
+// (chama ensureSelectable internamente) — o que mascararia o comportamento
+// que estamos verificando.
+func findActionOption(items []components.MenuItem, key string) (components.MenuItem, bool) {
+	for _, item := range items {
+		if item.Key == key {
+			return item, true
+		}
+	}
+	return components.MenuItem{}, false
+}
+
+func TestBuildActionOptions_crewMissing_disablesCrewRun(t *testing.T) {
+	items := buildActionOptions(false, false)
+
+	got, ok := findActionOption(items, string(fairwayctl.ActionCrewRun))
+	if !ok {
+		t.Fatalf("crew.run option must remain visible in the menu (just disabled)")
+	}
+	if !got.Disabled {
+		t.Errorf("crew.run must be Disabled when crew addon is absent")
+	}
+	if got.Badge != "install crew" {
+		t.Errorf("crew.run badge: got %q want %q", got.Badge, "install crew")
+	}
+}
+
+func TestBuildActionOptions_crewInstalled_enablesCrewRun(t *testing.T) {
+	items := buildActionOptions(true, false)
+
+	got, ok := findActionOption(items, string(fairwayctl.ActionCrewRun))
+	if !ok {
+		t.Fatalf("crew.run option missing from menu")
+	}
+	if got.Disabled {
+		t.Errorf("crew.run must be enabled when crew addon is installed")
+	}
+	if got.Badge != "" {
+		t.Errorf("crew.run badge must be empty when enabled, got %q", got.Badge)
+	}
+}
+
+func TestBuildActionOptions_legacyEdit_keepsCrewRunEnabled(t *testing.T) {
+	// crewInstalled=false (crew foi desinstalado) mas allowCrewRun=true
+	// (rota original já tinha crew.run salvo). Não pode desabilitar — caso
+	// contrário SetSelectedByKey no construtor cairia em ensureSelectable e
+	// trocaria silenciosamente a seleção do usuário, perdendo dado.
+	items := buildActionOptions(false, true)
+
+	got, ok := findActionOption(items, string(fairwayctl.ActionCrewRun))
+	if !ok {
+		t.Fatalf("crew.run option missing from menu")
+	}
+	if got.Disabled {
+		t.Errorf("crew.run must remain enabled when editing a legacy route (avoids silent reselection)")
+	}
+}
+
+// TestFormScreen_actionMenu_*: validam o caminho de produção — newFormScreen
+// precisa chamar buildActionOptions ao construir o actionMenu. Estes testes
+// inspecionam a View() renderizada porque components.Menu não expõe a slice
+// interna. Sem eles, a feature pode ficar "desconectada": buildActionOptions
+// existe e é testada como função pura, mas o construtor passa actionOptions
+// direto. Foi exatamente o bug capturado na revisão do PR #33.
+
+func TestFormScreen_actionMenu_disablesCrewRunWhenCrewAbsent(t *testing.T) {
+	stubCrewPicker(t, false, nil, nil)
+
+	scr := newFormScreen(theme.New(), nil, nil).(*formScreen)
+	view := scr.actionType.View()
+
+	if !strings.Contains(view, "install crew") {
+		t.Errorf("actionMenu must render the 'install crew' badge when crew addon is absent — buildActionOptions is likely not wired into newFormScreen.\nrendered view:\n%s", view)
+	}
+}
+
+func TestFormScreen_actionMenu_noBadgeWhenCrewInstalled(t *testing.T) {
+	stubCrewPicker(t, true, nil, nil)
+
+	scr := newFormScreen(theme.New(), nil, nil).(*formScreen)
+	view := scr.actionType.View()
+
+	if strings.Contains(view, "install crew") {
+		t.Errorf("actionMenu must NOT render 'install crew' badge when crew is installed.\nrendered view:\n%s", view)
+	}
+}
+
+func TestFormScreen_actionMenu_legacyEditKeepsCrewRunEnabled(t *testing.T) {
+	stubCrewPicker(t, false, nil, nil)
+
+	original := &fairwayctl.Route{
+		Path: "/hooks/legacy",
+		Auth: fairwayctl.Auth{Type: fairwayctl.AuthLocalOnly},
+		Action: fairwayctl.Action{
+			Type:   fairwayctl.ActionCrewRun,
+			Target: "ghost-agent",
+		},
+	}
+	scr := newFormScreen(theme.New(), nil, original).(*formScreen)
+	view := scr.actionType.View()
+
+	if strings.Contains(view, "install crew") {
+		t.Errorf("editing a legacy crew.run route must keep the option enabled (no badge), even when crew is absent.\nrendered view:\n%s", view)
 	}
 }

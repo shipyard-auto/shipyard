@@ -6,6 +6,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/shipyard-auto/shipyard/internal/addon"
+	"github.com/shipyard-auto/shipyard/internal/crewctl"
 	"github.com/shipyard-auto/shipyard/internal/fairwayctl"
 	"github.com/shipyard-auto/shipyard/internal/ui/tui/components"
 	"github.com/shipyard-auto/shipyard/internal/ui/tui/theme"
@@ -36,6 +38,10 @@ type formScreen struct {
 	authLookup components.Input
 	actionType components.Menu
 	actionTgt  components.Input
+	crewMenu   components.Menu     // populado lazy quando action = crew.run
+	crewAgents []crewctl.AgentInfo // empty se crew ausente OU sem agentes
+	crewAddon  addon.Info          // resultado da última Detect
+	crewLoaded bool                // garante que carregamos só uma vez
 	actionMeta components.Input
 	timeout    components.Input
 	focus      formField
@@ -58,9 +64,12 @@ func newFormScreen(th theme.Theme, client FairwayClient, route *fairwayctl.Route
 	timeout.SetHint("Optional. Leave empty to inherit the daemon default.")
 	timeout.SetValue(state.Timeout)
 
+	crewAddon := detectCrewAddon()
+	allowCrewRun := route != nil && route.Action.Type == fairwayctl.ActionCrewRun
+
 	authMenu := components.NewMenu(th, authOptions)
 	authMenu.SetSelectedByKey(state.AuthType)
-	actionMenu := components.NewMenu(th, actionOptions)
+	actionMenu := components.NewMenu(th, buildActionOptions(crewAddon.Installed, allowCrewRun))
 	actionMenu.SetSelectedByKey(state.ActionType)
 
 	authSecret.SetValue(state.AuthSecret)
@@ -86,6 +95,7 @@ func newFormScreen(th theme.Theme, client FairwayClient, route *fairwayctl.Route
 		authLookup: authLookup,
 		actionType: actionMenu,
 		actionTgt:  actionTarget,
+		crewAddon:  crewAddon,
 		actionMeta: actionMeta,
 		timeout:    timeout,
 	}
@@ -136,6 +146,10 @@ func (s *formScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		s.authType = menu
 		action := s.actionType.SetWidth(msg.Width)
 		s.actionType = action
+		if s.crewLoaded && len(s.crewAgents) > 0 {
+			crewSized := s.crewMenu.SetWidth(msg.Width)
+			s.crewMenu = crewSized
+		}
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "esc":
@@ -197,6 +211,20 @@ func (s *formScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		}
 		return s, nil
 	case fieldActionTarget:
+		if s.crewPickerActive() {
+			menu, cmd := s.crewMenu.Update(msg)
+			s.crewMenu = menu
+			if cmd != nil {
+				// Enter no menu sinaliza seleção: copia a key para actionTgt
+				// para que routeFromFormState (que lê s.actionTgt) capture o
+				// valor correto, e avança o passo.
+				s.actionTgt.SetValue(s.crewMenu.Selected().Key)
+				s.err = ""
+				s.focus = s.nextField()
+				s.syncFocus()
+			}
+			return s, nil
+		}
 		cmd, _ := s.actionTgt.Update(msg)
 		return s, cmd
 	case fieldActionMeta:
@@ -251,6 +279,69 @@ func (s *formScreen) View() string {
 	return strings.Join(parts, "\n\n")
 }
 
+// loadCrewAgentsOnce popula s.crewMenu e s.crewAgents na primeira chamada.
+// Idempotente: chamadas subsequentes são no-op. Não falha o wizard quando o
+// crew está ausente ou listing falha — o caller cai no fallback do Input.
+//
+// Pré-condição: s.crewAddon já foi populado em newFormScreen (ver Passo 3-bis).
+func (s *formScreen) loadCrewAgentsOnce() {
+	if s.crewLoaded {
+		return
+	}
+	s.crewLoaded = true
+
+	if !s.crewAddon.Installed {
+		return
+	}
+
+	agents, err := listCrewAgents()
+	if err != nil || len(agents) == 0 {
+		return
+	}
+	s.crewAgents = agents
+
+	items := make([]components.MenuItem, 0, len(agents))
+	for _, a := range agents {
+		desc := a.Description
+		if desc == "" {
+			desc = "backend=" + a.Backend
+		}
+		items = append(items, components.MenuItem{
+			Title:       a.Name,
+			Description: desc,
+			Key:         a.Name,
+		})
+	}
+	s.crewMenu = components.NewMenu(s.theme, items)
+
+	// Preserva seleção quando editando rota existente que aponta para um
+	// agente conhecido. SetSelectedByKey é no-op quando a key não existe.
+	if s.original != nil &&
+		s.original.Action.Type == fairwayctl.ActionCrewRun &&
+		s.original.Action.Target != "" {
+		s.crewMenu.SetSelectedByKey(s.original.Action.Target)
+	}
+}
+
+// crewPickerActive retorna true quando o step ActionTarget deve renderizar o
+// menu de crew agents em vez do Input. Exige (a) action == crew.run, (b) crew
+// instalado, (c) lista não-vazia.
+func (s *formScreen) crewPickerActive() bool {
+	if fairwayctl.ActionType(s.actionType.Selected().Key) != fairwayctl.ActionCrewRun {
+		return false
+	}
+	return s.crewLoaded && len(s.crewAgents) > 0
+}
+
+// crewFallbackHint devolve a mensagem mostrada no Input quando o picker não
+// está ativo (crew ausente OU sem agentes). Pré-condição: action == crew.run.
+func (s *formScreen) crewFallbackHint() string {
+	if !s.crewAddon.Installed {
+		return "Install with `shipyard crew install` to list agents. You can still type a name."
+	}
+	return "No crew agents found. Run `shipyard crew hire <name>` first, or type a name."
+}
+
 func (s *formScreen) renderCurrentStep() string {
 	switch s.focus {
 	case fieldPath:
@@ -273,14 +364,21 @@ func (s *formScreen) renderCurrentStep() string {
 		switch fairwayctl.ActionType(s.actionType.Selected().Key) {
 		case fairwayctl.ActionMessageSend:
 			s.actionTgt.SetHint("Optional logical target for the message.")
+			return s.actionTgt.View()
 		case fairwayctl.ActionHTTPForward:
 			s.actionTgt.SetHint("Destination URL starting with http:// or https://.")
+			return s.actionTgt.View()
 		case fairwayctl.ActionCrewRun:
-			s.actionTgt.SetHint("Crew agent name (see `shipyard crew list`).")
+			s.loadCrewAgentsOnce()
+			if s.crewPickerActive() {
+				return s.crewMenu.View()
+			}
+			s.actionTgt.SetHint(s.crewFallbackHint())
+			return s.actionTgt.View()
 		default:
 			s.actionTgt.SetHint("Shipyard object ID or target name.")
+			return s.actionTgt.View()
 		}
-		return s.actionTgt.View()
 	case fieldActionMeta:
 		if fairwayctl.ActionType(s.actionType.Selected().Key) == fairwayctl.ActionHTTPForward {
 			s.actionMeta.SetHint("Optional HTTP method override, for example POST.")
@@ -542,4 +640,36 @@ func (s *formScreen) snapshot() formState {
 		ActionMeta:   strings.TrimSpace(s.actionMeta.Value()),
 		Timeout:      strings.TrimSpace(s.timeout.Value()),
 	}
+}
+
+// Indireções para testes — substituídas em fairwaywiz_test.go.
+var (
+	listCrewAgents = func() ([]crewctl.AgentInfo, error) {
+		return crewctl.ListAgents("")
+	}
+	detectCrewAddon = func() addon.Info {
+		info, _ := addon.NewRegistry("").Detect(addon.KindCrew)
+		return info
+	}
+)
+
+// buildActionOptions clona actionOptions (declarado em shared.go) e desabilita
+// crew.run quando o crew addon não está instalado. allowCrewRun=true preserva
+// a opção habilitada no caso de edição de rota legada (rota existente já tinha
+// crew.run salvo); sem essa exceção, SetSelectedByKey cairia em fallback e
+// trocaria silenciosamente a seleção, perdendo dado do usuário.
+func buildActionOptions(crewInstalled, allowCrewRun bool) []components.MenuItem {
+	items := make([]components.MenuItem, 0, len(actionOptions))
+	for _, item := range actionOptions {
+		if item.Key == string(fairwayctl.ActionCrewRun) && !crewInstalled && !allowCrewRun {
+			disabled := item
+			disabled.Disabled = true
+			disabled.Badge = "install crew"
+			disabled.BadgeVariant = "muted"
+			items = append(items, disabled)
+			continue
+		}
+		items = append(items, item)
+	}
+	return items
 }
