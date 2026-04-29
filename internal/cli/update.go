@@ -1,10 +1,13 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"time"
@@ -19,11 +22,26 @@ import (
 	"github.com/shipyard-auto/shipyard/internal/update"
 )
 
+// hasInstalledAddons devolve true quando o registry de addons lista pelo
+// menos um addon com Installed=true. Variável package-level para permitir
+// override em testes.
+var hasInstalledAddons = defaultHasInstalledAddons
+
+// runAddonReconcileSubprocess executa o binário corrente com `update
+// --skip-core`, propagando stdout/stderr para o writer do pai. Variável
+// package-level para que testes substituam por uma fake — chamar exec.Cmd
+// real em teste exigiria fork bomb com TestHelperProcess pattern.
+var runAddonReconcileSubprocess = defaultRunAddonReconcileSubprocess
+
 func newUpdateCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:     "update",
-		Short:   "Update Shipyard to the latest release",
-		Long:    "Download the latest published Shipyard release for this platform and replace the current binary. If shipyard-fairway is installed, it is also updated.",
+	var skipCore bool
+
+	cmd := &cobra.Command{
+		Use:   "update",
+		Short: "Update Shipyard to the latest release",
+		Long: `Download the latest published Shipyard release for this platform and replace
+the current binary. If shipyard-fairway or shipyard-crew is installed, the
+new binary is invoked to reconcile them in the same run.`,
 		Example: "shipyard update",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			executablePath, err := os.Executable()
@@ -37,6 +55,18 @@ func newUpdateCmd() *cobra.Command {
 			}
 
 			w := cmd.OutOrStdout()
+
+			// --skip-core: caminho do filho re-executado pelo pai após self-
+			// update. Pula o download do core (já foi feito pelo pai) e roda
+			// apenas a reconciliação dos addons no binário novo.
+			if skipCore {
+				ui.Printf(w, "%s\n", ui.SectionTitle("Reconciling addons"))
+				ui.Printf(w, "%s\n\n", ui.Muted("Running addon reconcilers from the freshly installed binary."))
+				if err := updateFairwayIfInstalled(cmd, w); err != nil {
+					return err
+				}
+				return updateCrewIfInstalled(cmd, w)
+			}
 
 			ui.Printf(w, "%s\n", ui.SectionTitle("Shipyard Update"))
 			ui.Printf(w, "%s\n\n", ui.Muted("Checking the latest release and refreshing your local binary."))
@@ -58,12 +88,24 @@ func newUpdateCmd() *cobra.Command {
 				ui.Printf(w, "%s\n", ui.Emphasis("Shipyard is already up to date."))
 			}
 
+			// Quando o binário foi substituído, delegamos a reconciliação ao
+			// novo binário via subprocess. Quando NÃO houve update (mesmo
+			// binário nas duas pontas), reconciliamos inline — mais barato e
+			// idêntico ao comportamento histórico.
+			if result.Updated && hasInstalledAddons() {
+				return runAddonReconcileSubprocess(cmd.Context(), executablePath, w)
+			}
+
 			if err := updateFairwayIfInstalled(cmd, w); err != nil {
 				return err
 			}
 			return updateCrewIfInstalled(cmd, w)
 		},
 	}
+
+	cmd.Flags().BoolVar(&skipCore, "skip-core", false, "Skip core update; only reconcile installed addons. Used internally by the parent process after a self-update.")
+
+	return cmd
 }
 
 func updateFairwayIfInstalled(cmd *cobra.Command, w interface{ Write([]byte) (int, error) }) error {
@@ -171,4 +213,37 @@ func buildCrewInstallerForUpdate(version string) (*crewctl.Installer, error) {
 		HTTPClient:  crewctl.DefaultHTTPClient(),
 		ReleaseBase: crewctl.DefaultReleaseBase,
 	}, nil
+}
+
+// defaultHasInstalledAddons reads the addon registry and returns true when
+// any addon is marked as installed. Returns false on any registry error —
+// the worst case is missing the subprocess delegation, which falls back to
+// the historical inline reconciliation.
+func defaultHasInstalledAddons() bool {
+	reg := addon.NewRegistry("")
+	file, err := reg.Load()
+	if err != nil || file == nil {
+		return false
+	}
+	for _, info := range file.Addons {
+		if info != nil && info.Installed {
+			return true
+		}
+	}
+	return false
+}
+
+// defaultRunAddonReconcileSubprocess invokes the binary at binPath with
+// `update --skip-core`, wiring stdout/stderr back to the parent's writer.
+// The call blocks until the child exits; the child's exit code is propagated
+// as the error return.
+func defaultRunAddonReconcileSubprocess(ctx context.Context, binPath string, w io.Writer) error {
+	cmd := exec.CommandContext(ctx, binPath, "update", "--skip-core")
+	cmd.Stdout = w
+	cmd.Stderr = w
+	cmd.Stdin = nil
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("reconcile addons via new binary: %w", err)
+	}
+	return nil
 }
