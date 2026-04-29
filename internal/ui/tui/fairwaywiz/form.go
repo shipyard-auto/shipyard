@@ -65,10 +65,11 @@ func newFormScreen(th theme.Theme, client FairwayClient, route *fairwayctl.Route
 	timeout.SetValue(state.Timeout)
 
 	crewAddon := detectCrewAddon()
+	allowCrewRun := route != nil && route.Action.Type == fairwayctl.ActionCrewRun
 
 	authMenu := components.NewMenu(th, authOptions)
 	authMenu.SetSelectedByKey(state.AuthType)
-	actionMenu := components.NewMenu(th, actionOptions)
+	actionMenu := components.NewMenu(th, buildActionOptions(crewAddon.Installed, allowCrewRun))
 	actionMenu.SetSelectedByKey(state.ActionType)
 
 	authSecret.SetValue(state.AuthSecret)

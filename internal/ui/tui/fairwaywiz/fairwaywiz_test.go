@@ -724,7 +724,17 @@ func TestFormScreen_crewRun_emptyFallsBackToInput(t *testing.T) {
 func TestFormScreen_crewRun_crewMissingFallsBackToInput(t *testing.T) {
 	stubCrewPicker(t, false, nil, nil)
 
-	scr := newCrewRunFormScreen(t)
+	// Simula edição legada: a rota original tinha crew.run, mas o crew foi
+	// desinstalado depois. allowCrewRun=true no construtor mantém a opção
+	// habilitada e a seleção pré-existente sobrevive — caímos no fallback do
+	// step Target porque s.crewAddon.Installed=false.
+	original := &fairwayctl.Route{
+		Path:   "/hooks/legacy",
+		Auth:   fairwayctl.Auth{Type: fairwayctl.AuthLocalOnly},
+		Action: fairwayctl.Action{Type: fairwayctl.ActionCrewRun},
+	}
+	scr := newFormScreen(theme.New(), nil, original).(*formScreen)
+	scr.focus = fieldActionTarget
 	_ = scr.renderCurrentStep()
 
 	if scr.crewPickerActive() {
@@ -817,5 +827,53 @@ func TestBuildActionOptions_legacyEdit_keepsCrewRunEnabled(t *testing.T) {
 	}
 	if got.Disabled {
 		t.Errorf("crew.run must remain enabled when editing a legacy route (avoids silent reselection)")
+	}
+}
+
+// TestFormScreen_actionMenu_*: validam o caminho de produção — newFormScreen
+// precisa chamar buildActionOptions ao construir o actionMenu. Estes testes
+// inspecionam a View() renderizada porque components.Menu não expõe a slice
+// interna. Sem eles, a feature pode ficar "desconectada": buildActionOptions
+// existe e é testada como função pura, mas o construtor passa actionOptions
+// direto. Foi exatamente o bug capturado na revisão do PR #33.
+
+func TestFormScreen_actionMenu_disablesCrewRunWhenCrewAbsent(t *testing.T) {
+	stubCrewPicker(t, false, nil, nil)
+
+	scr := newFormScreen(theme.New(), nil, nil).(*formScreen)
+	view := scr.actionType.View()
+
+	if !strings.Contains(view, "install crew") {
+		t.Errorf("actionMenu must render the 'install crew' badge when crew addon is absent — buildActionOptions is likely not wired into newFormScreen.\nrendered view:\n%s", view)
+	}
+}
+
+func TestFormScreen_actionMenu_noBadgeWhenCrewInstalled(t *testing.T) {
+	stubCrewPicker(t, true, nil, nil)
+
+	scr := newFormScreen(theme.New(), nil, nil).(*formScreen)
+	view := scr.actionType.View()
+
+	if strings.Contains(view, "install crew") {
+		t.Errorf("actionMenu must NOT render 'install crew' badge when crew is installed.\nrendered view:\n%s", view)
+	}
+}
+
+func TestFormScreen_actionMenu_legacyEditKeepsCrewRunEnabled(t *testing.T) {
+	stubCrewPicker(t, false, nil, nil)
+
+	original := &fairwayctl.Route{
+		Path: "/hooks/legacy",
+		Auth: fairwayctl.Auth{Type: fairwayctl.AuthLocalOnly},
+		Action: fairwayctl.Action{
+			Type:   fairwayctl.ActionCrewRun,
+			Target: "ghost-agent",
+		},
+	}
+	scr := newFormScreen(theme.New(), nil, original).(*formScreen)
+	view := scr.actionType.View()
+
+	if strings.Contains(view, "install crew") {
+		t.Errorf("editing a legacy crew.run route must keep the option enabled (no badge), even when crew is absent.\nrendered view:\n%s", view)
 	}
 }
