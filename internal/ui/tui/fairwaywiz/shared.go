@@ -68,6 +68,11 @@ var (
 	}
 )
 
+var asyncOptions = []components.MenuItem{
+	{Title: "Sync", Description: "Wait for the action to finish and return its result.", Key: "sync"},
+	{Title: "Async", Description: "Respond 202 Accepted immediately and run the action detached.", Key: "async"},
+}
+
 func loadRoutesCmd(client FairwayClient) tea.Cmd {
 	return func() tea.Msg {
 		routes, err := client.RouteList(context.Background())
@@ -265,6 +270,8 @@ func routeFromFormState(s formState) (fairwayctl.Route, error) {
 		route.Timeout = timeout
 	}
 
+	route.Async = s.Async
+
 	if err := route.Validate(); err != nil {
 		return fairwayctl.Route{}, err
 	}
@@ -280,6 +287,7 @@ type formState struct {
 	ActionTarget string
 	ActionMeta   string
 	Timeout      string
+	Async        bool
 }
 
 func formStateFromRoute(route *fairwayctl.Route) formState {
@@ -321,5 +329,6 @@ func formStateFromRoute(route *fairwayctl.Route) formState {
 	if route.Timeout == 0 {
 		state.Timeout = ""
 	}
+	state.Async = route.Async
 	return state
 }
