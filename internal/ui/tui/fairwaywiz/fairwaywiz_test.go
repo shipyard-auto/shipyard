@@ -425,7 +425,7 @@ func TestRouteFromFormState_invalidTimeout(t *testing.T) {
 
 func TestForm_visibleFields_changeWithSelections(t *testing.T) {
 	screen := newFormScreen(theme.New(), &fakeClient{}, nil).(*formScreen)
-	if got := screen.visibleFields(); len(got) != 7 {
+	if got := screen.visibleFields(); len(got) != 8 {
 		t.Fatalf("unexpected default field count: %d", len(got))
 	}
 
@@ -875,5 +875,54 @@ func TestFormScreen_actionMenu_legacyEditKeepsCrewRunEnabled(t *testing.T) {
 
 	if strings.Contains(view, "install crew") {
 		t.Errorf("editing a legacy crew.run route must keep the option enabled (no badge), even when crew is absent.\nrendered view:\n%s", view)
+	}
+}
+
+// ====== X-04 async toggle tests ======
+
+func TestFormScreen_async_defaultsToSync(t *testing.T) {
+	scr := newFormScreen(theme.New(), nil, nil).(*formScreen)
+	if got := scr.async.Selected().Key; got != "sync" {
+		t.Errorf("new route must default to sync; got %q", got)
+	}
+	state := scr.snapshot()
+	if state.Async {
+		t.Errorf("snapshot of new route must have Async=false; got true")
+	}
+}
+
+func TestFormScreen_async_preservesAsyncRouteOnEdit(t *testing.T) {
+	original := &fairwayctl.Route{
+		Path:   "/hooks/async-route",
+		Auth:   fairwayctl.Auth{Type: fairwayctl.AuthLocalOnly},
+		Action: fairwayctl.Action{Type: fairwayctl.ActionCronRun, Target: "abc"},
+		Async:  true,
+	}
+	scr := newFormScreen(theme.New(), nil, original).(*formScreen)
+
+	if got := scr.async.Selected().Key; got != "async" {
+		t.Errorf("editing async route must preselect async; got %q", got)
+	}
+	state := scr.snapshot()
+	if !state.Async {
+		t.Errorf("snapshot must preserve Async=true on edit; got false")
+	}
+}
+
+func TestFormScreen_async_snapshotReflectsToggle(t *testing.T) {
+	scr := newFormScreen(theme.New(), nil, nil).(*formScreen)
+	// Default is sync; flip to async.
+	scr.async.SetSelectedByKey("async")
+
+	state := scr.snapshot()
+	if !state.Async {
+		t.Errorf("snapshot must reflect manual toggle to async; got Async=false")
+	}
+
+	// And back.
+	scr.async.SetSelectedByKey("sync")
+	state = scr.snapshot()
+	if state.Async {
+		t.Errorf("snapshot must reflect manual toggle back to sync; got Async=true")
 	}
 }

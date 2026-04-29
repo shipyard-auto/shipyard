@@ -24,6 +24,7 @@ const (
 	fieldActionTarget
 	fieldActionMeta
 	fieldTimeout
+	fieldAsync
 	fieldSubmit
 )
 
@@ -44,6 +45,7 @@ type formScreen struct {
 	crewLoaded bool                // garante que carregamos só uma vez
 	actionMeta components.Input
 	timeout    components.Input
+	async      components.Menu
 	focus      formField
 	err        string
 	submitting bool
@@ -71,6 +73,12 @@ func newFormScreen(th theme.Theme, client FairwayClient, route *fairwayctl.Route
 	authMenu.SetSelectedByKey(state.AuthType)
 	actionMenu := components.NewMenu(th, buildActionOptions(crewAddon.Installed, allowCrewRun))
 	actionMenu.SetSelectedByKey(state.ActionType)
+	asyncMenu := components.NewMenu(th, asyncOptions)
+	asyncKey := "sync"
+	if state.Async {
+		asyncKey = "async"
+	}
+	asyncMenu.SetSelectedByKey(asyncKey)
 
 	authSecret.SetValue(state.AuthSecret)
 	authLookup.SetValue(state.AuthLookup)
@@ -98,6 +106,7 @@ func newFormScreen(th theme.Theme, client FairwayClient, route *fairwayctl.Route
 		crewAddon:  crewAddon,
 		actionMeta: actionMeta,
 		timeout:    timeout,
+		async:      asyncMenu,
 	}
 	if route != nil {
 		screen.mode = modeEdit
@@ -146,6 +155,8 @@ func (s *formScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		s.authType = menu
 		action := s.actionType.SetWidth(msg.Width)
 		s.actionType = action
+		asyncSized := s.async.SetWidth(msg.Width)
+		s.async = asyncSized
 		if s.crewLoaded && len(s.crewAgents) > 0 {
 			crewSized := s.crewMenu.SetWidth(msg.Width)
 			s.crewMenu = crewSized
@@ -233,6 +244,15 @@ func (s *formScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	case fieldTimeout:
 		cmd, _ := s.timeout.Update(msg)
 		return s, cmd
+	case fieldAsync:
+		menu, cmd := s.async.Update(msg)
+		s.async = menu
+		if cmd != nil {
+			s.err = ""
+			s.focus = s.nextField()
+			s.syncFocus()
+		}
+		return s, nil
 	case fieldSubmit:
 		if key, ok := msg.(tea.KeyMsg); ok && key.String() == "enter" {
 			route, err := routeFromFormState(s.snapshot())
@@ -388,6 +408,13 @@ func (s *formScreen) renderCurrentStep() string {
 		return s.actionMeta.View()
 	case fieldTimeout:
 		return s.timeout.View()
+	case fieldAsync:
+		if fairwayctl.ActionType(s.actionType.Selected().Key) == fairwayctl.ActionHTTPForward {
+			return s.async.View() + "\n\n" + s.theme.RenderHint(
+				"Note: http.forward routes cannot be async — selecting Async will fail at submit.",
+			)
+		}
+		return s.async.View()
 	case fieldSubmit:
 		return s.submitPanel()
 	}
@@ -427,6 +454,8 @@ func (s *formScreen) stepLabel(f formField) string {
 		return "Provider"
 	case fieldTimeout:
 		return "Timeout"
+	case fieldAsync:
+		return "Mode"
 	case fieldSubmit:
 		return "Review & confirm"
 	}
@@ -471,6 +500,8 @@ func (s *formScreen) fieldValue(f formField) string {
 		return strings.TrimSpace(s.actionMeta.Value())
 	case fieldTimeout:
 		return strings.TrimSpace(s.timeout.Value())
+	case fieldAsync:
+		return s.async.Selected().Title
 	}
 	return ""
 }
@@ -625,7 +656,7 @@ func (s *formScreen) visibleFields() []formField {
 	case fairwayctl.ActionHTTPForward:
 		fields = append(fields, fieldActionTarget, fieldActionMeta)
 	}
-	fields = append(fields, fieldTimeout, fieldSubmit)
+	fields = append(fields, fieldTimeout, fieldAsync, fieldSubmit)
 	return fields
 }
 
@@ -639,6 +670,7 @@ func (s *formScreen) snapshot() formState {
 		ActionTarget: strings.TrimSpace(s.actionTgt.Value()),
 		ActionMeta:   strings.TrimSpace(s.actionMeta.Value()),
 		Timeout:      strings.TrimSpace(s.timeout.Value()),
+		Async:        s.async.Selected().Key == "async",
 	}
 }
 
