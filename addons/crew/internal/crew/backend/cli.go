@@ -138,16 +138,20 @@ func (b *CLIBackend) Run(ctx context.Context, in RunInput, _ ToolDispatcher) (Ru
 	}
 	defer cleanup()
 
+	// --permission-mode bypassPermissions is an invariant of the CLI backend:
+	// `claude --print` has no TTY to approve tool calls interactively, regardless
+	// of whether the agent declares MCP servers. Even agents with no tools nor
+	// mcp_servers rely on the host CLI's built-in tools (Bash, Edit, Write); the
+	// previous gating inside `if cfgPath != "" {}` silently denied those for
+	// minimalist agents and produced false-success runs.
+	args = append(args, "--permission-mode", "bypassPermissions")
+
 	if cfgPath != "" {
-		// --permission-mode bypassPermissions is required because claude --print
-		// has no TTY to approve tool calls interactively; without it the model
-		// replies "preciso de permissão…" instead of invoking the tool.
-		// --strict-mcp-config already confines the tool surface to the servers
-		// we synthesised (the internal crew bridge + agent-declared refs).
+		// --strict-mcp-config confines the tool surface to the servers we
+		// synthesised (the internal crew bridge + agent-declared refs).
 		args = append(args,
 			"--mcp-config", cfgPath,
 			"--strict-mcp-config",
-			"--permission-mode", "bypassPermissions",
 		)
 	}
 
