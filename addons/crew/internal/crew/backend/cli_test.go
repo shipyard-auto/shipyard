@@ -97,7 +97,7 @@ func TestCLI_ResumeFlagAppended(t *testing.T) {
 		t.Fatal(err)
 	}
 	lines := strings.Split(strings.TrimRight(string(raw), "\n"), "\n")
-	want := []string{"base", "--resume", "prev-sid"}
+	want := []string{"base", "--resume", "prev-sid", "--permission-mode", "bypassPermissions"}
 	if len(lines) != len(want) {
 		t.Fatalf("argv=%v want %v", lines, want)
 	}
@@ -246,7 +246,7 @@ func TestCLI_PromptAppendedWithDefaultFlag(t *testing.T) {
 	}
 
 	got := readArgvLines(t, argsFile)
-	want := []string{"base", "--append-system-prompt", "you are an RE tutor for 15-year-olds"}
+	want := []string{"base", "--append-system-prompt", "you are an RE tutor for 15-year-olds", "--permission-mode", "bypassPermissions"}
 	if len(got) != len(want) {
 		t.Fatalf("argv=%v want %v", got, want)
 	}
@@ -271,7 +271,7 @@ func TestCLI_PromptUsesOverrideFlag(t *testing.T) {
 	}
 
 	got := readArgvLines(t, argsFile)
-	want := []string{"base", "-s", "custom"}
+	want := []string{"base", "-s", "custom", "--permission-mode", "bypassPermissions"}
 	if len(got) != len(want) {
 		t.Fatalf("argv=%v want %v", got, want)
 	}
@@ -298,12 +298,14 @@ func TestCLI_NoPromptNoFlagAppended(t *testing.T) {
 	}
 
 	got := readArgvLines(t, argsFile)
-	want := []string{"base"}
+	want := []string{"base", "--permission-mode", "bypassPermissions"}
 	if len(got) != len(want) {
 		t.Fatalf("argv=%v want %v", got, want)
 	}
-	if got[0] != want[0] {
-		t.Fatalf("argv[0]=%q want %q", got[0], want[0])
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("argv[%d]=%q want %q", i, got[i], want[i])
+		}
 	}
 }
 
@@ -446,7 +448,8 @@ func TestCLI_MCPFlagsInjectedWhenToolsDeclared(t *testing.T) {
 }
 
 func TestCLI_NoMCPFlagsWhenAgentHasNoToolsOrMCP(t *testing.T) {
-	// Zero-config agents must pay nothing: no --mcp-config, no bypass flag.
+	// Zero-config agents get --permission-mode bypassPermissions (always) but
+	// must NOT receive --mcp-config or --strict-mcp-config.
 	agent, argsFile := captureArgvAgent(t, []string{"base"}, "")
 
 	b := NewCLIBackend().WithUserHomeDir(func() (string, error) { return t.TempDir(), nil })
@@ -457,8 +460,8 @@ func TestCLI_NoMCPFlagsWhenAgentHasNoToolsOrMCP(t *testing.T) {
 
 	got := readArgvLines(t, argsFile)
 	argv := strings.Join(got, " ")
-	if strings.Contains(argv, "--mcp-config") || strings.Contains(argv, "bypassPermissions") {
-		t.Fatalf("argv should be untouched when no tools declared, got: %v", got)
+	if strings.Contains(argv, "--mcp-config") || strings.Contains(argv, "--strict-mcp-config") {
+		t.Fatalf("MCP flags must not appear when no tools declared, got: %v", got)
 	}
 }
 
@@ -477,13 +480,61 @@ func TestCLI_PromptPrecedesResumeFlag(t *testing.T) {
 	}
 
 	got := readArgvLines(t, argsFile)
-	want := []string{"base", "--append-system-prompt", "sys", "--resume", "sid-42"}
+	want := []string{"base", "--append-system-prompt", "sys", "--resume", "sid-42", "--permission-mode", "bypassPermissions"}
 	if len(got) != len(want) {
 		t.Fatalf("argv=%v want %v", got, want)
 	}
 	for i := range want {
 		if got[i] != want[i] {
 			t.Fatalf("argv[%d]=%q want %q", i, got[i], want[i])
+		}
+	}
+}
+
+// TestCLI_BypassPermissionsAlwaysAppended garante que --permission-mode
+// bypassPermissions é anexado ao argv do claude --print mesmo quando o agente
+// não declara tools nem mcp_servers (cfgPath == ""). Antes do fix de C-01, o
+// flag só vinha dentro do bloco `if cfgPath != ""`, e agentes minimalistas
+// rodavam em permission-mode default — gerando falso-success silencioso.
+func TestCLI_BypassPermissionsAlwaysAppended(t *testing.T) {
+	dir := t.TempDir()
+	argsFile := filepath.Join(dir, "args.txt")
+	script := filepath.Join(dir, "shim.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" > "+argsFile+"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	b := NewCLIBackend()
+	_, err := b.Run(context.Background(), RunInput{
+		User:  "x",
+		Agent: cliAgent(script, "base"), // sem tools, sem mcp_servers — cfgPath == ""
+	}, nil)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	raw, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimRight(string(raw), "\n"), "\n")
+
+	// Procuramos o par "--permission-mode" "bypassPermissions" em sequência.
+	found := false
+	for i := 0; i < len(lines)-1; i++ {
+		if lines[i] == "--permission-mode" && lines[i+1] == "bypassPermissions" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected --permission-mode bypassPermissions in argv (minimalist agent), got: %v", lines)
+	}
+
+	// Sanity: NÃO deve aparecer --mcp-config/--strict-mcp-config quando cfgPath == "".
+	for _, arg := range lines {
+		if arg == "--mcp-config" || arg == "--strict-mcp-config" {
+			t.Errorf("MCP flags must not be present for an agent without tools/mcp_servers, got %q in %v", arg, lines)
 		}
 	}
 }
