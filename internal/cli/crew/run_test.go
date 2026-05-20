@@ -23,12 +23,13 @@ func TestResolveInput(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name      string
-		inline    string
-		path      string
-		files     map[string][]byte
-		wantErr   string
-		wantBytes string
+		name       string
+		inline     string
+		path       string
+		positional string
+		files      map[string][]byte
+		wantErr    string
+		wantBytes  string
 	}{
 		{name: "default empty object", wantBytes: `{}`},
 		{name: "inline valid", inline: `{"a":1}`, wantBytes: `{"a":1}`},
@@ -56,6 +57,29 @@ func TestResolveInput(t *testing.T) {
 			path:    "in.json",
 			wantErr: "mutually exclusive",
 		},
+		{
+			name:       "positional shorthand wraps as user",
+			positional: "vai",
+			wantBytes:  `{"user":"vai"}`,
+		},
+		{
+			name:       "positional with quotes is escaped",
+			positional: `say "hi"`,
+			wantBytes:  `{"user":"say \"hi\""}`,
+		},
+		{
+			name:       "positional plus inline rejected",
+			positional: "vai",
+			inline:     `{"a":1}`,
+			wantErr:    "cannot combine positional input",
+		},
+		{
+			name:       "positional plus file rejected",
+			positional: "vai",
+			path:       "in.json",
+			files:      map[string][]byte{"in.json": []byte(`{"k":"v"}`)},
+			wantErr:    "cannot combine positional input",
+		},
 	}
 
 	for _, tc := range tests {
@@ -68,7 +92,7 @@ func TestResolveInput(t *testing.T) {
 				}
 				return nil, fs.ErrNotExist
 			}
-			got, err := resolveInput(tc.inline, tc.path, readFile)
+			got, err := resolveInput(tc.inline, tc.path, tc.positional, readFile)
 			if tc.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 					t.Fatalf("got err=%v, want contains %q", err, tc.wantErr)
@@ -99,6 +123,59 @@ func TestNewRunCmdMutualExclusion(t *testing.T) {
 	cmd.SetErr(io.Discard)
 	if err := cmd.Execute(); err == nil {
 		t.Fatal("expected mutual-exclusion error")
+	}
+}
+
+func TestNewRunCmdPositionalAccepted(t *testing.T) {
+	t.Parallel()
+
+	home := t.TempDir()
+	writeTestAgent(t, home, "demo", ExecutionModeOnDemand)
+
+	var commands [][]string
+	deps := runDeps{
+		Home:        home,
+		Version:     "test",
+		LookPath:    func(string) (string, error) { return "/usr/bin/stub-crew", nil },
+		MakeCommand: fakeCommand(&commands, 0, `{"output":{"text":"ok"},"trace_id":"t","status":"ok"}`, ""),
+		Stdout:      io.Discard,
+		Stderr:      io.Discard,
+	}
+	cmd := newRunCmdWith(deps)
+	cmd.SetArgs([]string{"demo", "vai"})
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpected error from positional invocation: %v", err)
+	}
+	if len(commands) != 1 {
+		t.Fatalf("expected one subprocess invocation, got %d", len(commands))
+	}
+}
+
+func TestNewRunCmdPositionalConflictsWithInput(t *testing.T) {
+	t.Parallel()
+
+	home := t.TempDir()
+	writeTestAgent(t, home, "demo", ExecutionModeOnDemand)
+
+	deps := runDeps{
+		Home:    home,
+		Version: "test",
+		Stdout:  io.Discard,
+		Stderr:  io.Discard,
+	}
+	cmd := newRunCmdWith(deps)
+	cmd.SetArgs([]string{"demo", "vai", "--input", `{"a":1}`})
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected positional+--input conflict to fail")
+	}
+	var exitErr *ExitError
+	if !errors.As(err, &exitErr) || exitErr.Code != ExitInvalidArgs {
+		t.Fatalf("expected ExitInvalidArgs, got %v", err)
 	}
 }
 
@@ -435,7 +512,7 @@ func TestNewRunCmdDefaults(t *testing.T) {
 	t.Parallel()
 
 	cmd := NewRunCmd()
-	if cmd.Use != "run <name>" {
+	if cmd.Use != "run <name> [input]" {
 		t.Fatalf("unexpected Use: %q", cmd.Use)
 	}
 	if f := cmd.Flag("timeout"); f == nil || f.DefValue == "" {
