@@ -584,7 +584,92 @@ func TestVersion_json_notInstalled(t *testing.T) {
 	if !strings.Contains(out, `"installed":false`) {
 		t.Errorf("expected installed:false, got %q", out)
 	}
+	if !strings.Contains(out, `"functional":false`) {
+		t.Errorf("expected functional:false, got %q", out)
+	}
 	if !strings.Contains(out, VersionNotInstalled) {
 		t.Errorf("expected not-installed marker, got %q", out)
+	}
+}
+
+// TestVersion_presentButNotFunctional_text covers C-08: a binary file
+// exists at BinPath but cannot be exec'd (chmod 0644). Before the fix this
+// collapsed to "(not installed)"; after, it must surface the divergence.
+func TestVersion_presentButNotFunctional_text(t *testing.T) {
+	inst := newFakeInstaller(t, "0.1.0")
+	if err := os.MkdirAll(inst.BinDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Plain non-executable file at BinPath.
+	if err := os.WriteFile(inst.BinPath(), []byte("garbage"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := newVersionCmdWith(inst, "1.0.9")
+	out, _, err := runCmd(t, cmd)
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if !strings.Contains(out, VersionNotFunctional) {
+		t.Errorf("expected %q in text output, got %q", VersionNotFunctional, out)
+	}
+	if strings.Contains(out, VersionNotInstalled) {
+		t.Errorf("text output must NOT report not-installed for a present binary: %q", out)
+	}
+	if !strings.Contains(out, "error:") {
+		t.Errorf("expected error: line surfacing exec failure, got %q", out)
+	}
+}
+
+func TestVersion_presentButNotFunctional_json(t *testing.T) {
+	inst := newFakeInstaller(t, "0.1.0")
+	if err := os.MkdirAll(inst.BinDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(inst.BinPath(), []byte("garbage"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := newVersionCmdWith(inst, "1.0.9")
+	out, _, err := runCmd(t, cmd, "--json")
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	compact := strings.ReplaceAll(strings.ReplaceAll(out, " ", ""), "\n", "")
+	for _, want := range []string{
+		`"installed":true`,
+		`"functional":false`,
+		`"error":"`,
+	} {
+		if !strings.Contains(compact, want) {
+			t.Errorf("json missing %q, got %q", want, compact)
+		}
+	}
+}
+
+func TestVersion_json_functionalWhenHealthy(t *testing.T) {
+	inst := newFakeInstaller(t, "0.1.0")
+	if err := os.MkdirAll(inst.BinDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := []byte("#!/bin/sh\necho 'shipyard-crew 0.1.0 (test, built 2026-04-20)'\n")
+	if err := os.WriteFile(inst.BinPath(), content, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := newVersionCmdWith(inst, "1.0.9")
+	out, _, err := runCmd(t, cmd, "--json")
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	compact := strings.ReplaceAll(strings.ReplaceAll(out, " ", ""), "\n", "")
+	if !strings.Contains(compact, `"installed":true`) {
+		t.Errorf("expected installed:true, got %q", compact)
+	}
+	if !strings.Contains(compact, `"functional":true`) {
+		t.Errorf("expected functional:true, got %q", compact)
+	}
+	if strings.Contains(compact, `"error":`) {
+		t.Errorf("expected no error field when healthy, got %q", compact)
 	}
 }

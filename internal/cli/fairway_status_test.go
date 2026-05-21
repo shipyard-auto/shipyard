@@ -75,9 +75,10 @@ func (f *fakeFairwayStatusClient) Stats(context.Context) (fairwayctl.StatsSnapsh
 
 func testFairwayStatusDeps() fairwayStatusDeps {
 	return fairwayStatusDeps{
-		binPath:    "/tmp/shipyard-fairway",
-		socketPath: "/tmp/fairway.sock",
-		version:    "0.21",
+		binPath:     "/tmp/shipyard-fairway",
+		socketPath:  "/tmp/fairway.sock",
+		version:     "0.21",
+		isInstalled: func() bool { return true },
 		installedVersion: func() (string, error) {
 			return "shipyard-fairway 0.21 (deadbeef, built now)", nil
 		},
@@ -138,6 +139,7 @@ func TestStatus_notInstalled(t *testing.T) {
 	t.Setenv("NO_COLOR", "1")
 
 	deps := testFairwayStatusDeps()
+	deps.isInstalled = func() bool { return false }
 	deps.installedVersion = func() (string, error) { return "", errors.New("missing binary") }
 
 	report, err := collectFairwayStatus(context.Background(), deps)
@@ -146,6 +148,43 @@ func TestStatus_notInstalled(t *testing.T) {
 	}
 	if report.State != "not installed" {
 		t.Fatalf("state = %q; want %q", report.State, "not installed")
+	}
+	if report.Binary.Installed {
+		t.Errorf("binary.installed = true; want false")
+	}
+	if report.Binary.Functional {
+		t.Errorf("binary.functional = true; want false")
+	}
+}
+
+// TestStatus_binaryNotFunctional covers the C-08 sibling fix for fairway:
+// the binary file is present but `--version` cannot be executed. Before the
+// fix this collapsed to "not installed"; after, the operator sees a distinct
+// state plus the underlying error in the Binary block.
+func TestStatus_binaryNotFunctional(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+
+	deps := testFairwayStatusDeps()
+	deps.isInstalled = func() bool { return true }
+	deps.installedVersion = func() (string, error) {
+		return "", errors.New("permission denied")
+	}
+
+	report, err := collectFairwayStatus(context.Background(), deps)
+	if err != nil {
+		t.Fatalf("collectFairwayStatus() error = %v", err)
+	}
+	if report.State != "binary not functional" {
+		t.Fatalf("state = %q; want %q", report.State, "binary not functional")
+	}
+	if !report.Binary.Installed {
+		t.Errorf("binary.installed = false; want true")
+	}
+	if report.Binary.Functional {
+		t.Errorf("binary.functional = true; want false")
+	}
+	if !strings.Contains(report.Binary.Error, "permission denied") {
+		t.Errorf("binary.error = %q; want it to contain underlying message", report.Binary.Error)
 	}
 }
 

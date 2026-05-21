@@ -154,8 +154,28 @@ func ResolveBinary() (string, error) {
 	return "", ErrNotInstalled
 }
 
+// installedVersionTimeout caps how long the installer waits for `<binary>
+// --version` to complete. Picked to be generous for a cold-start exec on a
+// loaded machine but short enough that a hung binary surfaces as an error
+// rather than blocking the caller indefinitely.
+const installedVersionTimeout = 5 * time.Second
+
+// IsInstalled reports whether a usable binary file exists at BinPath(). It
+// does NOT execute the binary — use InstalledVersion to confirm the binary
+// also responds to `--version`. Directories at BinPath are treated as
+// "not installed" because they cannot be executed.
+func (i *Installer) IsInstalled() bool {
+	info, err := os.Stat(i.BinPath())
+	if err != nil {
+		return false
+	}
+	return !info.IsDir()
+}
+
 // InstalledVersion runs the installed binary with --version and returns the
-// semver token. Returns ErrNotInstalled when the binary is absent.
+// semver token. Returns ErrNotInstalled when the binary is absent. Other
+// failures (non-executable file, exec timeout, unparseable output) surface
+// as wrapped errors so callers can distinguish "missing" from "broken".
 func (i *Installer) InstalledVersion() (string, error) {
 	binPath := i.BinPath()
 	info, err := os.Stat(binPath)
@@ -169,8 +189,13 @@ func (i *Installer) InstalledVersion() (string, error) {
 		return "", fmt.Errorf("crew: %s is a directory", binPath)
 	}
 
-	out, err := exec.Command(binPath, "--version").Output()
+	ctx, cancel := context.WithTimeout(context.Background(), installedVersionTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, binPath, "--version").Output()
 	if err != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return "", fmt.Errorf("crew: exec --version timed out after %s", installedVersionTimeout)
+		}
 		return "", fmt.Errorf("crew: exec --version: %w", err)
 	}
 	return parseVersionOutput(string(out)), nil

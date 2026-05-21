@@ -298,6 +298,74 @@ func TestInstalledVersion_binAbsent_returnsError(t *testing.T) {
 	}
 }
 
+func TestIsInstalled_present(t *testing.T) {
+	dir := t.TempDir()
+	makeFakeShellScript(t, dir, "shipyard-fairway", "0.22")
+
+	inst := &Installer{BinDir: dir}
+	if !inst.IsInstalled() {
+		t.Fatal("expected IsInstalled=true when binary file exists")
+	}
+}
+
+func TestIsInstalled_absent(t *testing.T) {
+	inst := &Installer{BinDir: t.TempDir()}
+	if inst.IsInstalled() {
+		t.Fatal("expected IsInstalled=false when binary is missing")
+	}
+}
+
+func TestIsInstalled_directoryAtBinPath(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "shipyard-fairway"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	inst := &Installer{BinDir: dir}
+	if inst.IsInstalled() {
+		t.Fatal("expected IsInstalled=false when BinPath is a directory")
+	}
+}
+
+func TestInstalledVersion_presentButNotExecutable_returnsError(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "shipyard-fairway")
+	if err := os.WriteFile(path, []byte("garbage"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	inst := &Installer{BinDir: dir}
+	_, err := inst.InstalledVersion()
+	if err == nil {
+		t.Fatal("expected exec error on non-executable file")
+	}
+}
+
+func TestInstalledVersion_hungBinary_timesOut(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping timeout test in -short mode")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "shipyard-fairway")
+	// `exec sleep` replaces the shell so SIGKILL on context expiry reaches
+	// the sleep process directly — otherwise Output() blocks on stdout EOF.
+	script := "#!/bin/sh\nexec sleep 60\n"
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	inst := &Installer{BinDir: dir}
+	start := time.Now()
+	_, err := inst.InstalledVersion()
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("expected timeout error on hung binary")
+	}
+	if elapsed > installedVersionTimeout+2*time.Second {
+		t.Errorf("exec did not honour timeout: took %s", elapsed)
+	}
+	if !strings.Contains(err.Error(), "timed out") {
+		t.Errorf("expected timeout message, got %v", err)
+	}
+}
+
 // ── Install end-to-end tests ──────────────────────────────────────────────────
 
 func buildInstallHTTPClient(t *testing.T, version string, p Platform) (*fakeHTTPClient, string) {

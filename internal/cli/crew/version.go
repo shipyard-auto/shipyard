@@ -12,8 +12,25 @@ import (
 )
 
 // VersionNotInstalled is the human-readable placeholder used by the text
-// output of `shipyard crew version` when the addon is missing.
+// output of `shipyard crew version` when no binary exists at BinPath.
 const VersionNotInstalled = "(not installed)"
+
+// VersionNotFunctional is the human-readable placeholder used when the
+// binary file is present but `--version` could not be executed (wrong
+// permissions, corrupt binary, timed out, etc.). The accompanying `error`
+// field carries the underlying message.
+const VersionNotFunctional = "(present but not functional)"
+
+// crewVersionOutput is the JSON envelope emitted by `shipyard crew version
+// --json`. Existing consumers continue to see `shipyard`/`shipyard_crew`/
+// `installed`; the new `functional` and `error` fields are additive.
+type crewVersionOutput struct {
+	Shipyard     string `json:"shipyard"`
+	ShipyardCrew string `json:"shipyard_crew"`
+	Installed    bool   `json:"installed"`
+	Functional   bool   `json:"functional"`
+	Error        string `json:"error,omitempty"`
+}
 
 // NewVersionCmd returns the `shipyard crew version` subcommand.
 func NewVersionCmd() *cobra.Command {
@@ -48,23 +65,37 @@ output suitable for scripts or bug reports.`,
 				target = built
 			}
 
-			addon, err := target.InstalledVersion()
-			installed := err == nil
-			if !installed {
+			installed := target.IsInstalled()
+			addonVersion, vErr := target.InstalledVersion()
+			functional := vErr == nil
+
+			var addon, errMsg string
+			switch {
+			case functional:
+				addon = addonVersion
+			case installed:
+				addon = VersionNotFunctional
+				errMsg = vErr.Error()
+			default:
 				addon = VersionNotInstalled
 			}
 
 			w := cmd.OutOrStdout()
 			if jsonOut {
-				return json.NewEncoder(w).Encode(map[string]any{
-					"shipyard":      core,
-					"shipyard_crew": addon,
-					"installed":     installed,
+				return json.NewEncoder(w).Encode(crewVersionOutput{
+					Shipyard:     core,
+					ShipyardCrew: addon,
+					Installed:    installed,
+					Functional:   functional,
+					Error:        errMsg,
 				})
 			}
 
 			fmt.Fprintf(w, "shipyard      %s\n", core)
 			fmt.Fprintf(w, "shipyard-crew %s\n", addon)
+			if errMsg != "" {
+				fmt.Fprintf(w, "  error: %s\n", errMsg)
+			}
 			return nil
 		},
 	}
