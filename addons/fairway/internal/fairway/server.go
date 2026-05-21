@@ -204,6 +204,7 @@ func (s *Server) handleRouted(w http.ResponseWriter, r *http.Request) {
 
 	route, ok := s.router.Match(r.URL.Path)
 	if !ok {
+		yardlogs.MarkUnmatched(r)
 		http.NotFound(w, r)
 		return
 	}

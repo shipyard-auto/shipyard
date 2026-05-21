@@ -15,6 +15,34 @@ import (
 // trace id and to echo it on responses.
 const HeaderTraceID = "X-Trace-Id"
 
+// unmatchedKey is the context key under which Middleware stores the
+// per-request unmatched flag.
+type unmatchedKey struct{}
+
+// unmatchedFlag is a mutable cell handed to the downstream handler via
+// context. The middleware reads it after the handler returns to decide the
+// log level for the request.
+type unmatchedFlag struct{ set bool }
+
+// MarkUnmatched signals to the logging middleware that this request did not
+// match any registered route. The middleware uses this hint, together with a
+// 404 response, to demote the structured log entry from INFO to DEBUG. The
+// goal is to keep the operator-facing log readable on a fairway exposed to
+// the public internet, where automated bot scans produce a long tail of 404s
+// against paths like /wp-login.php or /.env.
+//
+// A 404 from a *matched* route (e.g. the agent target itself answered 404)
+// is still logged at INFO, because that is operator-relevant signal.
+//
+// Safe to call from any goroutine spawned synchronously from the handler,
+// but the flag is read only after the handler returns. Calling outside of a
+// request handled by Middleware is a no-op.
+func MarkUnmatched(r *http.Request) {
+	if f, ok := r.Context().Value(unmatchedKey{}).(*unmatchedFlag); ok {
+		f.set = true
+	}
+}
+
 // Middleware returns an http.Handler middleware that:
 //
 //   - reads or generates a trace id and stores it in request context;
@@ -31,13 +59,19 @@ func Middleware(logger *slog.Logger) func(http.Handler) http.Handler {
 			if id == "" {
 				id = trace.NewID()
 			}
+			flag := &unmatchedFlag{}
 			ctx := trace.WithID(r.Context(), id)
+			ctx = context.WithValue(ctx, unmatchedKey{}, flag)
 			w.Header().Set(HeaderTraceID, id)
 
 			start := time.Now()
 			metrics := httpsnoop.CaptureMetrics(next, w, r.WithContext(ctx))
 
-			logger.LogAttrs(ctx, slog.LevelInfo, EventHTTPRequest,
+			level := slog.LevelInfo
+			if flag.set && metrics.Code == http.StatusNotFound {
+				level = slog.LevelDebug
+			}
+			logger.LogAttrs(ctx, level, EventHTTPRequest,
 				slog.String(KeyHTTPMethod, r.Method),
 				slog.String(KeyHTTPPath, r.URL.Path),
 				slog.Int(KeyHTTPStatus, metrics.Code),
