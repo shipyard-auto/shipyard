@@ -44,6 +44,7 @@ type fairwayStatusDeps struct {
 	binPath          string
 	socketPath       string
 	version          string
+	isInstalled      func() bool
 	installedVersion func() (string, error)
 	newService       func() (fairwayStatusService, error)
 	dial             fairwayDialFunc
@@ -51,9 +52,11 @@ type fairwayStatusDeps struct {
 }
 
 type fairwayStatusBinary struct {
-	Path      string `json:"path,omitempty"`
-	Version   string `json:"version,omitempty"`
-	Installed bool   `json:"installed"`
+	Path       string `json:"path,omitempty"`
+	Version    string `json:"version,omitempty"`
+	Installed  bool   `json:"installed"`
+	Functional bool   `json:"functional"`
+	Error      string `json:"error,omitempty"`
 }
 
 type fairwayStatusServiceInfo struct {
@@ -150,11 +153,17 @@ func collectFairwayStatus(ctx context.Context, deps fairwayStatusDeps) (fairwayS
 		Routes: []fairwayStatusRoute{},
 	}
 
+	report.Binary.Installed = deps.isInstalled()
 	installedVersion, err := deps.installedVersion()
 	if err != nil {
+		if report.Binary.Installed {
+			report.State = "binary not functional"
+			report.Binary.Error = err.Error()
+		}
 		return report, nil
 	}
 	report.Binary.Installed = true
+	report.Binary.Functional = true
 	report.Binary.Version = parseInstalledVersion(installedVersion)
 
 	svc, err := deps.newService()
@@ -245,7 +254,7 @@ func (d fairwayStatusDeps) withDefaults() fairwayStatusDeps {
 	if d.now == nil {
 		d.now = time.Now
 	}
-	if d.binPath == "" || d.socketPath == "" || d.installedVersion == nil {
+	if d.binPath == "" || d.socketPath == "" || d.installedVersion == nil || d.isInstalled == nil {
 		homeDir, err := os.UserHomeDir()
 		if err == nil {
 			if d.binPath == "" {
@@ -254,14 +263,22 @@ func (d fairwayStatusDeps) withDefaults() fairwayStatusDeps {
 			if d.socketPath == "" {
 				d.socketPath = filepath.Join(homeDir, ".shipyard", "run", "fairway.sock")
 			}
-			if d.installedVersion == nil {
+			if d.installedVersion == nil || d.isInstalled == nil {
 				inst := &fairwayctl.Installer{
 					Version: d.version,
 					BinDir:  filepath.Join(homeDir, ".local", "bin"),
 				}
-				d.installedVersion = inst.InstalledVersion
+				if d.installedVersion == nil {
+					d.installedVersion = inst.InstalledVersion
+				}
+				if d.isInstalled == nil {
+					d.isInstalled = inst.IsInstalled
+				}
 			}
 		}
+	}
+	if d.isInstalled == nil {
+		d.isInstalled = func() bool { return false }
 	}
 	if d.newService == nil {
 		d.newService = func() (fairwayStatusService, error) {
@@ -319,6 +336,14 @@ func renderFairwayStatusHuman(w io.Writer, report fairwayStatusReport) {
 
 	if report.VersionAdvice != "" {
 		ui.Printf(w, "\n%s\n", ui.Paint(report.VersionAdvice, ui.StyleRed, ui.StyleBold))
+	}
+
+	if report.Binary.Installed && !report.Binary.Functional && report.Binary.Error != "" {
+		ui.Printf(w, "\n%s\n", ui.Paint(
+			fmt.Sprintf("Binary at %s is present but does not respond to --version.", report.Binary.Path),
+			ui.StyleRed, ui.StyleBold,
+		))
+		ui.Printf(w, "  %s\n", ui.Muted("error: "+report.Binary.Error))
 	}
 
 	ui.Printf(w, "\n%s\n", ui.SectionTitle("Requests (last 24h)"))
@@ -441,7 +466,7 @@ func paintFairwayState(state string) string {
 	switch state {
 	case "running":
 		return ui.Paint(state, ui.StyleBold, ui.StyleCyan)
-	case "version mismatch":
+	case "version mismatch", "binary not functional":
 		return ui.Paint(state, ui.StyleBold, ui.StyleRed)
 	default:
 		return state

@@ -174,16 +174,40 @@ func ArtifactName(version string, p Platform) string {
 	return fmt.Sprintf("shipyard-fairway_%s_%s_%s.tar.gz", version, p.OS, p.Arch)
 }
 
+// installedVersionTimeout caps how long the installer waits for `<binary>
+// --version` to complete. Mirrors crewctl's value so both addons surface a
+// hung binary as an error rather than blocking the caller indefinitely.
+const installedVersionTimeout = 5 * time.Second
+
+// IsInstalled reports whether a usable binary file exists at BinPath(). It
+// does NOT execute the binary — use InstalledVersion to confirm the binary
+// also responds to `--version`. Directories at BinPath are treated as
+// "not installed" because they cannot be executed.
+func (i *Installer) IsInstalled() bool {
+	info, err := os.Stat(i.BinPath())
+	if err != nil {
+		return false
+	}
+	return !info.IsDir()
+}
+
 // InstalledVersion executes the installed binary with --version and returns
 // the parsed semver string (e.g. "1.0.5"). Returns an error if the binary is
-// absent or exec fails.
+// absent or exec fails (including timeout). Callers that only need to know
+// whether a binary file is present (without running it) should prefer
+// IsInstalled.
 func (i *Installer) InstalledVersion() (string, error) {
 	binPath := i.BinPath()
 	if _, err := os.Stat(binPath); errors.Is(err, os.ErrNotExist) {
 		return "", fmt.Errorf("fairway: binary not found at %s", binPath)
 	}
-	out, err := exec.Command(binPath, "--version").Output()
+	ctx, cancel := context.WithTimeout(context.Background(), installedVersionTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, binPath, "--version").Output()
 	if err != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return "", fmt.Errorf("fairway: exec --version timed out after %s", installedVersionTimeout)
+		}
 		return "", fmt.Errorf("fairway: exec --version: %w", err)
 	}
 	return parseVersionOutput(string(out)), nil

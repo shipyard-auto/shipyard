@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -359,6 +360,80 @@ func TestInstalledVersion_absent_returnsErrNotInstalled(t *testing.T) {
 	_, err := inst.InstalledVersion()
 	if !errors.Is(err, ErrNotInstalled) {
 		t.Errorf("want ErrNotInstalled, got %v", err)
+	}
+}
+
+func TestIsInstalled_present(t *testing.T) {
+	dir := t.TempDir()
+	writeFakeBinary(t, dir, "0.1.0")
+
+	inst := &Installer{BinDir: dir}
+	if !inst.IsInstalled() {
+		t.Fatal("expected IsInstalled=true when binary file exists")
+	}
+}
+
+func TestIsInstalled_absent(t *testing.T) {
+	inst := &Installer{BinDir: t.TempDir()}
+	if inst.IsInstalled() {
+		t.Fatal("expected IsInstalled=false when binary is missing")
+	}
+}
+
+func TestIsInstalled_directoryAtBinPath(t *testing.T) {
+	dir := t.TempDir()
+	// Create a directory where the binary file should be.
+	if err := os.MkdirAll(filepath.Join(dir, BinaryName), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	inst := &Installer{BinDir: dir}
+	if inst.IsInstalled() {
+		t.Fatal("expected IsInstalled=false when BinPath is a directory")
+	}
+}
+
+func TestInstalledVersion_presentButNotExecutable_returnsError(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, BinaryName)
+	// Plain file with no execute bit — exec must fail.
+	if err := os.WriteFile(path, []byte("garbage"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	inst := &Installer{BinDir: dir}
+	_, err := inst.InstalledVersion()
+	if err == nil {
+		t.Fatal("expected exec error on non-executable file")
+	}
+	if errors.Is(err, ErrNotInstalled) {
+		t.Errorf("non-executable should NOT collapse to ErrNotInstalled, got %v", err)
+	}
+}
+
+func TestInstalledVersion_hungBinary_timesOut(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping timeout test in -short mode")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, BinaryName)
+	// `exec sleep` replaces the shell so SIGKILL on context expiry reaches
+	// the sleep process directly — otherwise Output() blocks on stdout EOF
+	// until the orphaned sleep completes (~60s in practice).
+	script := "#!/bin/sh\nexec sleep 60\n"
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	inst := &Installer{BinDir: dir}
+	start := time.Now()
+	_, err := inst.InstalledVersion()
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("expected timeout error on hung binary")
+	}
+	if elapsed > installedVersionTimeout+2*time.Second {
+		t.Errorf("exec did not honour timeout: took %s", elapsed)
+	}
+	if !strings.Contains(err.Error(), "timed out") {
+		t.Errorf("expected timeout message, got %v", err)
 	}
 }
 
