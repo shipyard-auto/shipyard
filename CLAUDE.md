@@ -523,3 +523,23 @@ Sampling is plumbed (`logs.Options.Sampler`) but disabled by default; production
 ## Tech-debt workflow
 
 Active backlog lives in `docs/debitos-tecnicos.md`. When attacking an item, agents follow the protocol in [docs/protocolos/debito-tecnico.md](docs/protocolos/debito-tecnico.md) — propose a candidate, wait for approval, diagnose before coding, validate, commit code, then bump manifest in a separate commit per the rules above.
+
+## Comunicação em linguagem de produto
+
+Quando o humano pedir explicação "em linguagem de produto", "pra time de
+produto", "mais clara", "menos técnica" ou "explica de novo", responda neste
+formato:
+
+1. **Analogia concreta** do mundo real que carregue a intuição do sistema
+   (ex: "o Fairway é a portaria de um prédio") — sem citar arquivo, função
+   ou flag.
+2. **O problema dentro da analogia** antes de aterrissar no técnico.
+3. **A regra exata em prosa**, uma ou duas frases, ainda sem nomes de
+   função.
+4. **Antes/depois pro usuário final** em bullets curtos, focados em
+   experiência observável (comandos, output), não em implementação.
+5. **Zero jargão escondido** — sem nomes de pacote, struct, sigla interna.
+   Detalhe técnico só se o humano pedir depois.
+
+Em modo técnico padrão (revisão de código, plano de implementação, debug),
+seguir conciso e direto como sempre.
