@@ -362,6 +362,129 @@ func TestInstalledVersion_absent_returnsErrNotInstalled(t *testing.T) {
 	}
 }
 
+// ── maybeWarnPATH (shell-aware) ───────────────────────────────────────────────
+
+func makeGetenv(path, shell string) func(string) string {
+	return func(k string) string {
+		switch k {
+		case "PATH":
+			return path
+		case "SHELL":
+			return shell
+		}
+		return ""
+	}
+}
+
+func TestInstaller_maybeWarnPATH_present_silent(t *testing.T) {
+	var buf bytes.Buffer
+	inst := &Installer{
+		BinDir: "/home/u/.local/bin",
+		Warn:   &buf,
+		Getenv: makeGetenv("/usr/bin:/home/u/.local/bin:/bin", "/bin/bash"),
+	}
+	inst.maybeWarnPATH()
+	if buf.Len() != 0 {
+		t.Fatalf("expected silent, got %q", buf.String())
+	}
+}
+
+func TestInstaller_maybeWarnPATH_present_trailingSlash(t *testing.T) {
+	var buf bytes.Buffer
+	inst := &Installer{
+		BinDir: "/home/u/.local/bin",
+		Warn:   &buf,
+		Getenv: makeGetenv("/usr/bin:/home/u/.local/bin/:/bin", ""),
+	}
+	inst.maybeWarnPATH()
+	if buf.Len() != 0 {
+		t.Fatalf("expected silent with trailing-slash entry, got %q", buf.String())
+	}
+}
+
+func TestInstaller_maybeWarnPATH_absent_bash(t *testing.T) {
+	var buf bytes.Buffer
+	inst := &Installer{
+		BinDir: "/home/u/.local/bin",
+		Warn:   &buf,
+		Getenv: makeGetenv("/usr/bin:/bin", "/bin/bash"),
+	}
+	inst.maybeWarnPATH()
+	out := buf.String()
+	if !strings.Contains(out, "/home/u/.local/bin") {
+		t.Errorf("missing binDir in message: %q", out)
+	}
+	if !strings.Contains(out, "not in your PATH") {
+		t.Errorf("missing context line: %q", out)
+	}
+	if !strings.Contains(out, "~/.bashrc") {
+		t.Errorf("expected ~/.bashrc reference for bash, got %q", out)
+	}
+	if !strings.Contains(out, "export PATH") {
+		t.Errorf("expected export PATH snippet, got %q", out)
+	}
+}
+
+func TestInstaller_maybeWarnPATH_absent_zsh(t *testing.T) {
+	var buf bytes.Buffer
+	inst := &Installer{
+		BinDir: "/home/u/.local/bin",
+		Warn:   &buf,
+		Getenv: makeGetenv("/usr/bin:/bin", "/bin/zsh"),
+	}
+	inst.maybeWarnPATH()
+	out := buf.String()
+	if !strings.Contains(out, "~/.zshrc") {
+		t.Errorf("expected ~/.zshrc reference for zsh, got %q", out)
+	}
+	if !strings.Contains(out, "export PATH") {
+		t.Errorf("expected export PATH snippet, got %q", out)
+	}
+}
+
+func TestInstaller_maybeWarnPATH_absent_fish(t *testing.T) {
+	var buf bytes.Buffer
+	inst := &Installer{
+		BinDir: "/home/u/.local/bin",
+		Warn:   &buf,
+		Getenv: makeGetenv("/usr/bin:/bin", "/usr/bin/fish"),
+	}
+	inst.maybeWarnPATH()
+	out := buf.String()
+	if !strings.Contains(out, "fish_add_path") {
+		t.Errorf("expected fish_add_path for fish, got %q", out)
+	}
+	if strings.Contains(out, "export PATH") {
+		t.Errorf("fish hint should not use export PATH, got %q", out)
+	}
+}
+
+func TestInstaller_maybeWarnPATH_absent_unknownShell(t *testing.T) {
+	var buf bytes.Buffer
+	inst := &Installer{
+		BinDir: "/home/u/.local/bin",
+		Warn:   &buf,
+		Getenv: makeGetenv("/usr/bin:/bin", ""),
+	}
+	inst.maybeWarnPATH()
+	out := buf.String()
+	if !strings.Contains(out, "/home/u/.local/bin") {
+		t.Errorf("expected generic hint to cite binDir, got %q", out)
+	}
+	if !strings.Contains(out, "PATH") {
+		t.Errorf("expected generic hint to mention PATH, got %q", out)
+	}
+}
+
+func TestInstaller_maybeWarnPATH_emptyBinDir_silent(t *testing.T) {
+	var buf bytes.Buffer
+	inst := &Installer{Warn: &buf, Getenv: makeGetenv("/usr/bin", "/bin/bash")}
+	inst.maybeWarnPATH()
+	if buf.Len() != 0 {
+		t.Fatalf("expected silent with empty BinDir, got %q", buf.String())
+	}
+}
+
 // ── Install end-to-end tests ──────────────────────────────────────────────────
 
 func TestInstall_happyPath(t *testing.T) {
