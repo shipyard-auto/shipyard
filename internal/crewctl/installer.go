@@ -112,6 +112,7 @@ type Installer struct {
 	HTTPClient  HTTPClient
 	ReleaseBase string
 	Warn        io.Writer // PATH warning destination; defaults to os.Stderr
+	Getenv      func(string) string // overridable for tests; defaults to os.Getenv
 	Now         func() time.Time
 
 	// rename is os.Rename by default; overridable in tests.
@@ -300,19 +301,43 @@ func (i *Installer) Install(ctx context.Context) error {
 }
 
 // maybeWarnPATH writes a notice to the Warn writer when BinDir is not present
-// in the PATH environment variable. It never fails the install.
+// in the PATH environment variable. The hint is shell-aware: bash/zsh receive
+// an `export PATH=...` snippet plus the matching rc-file reference, fish gets
+// `fish_add_path`, and any other shell falls back to a generic instruction.
+// It never fails the install.
 func (i *Installer) maybeWarnPATH() {
-	path := os.Getenv("PATH")
-	target := filepath.Clean(i.BinDir)
-	for _, dir := range filepath.SplitList(path) {
+	if i.BinDir == "" {
+		return
+	}
+	getenv := i.Getenv
+	if getenv == nil {
+		getenv = os.Getenv
+	}
+	target := strings.TrimRight(filepath.Clean(i.BinDir), string(os.PathSeparator))
+	for _, dir := range filepath.SplitList(getenv("PATH")) {
 		if dir == "" {
 			continue
 		}
-		if filepath.Clean(dir) == target {
+		if strings.TrimRight(filepath.Clean(dir), string(os.PathSeparator)) == target {
 			return
 		}
 	}
-	fmt.Fprintf(i.warnWriter(), "warning: %s is not in your PATH; add it so you can run shipyard-crew directly\n", i.BinDir)
+
+	shell := filepath.Base(getenv("SHELL"))
+	var hint string
+	switch shell {
+	case "bash":
+		hint = fmt.Sprintf("  echo 'export PATH=\"%s:$PATH\"' >> ~/.bashrc && source ~/.bashrc", i.BinDir)
+	case "zsh":
+		hint = fmt.Sprintf("  echo 'export PATH=\"%s:$PATH\"' >> ~/.zshrc && source ~/.zshrc", i.BinDir)
+	case "fish":
+		hint = fmt.Sprintf("  fish_add_path %s", i.BinDir)
+	default:
+		hint = fmt.Sprintf("  add %s to your shell's PATH", i.BinDir)
+	}
+
+	fmt.Fprintf(i.warnWriter(), "warning: %s is not in your PATH — `shipyard-crew` won't be found by your shell.\n", i.BinDir)
+	fmt.Fprintf(i.warnWriter(), "to fix:\n%s\n", hint)
 }
 
 // Upgrade reinstalls the crew binary at i.Version, preserving StateDir and

@@ -111,12 +111,9 @@ func runCmd(t *testing.T, cmd interface {
 
 func TestInstall_happyPath(t *testing.T) {
 	inst := newFakeInstaller(t, "0.1.0")
-	// PATH already contains BinDir so the PATH warning stays silent here;
-	// dedicated tests cover the warning paths.
-	t.Setenv("PATH", inst.BinDir+string(os.PathListSeparator)+"/usr/bin")
 	cmd := newInstallCmdWith(inst)
 
-	out, errOut, err := runCmd(t, cmd)
+	out, _, err := runCmd(t, cmd)
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
@@ -126,75 +123,22 @@ func TestInstall_happyPath(t *testing.T) {
 	if !strings.Contains(out, "installed: "+inst.BinPath()) {
 		t.Errorf("missing installed path line, got %q", out)
 	}
-	if strings.Contains(errOut, "not in your PATH") {
-		t.Errorf("unexpected PATH warning when BinDir is in PATH: %q", errOut)
-	}
 	if _, err := os.Stat(inst.BinPath()); err != nil {
 		t.Errorf("binary missing: %v", err)
 	}
 }
 
-func TestMaybeWarnPATH_present_silent(t *testing.T) {
-	var buf bytes.Buffer
-	getenv := func(k string) string {
-		switch k {
-		case "PATH":
-			return "/usr/bin:/home/u/.local/bin:/bin"
-		case "SHELL":
-			return "/bin/bash"
-		}
-		return ""
-	}
-	maybeWarnPATH(&buf, getenv, "/home/u/.local/bin")
-	if buf.Len() != 0 {
-		t.Fatalf("expected silent, got %q", buf.String())
-	}
-}
-
-func TestMaybeWarnPATH_present_trailingSlash(t *testing.T) {
-	var buf bytes.Buffer
-	getenv := func(k string) string {
-		if k == "PATH" {
-			return "/usr/bin:/home/u/.local/bin/:/bin"
-		}
-		return ""
-	}
-	maybeWarnPATH(&buf, getenv, "/home/u/.local/bin")
-	if buf.Len() != 0 {
-		t.Fatalf("expected silent with trailing-slash entry, got %q", buf.String())
-	}
-}
-
-func TestMaybeWarnPATH_absent_bash(t *testing.T) {
-	var buf bytes.Buffer
-	getenv := func(k string) string {
-		switch k {
-		case "PATH":
-			return "/usr/bin:/bin"
-		case "SHELL":
-			return "/bin/bash"
-		}
-		return ""
-	}
-	maybeWarnPATH(&buf, getenv, "/home/u/.local/bin")
-	out := buf.String()
-	if !strings.Contains(out, "/home/u/.local/bin") {
-		t.Errorf("missing binDir in message: %q", out)
-	}
-	if !strings.Contains(out, "not in your PATH") {
-		t.Errorf("missing context line: %q", out)
-	}
-	if !strings.Contains(out, "~/.bashrc") {
-		t.Errorf("expected ~/.bashrc reference for bash, got %q", out)
-	}
-	if !strings.Contains(out, "export PATH") {
-		t.Errorf("expected export PATH snippet, got %q", out)
-	}
-}
-
-func TestMaybeWarnPATH_absent_zsh(t *testing.T) {
-	var buf bytes.Buffer
-	getenv := func(k string) string {
+// TestInstall_emitsPATHWarningOnce verifies that a successful install routes
+// the PATH warning through Installer.Warn exactly once — guarding against the
+// regression where a duplicate CLI-layer maybeWarnPATH caused two warnings to
+// reach stderr in production. The shell-specific content of the message is
+// covered by crewctl.TestInstaller_maybeWarnPATH_*; here we only assert that
+// the wiring still goes through the Installer's Warn writer.
+func TestInstall_emitsPATHWarningOnce(t *testing.T) {
+	inst := newFakeInstaller(t, "0.1.0")
+	var warn bytes.Buffer
+	inst.Warn = &warn
+	inst.Getenv = func(k string) string {
 		switch k {
 		case "PATH":
 			return "/usr/bin:/bin"
@@ -203,78 +147,18 @@ func TestMaybeWarnPATH_absent_zsh(t *testing.T) {
 		}
 		return ""
 	}
-	maybeWarnPATH(&buf, getenv, "/home/u/.local/bin")
-	out := buf.String()
-	if !strings.Contains(out, "~/.zshrc") {
-		t.Errorf("expected ~/.zshrc reference for zsh, got %q", out)
-	}
-	if !strings.Contains(out, "export PATH") {
-		t.Errorf("expected export PATH snippet, got %q", out)
-	}
-}
 
-func TestMaybeWarnPATH_absent_fish(t *testing.T) {
-	var buf bytes.Buffer
-	getenv := func(k string) string {
-		switch k {
-		case "PATH":
-			return "/usr/bin:/bin"
-		case "SHELL":
-			return "/usr/bin/fish"
-		}
-		return ""
-	}
-	maybeWarnPATH(&buf, getenv, "/home/u/.local/bin")
-	out := buf.String()
-	if !strings.Contains(out, "fish_add_path") {
-		t.Errorf("expected fish_add_path for fish, got %q", out)
-	}
-	if strings.Contains(out, "export PATH") {
-		t.Errorf("fish hint should not use export PATH, got %q", out)
-	}
-}
-
-func TestMaybeWarnPATH_absent_unknownShell(t *testing.T) {
-	var buf bytes.Buffer
-	getenv := func(k string) string {
-		if k == "PATH" {
-			return "/usr/bin:/bin"
-		}
-		return ""
-	}
-	maybeWarnPATH(&buf, getenv, "/home/u/.local/bin")
-	out := buf.String()
-	if !strings.Contains(out, "/home/u/.local/bin") {
-		t.Errorf("expected generic hint to cite binDir, got %q", out)
-	}
-	if !strings.Contains(out, "PATH") {
-		t.Errorf("expected generic hint to mention PATH, got %q", out)
-	}
-}
-
-func TestMaybeWarnPATH_emptyBinDir_silent(t *testing.T) {
-	var buf bytes.Buffer
-	maybeWarnPATH(&buf, func(string) string { return "/usr/bin" }, "")
-	if buf.Len() != 0 {
-		t.Fatalf("expected silent with empty binDir, got %q", buf.String())
-	}
-}
-
-func TestInstall_warnsAboutPATHWhenAbsent(t *testing.T) {
-	inst := newFakeInstaller(t, "0.1.0")
-	t.Setenv("PATH", "/usr/bin:/bin")
-	t.Setenv("SHELL", "/bin/zsh")
 	cmd := newInstallCmdWith(inst)
-
-	_, errOut, err := runCmd(t, cmd)
-	if err != nil {
+	if _, _, err := runCmd(t, cmd); err != nil {
 		t.Fatalf("execute: %v", err)
 	}
-	if !strings.Contains(errOut, inst.BinDir) {
-		t.Errorf("expected PATH warning citing BinDir, got %q", errOut)
+
+	got := warn.String()
+	if !strings.Contains(got, "not in your PATH") {
+		t.Fatalf("expected PATH warning, got %q", got)
 	}
-	if !strings.Contains(errOut, "~/.zshrc") {
-		t.Errorf("expected zsh-specific hint, got %q", errOut)
+	if strings.Count(got, "not in your PATH") != 1 {
+		t.Fatalf("expected exactly one warning, got %d in %q", strings.Count(got, "not in your PATH"), got)
 	}
 }
 
