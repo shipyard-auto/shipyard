@@ -21,7 +21,7 @@ The binary is named `shipyard`. Install it once per machine and manage cron jobs
 | `internal/crewctl/` | Crew addon control logic |
 | `addons/fairway/` | Fairway HTTP gateway addon (separate Go module) |
 | `addons/crew/` | Crew LLM agent addon (separate Go module) |
-| `manifest` | Release source of truth (`shipyard=` and `fairway=` lines) |
+| `manifest` | Release source of truth (`shipyard=`, `fairway=`, `crew=` lines) |
 
 ## Local State
 
@@ -517,5 +517,9 @@ Sampling is plumbed (`logs.Options.Sampler`) but disabled by default; production
 - The CLI must not import `addons/*/internal/`; communicate with addons via subprocess contracts and JSON-RPC sockets.
 - Shipyard only manages state it created. Never modify external crontab entries, units, or agents automatically.
 - Prefer structured local state (`~/.shipyard/*.json`) over hidden side effects.
-- Never bump version fields in `manifest` from code; that is a manual human step.
+- Bumping version fields in `manifest` from code is allowed **only** as part of the tech-debt protocol in [docs/protocolos/debito-tecnico.md](docs/protocolos/debito-tecnico.md) (step 8: bump goes in its own `chore: bump <componente> to <versão>` commit, separate from the code commit, following the subsystem-to-field mapping documented there). Outside that protocol, manifest bumps remain a manual human step.
 - Never touch `.github/workflows/` or `.github/actions/` unless the task is explicitly about CI.
+
+## Tech-debt workflow
+
+Active backlog lives in `docs/debitos-tecnicos.md`. When attacking an item, agents follow the protocol in [docs/protocolos/debito-tecnico.md](docs/protocolos/debito-tecnico.md) — propose a candidate, wait for approval, diagnose before coding, validate, commit code, then bump manifest in a separate commit per the rules above.

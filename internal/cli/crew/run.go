@@ -72,10 +72,11 @@ type runResult struct {
 
 // runFlags captures the parsed flags of the run command.
 type runFlags struct {
-	Input     string
-	InputFile string
-	Timeout   time.Duration
-	JSON      bool
+	Input      string
+	InputFile  string
+	Positional string
+	Timeout    time.Duration
+	JSON       bool
 }
 
 // runDeps is the dependency injection struct used to make the command
@@ -141,17 +142,27 @@ func NewRunCmd() *cobra.Command {
 func newRunCmdWith(deps runDeps) *cobra.Command {
 	flags := &runFlags{}
 	cmd := &cobra.Command{
-		Use:   "run <name>",
+		Use:   "run <name> [input]",
 		Short: "Invoke an AI agent once and stream its output",
-		Long: `Executes the named AI agent a single time with optional JSON input. If the
-agent runs as a persistent service, the request is dispatched via the daemon
-socket; otherwise shipyard-crew is spawned as a subprocess. Use --input or
---input-file to pass structured context, and --timeout to override the
-default five-minute limit.`,
-		Args:          cobra.ExactArgs(1),
+		Long: `Executes the named AI agent a single time. If the agent runs as a
+persistent service, the request is dispatched via the daemon socket;
+otherwise shipyard-crew is spawned as a subprocess.
+
+Input precedence:
+  shipyard crew run <name>                  → empty input ({})
+  shipyard crew run <name> "do the thing"   → shorthand for {"user": "do the thing"}
+  shipyard crew run <name> --input '{...}'  → explicit JSON payload
+  shipyard crew run <name> --input-file f   → JSON payload read from disk
+
+Positional input cannot be combined with --input or --input-file. Use
+--timeout to override the default five-minute limit.`,
+		Args:          cobra.RangeArgs(1, 2),
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) == 2 {
+				flags.Positional = args[1]
+			}
 			code := Run(cmd.Context(), deps, args[0], *flags)
 			if code == ExitOK {
 				return nil
@@ -194,7 +205,7 @@ func Run(ctx context.Context, deps runDeps, name string, flags runFlags) int {
 	ctx, cancel := context.WithTimeout(ctx, flags.Timeout)
 	defer cancel()
 
-	inputJSON, err := resolveInput(flags.Input, flags.InputFile, deps.ReadFile)
+	inputJSON, err := resolveInput(flags.Input, flags.InputFile, flags.Positional, deps.ReadFile)
 	if err != nil {
 		fmt.Fprintf(deps.Stderr, "shipyard crew run: %s\n", err)
 		return ExitInvalidArgs
@@ -301,14 +312,25 @@ func runViaClient(ctx context.Context, client *crewctl.Client, input []byte, tot
 	}, code, nil
 }
 
-// resolveInput normalises the --input / --input-file pair to a JSON byte
-// slice. Returns "{}" when neither is set.
-func resolveInput(inline, path string, readFile func(string) ([]byte, error)) ([]byte, error) {
+// resolveInput normalises the positional shorthand, --input and --input-file
+// inputs into a JSON byte slice. Returns "{}" when none are set. A bare
+// positional string is wrapped as {"user": "<text>"}; combining it with
+// --input or --input-file is rejected.
+func resolveInput(inline, path, positional string, readFile func(string) ([]byte, error)) ([]byte, error) {
 	if inline != "" && path != "" {
 		return nil, errors.New("--input and --input-file are mutually exclusive")
 	}
+	if positional != "" && (inline != "" || path != "") {
+		return nil, errors.New("cannot combine positional input with --input or --input-file")
+	}
 	var raw []byte
 	switch {
+	case positional != "":
+		encoded, err := json.Marshal(map[string]string{"user": positional})
+		if err != nil {
+			return nil, fmt.Errorf("encode positional input: %w", err)
+		}
+		return encoded, nil
 	case inline != "":
 		raw = []byte(inline)
 	case path != "":
