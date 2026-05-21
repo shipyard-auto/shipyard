@@ -358,6 +358,167 @@ func TestUninstall_warnsAboutRegisteredAgents(t *testing.T) {
 	}
 }
 
+// stubUnitFileMap installs a test-scoped unitFileForFn that resolves each
+// configured agent name to a fixed path on disk, then restores the previous
+// resolver via t.Cleanup. Tests that don't list an agent name receive ok=false.
+func stubUnitFileMap(t *testing.T, mapping map[string]string) {
+	t.Helper()
+	prev := unitFileForFn
+	unitFileForFn = func(name string) (string, bool) {
+		path, ok := mapping[name]
+		return path, ok
+	}
+	t.Cleanup(func() { unitFileForFn = prev })
+}
+
+// writeAgentYAML creates `<stateDir>/<name>/agent.yaml` with minimal content.
+func writeAgentYAML(t *testing.T, stateDir, name string) string {
+	t.Helper()
+	dir := filepath.Join(stateDir, name)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "agent.yaml"), []byte("name: "+name), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+func TestDetectActiveServices_returnsOnlyAgentsWithUnitFile(t *testing.T) {
+	stateDir := t.TempDir()
+	writeAgentYAML(t, stateDir, "alpha")
+	writeAgentYAML(t, stateDir, "beta")
+	writeAgentYAML(t, stateDir, "gamma")
+
+	unitsDir := t.TempDir()
+	betaUnit := filepath.Join(unitsDir, "beta.service")
+	if err := os.WriteFile(betaUnit, []byte("[Unit]"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// alpha and gamma report a path but the file doesn't exist.
+	resolver := func(name string) (string, bool) {
+		return filepath.Join(unitsDir, name+".service"), true
+	}
+
+	got := detectActiveServices(stateDir, resolver)
+	if len(got) != 1 || got[0] != "beta" {
+		t.Fatalf("got %v, want [beta]", got)
+	}
+}
+
+func TestDetectActiveServices_resolverNotOk_skips(t *testing.T) {
+	stateDir := t.TempDir()
+	writeAgentYAML(t, stateDir, "watcher")
+
+	got := detectActiveServices(stateDir, func(string) (string, bool) {
+		return "", false
+	})
+	if len(got) != 0 {
+		t.Fatalf("expected no active services when resolver returns ok=false, got %v", got)
+	}
+}
+
+func TestUninstall_yesWithActiveService_aborts(t *testing.T) {
+	inst := newFakeInstaller(t, "0.1.0")
+	if err := os.MkdirAll(inst.BinDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(inst.BinPath(), []byte("bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeAgentYAML(t, inst.StateDir, "watcher")
+
+	// Mock unit file on disk for watcher.
+	unitsDir := t.TempDir()
+	unitPath := filepath.Join(unitsDir, "watcher.plist")
+	if err := os.WriteFile(unitPath, []byte("<plist/>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stubUnitFileMap(t, map[string]string{"watcher": unitPath})
+
+	cmd := newUninstallCmdWith(inst)
+	_, _, err := runCmd(t, cmd, "--yes")
+	if err == nil {
+		t.Fatal("expected error when active service present without --force-services")
+	}
+	if !strings.Contains(err.Error(), "watcher") {
+		t.Errorf("error must name the agent, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "--force-services") {
+		t.Errorf("error must mention --force-services escape, got %v", err)
+	}
+	// Binary must remain.
+	if _, err := os.Stat(inst.BinPath()); err != nil {
+		t.Errorf("binary must remain when abort triggered: %v", err)
+	}
+}
+
+func TestUninstall_yesWithActiveService_forceServicesProceeds(t *testing.T) {
+	inst := newFakeInstaller(t, "0.1.0")
+	if err := os.MkdirAll(inst.BinDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(inst.BinPath(), []byte("bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeAgentYAML(t, inst.StateDir, "watcher")
+
+	unitsDir := t.TempDir()
+	unitPath := filepath.Join(unitsDir, "watcher.plist")
+	if err := os.WriteFile(unitPath, []byte("<plist/>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stubUnitFileMap(t, map[string]string{"watcher": unitPath})
+
+	cmd := newUninstallCmdWith(inst)
+	out, _, err := runCmd(t, cmd, "--yes", "--force-services")
+	if err != nil {
+		t.Fatalf("expected success with --force-services, got %v", err)
+	}
+	if !strings.Contains(out, "watcher") {
+		t.Errorf("output should still cite the agent as a warning: %q", out)
+	}
+	if !strings.Contains(out, "uninstalled") {
+		t.Errorf("expected uninstall to complete: %q", out)
+	}
+	if _, statErr := os.Stat(inst.BinPath()); !errors.Is(statErr, os.ErrNotExist) {
+		t.Error("binary must be removed under --force-services")
+	}
+}
+
+func TestUninstall_yesWithOnDemandAgent_proceedsWithoutForce(t *testing.T) {
+	// Regression guard: agents WITHOUT an active service unit must NOT
+	// trigger the abort, even when stateDir has agent.yaml entries.
+	inst := newFakeInstaller(t, "0.1.0")
+	if err := os.MkdirAll(inst.BinDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(inst.BinPath(), []byte("bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeAgentYAML(t, inst.StateDir, "smoke")
+
+	// Resolver points at a non-existent file → no active service.
+	stubUnitFileMap(t, map[string]string{
+		"smoke": filepath.Join(t.TempDir(), "shipyard-crew-smoke.service"),
+	})
+
+	cmd := newUninstallCmdWith(inst)
+	out, _, err := runCmd(t, cmd, "--yes")
+	if err != nil {
+		t.Fatalf("expected on-demand agent to proceed without --force-services, got %v", err)
+	}
+	if !strings.Contains(out, "smoke") {
+		t.Errorf("expected on-demand agent to still be cited via warnIfAgentsRegistered: %q", out)
+	}
+	if strings.Contains(out, "active service unit") {
+		t.Errorf("must NOT emit active-service warning for on-demand agent: %q", out)
+	}
+	if _, statErr := os.Stat(inst.BinPath()); !errors.Is(statErr, os.ErrNotExist) {
+		t.Error("binary must be removed in the on-demand path")
+	}
+}
+
 // ── Version ───────────────────────────────────────────────────────────────────
 
 func TestVersion_text_installed(t *testing.T) {

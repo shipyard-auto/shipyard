@@ -20,6 +20,22 @@ import (
 // production value forwards to the tty package.
 var ttyIsInteractive = func() bool { return tty.IsInteractive(tty.StdinFD()) }
 
+// unitFileForFn resolves the OS-level unit/plist path that a per-agent
+// service would occupy, so detectActiveServices can decide whether the
+// agent has a live registration. Tests substitute this with an in-memory
+// resolver pointed at the test home.
+var unitFileForFn = func(agentName string) (string, bool) {
+	manager, err := crewctl.NewManager()
+	if err != nil {
+		return "", false
+	}
+	paths, err := manager.PathsFor(agentName)
+	if err != nil {
+		return "", false
+	}
+	return paths.UnitFile, true
+}
+
 // NewUninstallCmd returns the `shipyard crew uninstall` subcommand.
 func NewUninstallCmd() *cobra.Command {
 	return newUninstallCmdWith(nil)
@@ -27,6 +43,7 @@ func NewUninstallCmd() *cobra.Command {
 
 func newUninstallCmdWith(inst *crewctl.Installer) *cobra.Command {
 	var yes bool
+	var forceServices bool
 
 	cmd := &cobra.Command{
 		Use:   "uninstall",
@@ -34,7 +51,14 @@ func newUninstallCmdWith(inst *crewctl.Installer) *cobra.Command {
 		Long: `Removes the shipyard-crew binary from ~/.local/bin/. Agent definitions under
 ~/.shipyard/crew/ are preserved so you can reinstall and resume where you left
 off. To deregister individual agents before uninstalling, run "shipyard crew
-fire <name>" for each one. Use --yes to skip the confirmation prompt.`,
+fire <name>" for each one. Use --yes to skip the confirmation prompt.
+
+If any agent still has an active OS-level service unit (launchd plist or
+systemd .service), the uninstall aborts under --yes unless you also pass
+--force-services. Without --force-services, the safer path is:
+
+    shipyard crew fire <name>   # for each agent listed
+    shipyard crew uninstall --yes`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			target := inst
 			if target == nil {
@@ -43,6 +67,26 @@ fire <name>" for each one. Use --yes to skip the confirmation prompt.`,
 				if err != nil {
 					return err
 				}
+			}
+
+			activeServices := detectActiveServices(target.StateDir, unitFileForFn)
+
+			w := cmd.OutOrStdout()
+			if len(activeServices) > 0 {
+				if yes && !forceServices {
+					return fmt.Errorf(
+						"agents with active services: %s — run 'shipyard crew fire <name>' for each first, or pass --force-services to skip this check",
+						strings.Join(activeServices, ", "),
+					)
+				}
+				ui.Printf(w, "%s\n", ui.Paint(
+					fmt.Sprintf("warning: %d agent(s) still have an active service unit: %s",
+						len(activeServices), strings.Join(activeServices, ", ")),
+					ui.StyleRed, ui.StyleBold,
+				))
+				ui.Printf(w, "%s\n", ui.Muted(
+					"these services will be orphaned by uninstall — run 'shipyard crew fire <name>' first to clean them up.",
+				))
 			}
 
 			if !yes {
@@ -58,7 +102,6 @@ fire <name>" for each one. Use --yes to skip the confirmation prompt.`,
 				}
 			}
 
-			w := cmd.OutOrStdout()
 			ui.Printf(w, "%s\n", ui.SectionTitle("SHIPYARD CREW"))
 			warnIfAgentsRegistered(w, target.StateDir)
 			if err := target.Uninstall(cmd.Context()); err != nil {
@@ -72,6 +115,7 @@ fire <name>" for each one. Use --yes to skip the confirmation prompt.`,
 	}
 
 	cmd.Flags().BoolVar(&yes, "yes", false, "Skip confirmation prompt")
+	cmd.Flags().BoolVar(&forceServices, "force-services", false, "Proceed with --yes even if agents have active service units (services will be orphaned)")
 	return cmd
 }
 
@@ -93,12 +137,25 @@ func confirmUninstall(in io.Reader, out io.Writer) (bool, error) {
 // suggesting `shipyard crew fire <name>` before uninstalling so per-agent
 // services are deregistered. It never fails the uninstall.
 func warnIfAgentsRegistered(w io.Writer, stateDir string) {
-	if stateDir == "" {
+	names := listAgents(stateDir)
+	if len(names) == 0 {
 		return
+	}
+	ui.Printf(w, "%s\n", ui.Muted(
+		fmt.Sprintf("note: %d agent(s) still registered (%s) — run 'shipyard crew fire <name>' first to deregister per-agent services.",
+			len(names), strings.Join(names, ", ")),
+	))
+}
+
+// listAgents returns the subdirectory names of stateDir that contain an
+// agent.yaml file. Empty/missing/unreadable stateDir yields an empty slice.
+func listAgents(stateDir string) []string {
+	if stateDir == "" {
+		return nil
 	}
 	entries, err := os.ReadDir(stateDir)
 	if err != nil {
-		return
+		return nil
 	}
 	var names []string
 	for _, e := range entries {
@@ -109,11 +166,26 @@ func warnIfAgentsRegistered(w io.Writer, stateDir string) {
 			names = append(names, e.Name())
 		}
 	}
-	if len(names) == 0 {
-		return
+	return names
+}
+
+// detectActiveServices returns the names of agents in stateDir that still
+// have an OS-level service unit on disk (launchd plist or systemd .service).
+// The unitFileFor callback is the resolver injection seam used in tests;
+// when it returns ok=false for a given agent the entry is skipped.
+func detectActiveServices(stateDir string, unitFileFor func(string) (string, bool)) []string {
+	if unitFileFor == nil {
+		return nil
 	}
-	ui.Printf(w, "%s\n", ui.Muted(
-		fmt.Sprintf("note: %d agent(s) still registered (%s) — run 'shipyard crew fire <name>' first to deregister per-agent services.",
-			len(names), strings.Join(names, ", ")),
-	))
+	var active []string
+	for _, name := range listAgents(stateDir) {
+		path, ok := unitFileFor(name)
+		if !ok || path == "" {
+			continue
+		}
+		if info, err := os.Stat(path); err == nil && !info.IsDir() {
+			active = append(active, name)
+		}
+	}
+	return active
 }
