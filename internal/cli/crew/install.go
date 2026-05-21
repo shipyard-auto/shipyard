@@ -3,9 +3,11 @@ package crew
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -77,6 +79,7 @@ are active until you run "shipyard crew hire" and "shipyard crew apply". Use
 
 			ui.Printf(w, "%s\n", ui.Emphasis("shipyard-crew installed successfully."))
 			ui.Printf(w, "%s\n", ui.Muted("installed: "+target.BinPath()))
+			maybeWarnPATH(cmd.ErrOrStderr(), os.Getenv, target.BinDir)
 			return nil
 		},
 	}
@@ -84,6 +87,40 @@ are active until you run "shipyard crew hire" and "shipyard crew apply". Use
 	cmd.Flags().BoolVar(&force, "force", false, "Reinstall even if already present")
 	cmd.Flags().StringVar(&version, "version", "", "Version to install (default: version from manifest)")
 	return cmd
+}
+
+// maybeWarnPATH inspects the user's $PATH and emits a stderr hint when the
+// install target (binDir) is not present. The message is shell-aware:
+// bash/zsh receive an `export PATH=...` snippet plus the matching rc-file
+// reference, fish gets `fish_add_path`, and any other shell falls back to
+// a generic instruction. binDir must be the absolute install directory
+// (Installer.BinDir). Tests inject getenv so the check is hermetic.
+func maybeWarnPATH(stderr io.Writer, getenv func(string) string, binDir string) {
+	if binDir == "" {
+		return
+	}
+	target := strings.TrimRight(filepath.Clean(binDir), string(os.PathSeparator))
+	for _, entry := range filepath.SplitList(getenv("PATH")) {
+		if strings.TrimRight(filepath.Clean(entry), string(os.PathSeparator)) == target {
+			return
+		}
+	}
+
+	shell := filepath.Base(getenv("SHELL"))
+	var hint string
+	switch shell {
+	case "bash":
+		hint = fmt.Sprintf("  echo 'export PATH=\"%s:$PATH\"' >> ~/.bashrc && source ~/.bashrc", binDir)
+	case "zsh":
+		hint = fmt.Sprintf("  echo 'export PATH=\"%s:$PATH\"' >> ~/.zshrc && source ~/.zshrc", binDir)
+	case "fish":
+		hint = fmt.Sprintf("  fish_add_path %s", binDir)
+	default:
+		hint = fmt.Sprintf("  add %s to your shell's PATH", binDir)
+	}
+
+	fmt.Fprintf(stderr, "warning: %s is not in your PATH — `shipyard-crew` won't be found by your shell.\n", binDir)
+	fmt.Fprintf(stderr, "to fix:\n%s\n", hint)
 }
 
 // crewInstallerBuilder is indirected so tests can substitute a builder that
