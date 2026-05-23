@@ -114,7 +114,6 @@ func TestNewRunCmdMutualExclusion(t *testing.T) {
 
 	deps := runDeps{
 		Home:      t.TempDir(),
-		Version:   "test",
 		LoadAgent: func(dir string) (*AgentMeta, error) { return nil, fs.ErrNotExist },
 	}
 	cmd := newRunCmdWith(deps)
@@ -135,7 +134,6 @@ func TestNewRunCmdPositionalAccepted(t *testing.T) {
 	var commands [][]string
 	deps := runDeps{
 		Home:        home,
-		Version:     "test",
 		LookPath:    func(string) (string, error) { return "/usr/bin/stub-crew", nil },
 		MakeCommand: fakeCommand(&commands, 0, `{"output":{"text":"ok"},"trace_id":"t","status":"ok"}`, ""),
 		Stdout:      io.Discard,
@@ -161,7 +159,6 @@ func TestNewRunCmdPositionalConflictsWithInput(t *testing.T) {
 
 	deps := runDeps{
 		Home:    home,
-		Version: "test",
 		Stdout:  io.Discard,
 		Stderr:  io.Discard,
 	}
@@ -184,7 +181,6 @@ func TestRunAgentNotFound(t *testing.T) {
 
 	deps := runDeps{
 		Home:    t.TempDir(),
-		Version: "test",
 		LoadAgent: func(dir string) (*AgentMeta, error) {
 			return nil, fmt.Errorf("load agent %s: read agent.yaml: %w", dir, fs.ErrNotExist)
 		},
@@ -206,7 +202,6 @@ func TestRunInvalidInput(t *testing.T) {
 
 	deps := runDeps{
 		Home:    t.TempDir(),
-		Version: "test",
 	}
 	var stderr bytes.Buffer
 	deps.Stderr = &stderr
@@ -241,11 +236,11 @@ func TestRunSocketSuccess(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	deps := runDeps{
-		Home:       home,
-		Version:    "v1.0.0",
-		Stdout:     &stdout,
-		Stderr:     &stderr,
-		DialSocket: unixDialer(sockPath),
+		Home:        home,
+		Stdout:      &stdout,
+		Stderr:      &stderr,
+		DialSocket:  unixDialer(sockPath),
+		CrewVersion: stubCrewVersion("0.3.15"),
 	}
 	code := Run(context.Background(), deps, "demo", runFlags{Timeout: 2 * time.Second})
 	if code != ExitOK {
@@ -281,11 +276,11 @@ func TestRunSocketBusinessError(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	deps := runDeps{
-		Home:       home,
-		Version:    "v1.0.0",
-		Stdout:     &stdout,
-		Stderr:     &stderr,
-		DialSocket: unixDialer(sockPath),
+		Home:        home,
+		Stdout:      &stdout,
+		Stderr:      &stderr,
+		DialSocket:  unixDialer(sockPath),
+		CrewVersion: stubCrewVersion("0.3.15"),
 	}
 	code := Run(context.Background(), deps, "demo", runFlags{Timeout: 2 * time.Second})
 	if code != ExitBusinessErr {
@@ -307,11 +302,11 @@ func TestRunSocketVersionMismatch(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	deps := runDeps{
-		Home:       home,
-		Version:    "v1.0.0",
-		Stdout:     &stdout,
-		Stderr:     &stderr,
-		DialSocket: unixDialer(sockPath),
+		Home:        home,
+		Stdout:      &stdout,
+		Stderr:      &stderr,
+		DialSocket:  unixDialer(sockPath),
+		CrewVersion: stubCrewVersion("0.3.15"),
 	}
 	code := Run(context.Background(), deps, "demo", runFlags{Timeout: 2 * time.Second})
 	if code != ExitVersionMismatch {
@@ -333,12 +328,12 @@ func TestRunSocketFallbackToSubprocess(t *testing.T) {
 	var commands [][]string
 	deps := runDeps{
 		Home:    home,
-		Version: "v1.0.0",
 		DialSocket: func(ctx context.Context, path string) (net.Conn, error) {
 			return nil, errors.New("no listener")
 		},
 		LookPath:    func(s string) (string, error) { return "/usr/bin/stub-crew", nil },
 		MakeCommand: fakeCommand(&commands, 0, `{"output":{"text":"from-sub"},"trace_id":"sub-1","status":"ok"}`, ""),
+		CrewVersion: stubCrewVersion("0.3.15"),
 	}
 	var stdout, stderr bytes.Buffer
 	deps.Stdout = &stdout
@@ -371,7 +366,6 @@ func TestRunOnDemandNeverDials(t *testing.T) {
 	var commands [][]string
 	deps := runDeps{
 		Home:    home,
-		Version: "v1.0.0",
 		DialSocket: func(ctx context.Context, path string) (net.Conn, error) {
 			dialCalled = true
 			return nil, errors.New("should not be called")
@@ -400,7 +394,6 @@ func TestRunSubprocessBusinessError(t *testing.T) {
 	var commands [][]string
 	deps := runDeps{
 		Home:    home,
-		Version: "v1.0.0",
 		DialSocket: func(ctx context.Context, path string) (net.Conn, error) {
 			return nil, errors.New("never")
 		},
@@ -425,7 +418,6 @@ func TestRunSubprocessInternalError(t *testing.T) {
 	var commands [][]string
 	deps := runDeps{
 		Home:        home,
-		Version:     "v1.0.0",
 		DialSocket:  func(ctx context.Context, path string) (net.Conn, error) { return nil, errors.New("never") },
 		LookPath:    func(s string) (string, error) { return "/usr/bin/stub-crew", nil },
 		MakeCommand: fakeCommand(&commands, 42, "", "boom"),
@@ -447,7 +439,6 @@ func TestRunSubprocessBinaryNotFound(t *testing.T) {
 
 	deps := runDeps{
 		Home:       home,
-		Version:    "v1.0.0",
 		DialSocket: func(ctx context.Context, path string) (net.Conn, error) { return nil, errors.New("never") },
 		LookPath:   func(s string) (string, error) { return "", exec.ErrNotFound },
 	}
@@ -471,7 +462,6 @@ func TestRunJSONOutput(t *testing.T) {
 	var commands [][]string
 	deps := runDeps{
 		Home:        home,
-		Version:     "v1.0.0",
 		DialSocket:  func(ctx context.Context, path string) (net.Conn, error) { return nil, errors.New("never") },
 		LookPath:    func(s string) (string, error) { return "/usr/bin/stub", nil },
 		MakeCommand: fakeCommand(&commands, 0, `{"output":{"text":"hi"},"trace_id":"t","status":"ok","duration_ms":5}`, ""),
@@ -532,7 +522,6 @@ func TestRunCobraReturnsExitError(t *testing.T) {
 	writeTestAgent(t, home, "demo", ExecutionModeOnDemand)
 	deps := runDeps{
 		Home:       home,
-		Version:    "v1",
 		DialSocket: func(ctx context.Context, path string) (net.Conn, error) { return nil, errors.New("n") },
 		LookPath:   func(string) (string, error) { return "", exec.ErrNotFound },
 	}
@@ -613,15 +602,102 @@ func TestRunSocketHandshakeNonVersionError(t *testing.T) {
 
 	var stderr bytes.Buffer
 	deps := runDeps{
-		Home:       home,
-		Version:    "v1",
-		Stderr:     &stderr,
-		DialSocket: unixDialer(sockPath),
+		Home:        home,
+		Stderr:      &stderr,
+		DialSocket:  unixDialer(sockPath),
+		CrewVersion: stubCrewVersion("0.3.15"),
 	}
 	code := Run(context.Background(), deps, "demo", runFlags{Timeout: 2 * time.Second})
 	if code != ExitInternal {
 		t.Fatalf("got exit %d, want %d", code, ExitInternal)
 	}
+}
+
+func TestRunSocketSendsCrewVersion(t *testing.T) {
+	t.Parallel()
+
+	home := t.TempDir()
+	writeTestAgent(t, home, "demo", ExecutionModeService)
+	listener, sockPath := startUnixListener(t, home, "demo")
+	defer listener.Close()
+
+	var gotVersion string
+	go captureHandshakeVersion(t, listener, &gotVersion)
+
+	var stdout, stderr bytes.Buffer
+	deps := runDeps{
+		Home:        home,
+		Stdout:      &stdout,
+		Stderr:      &stderr,
+		DialSocket:  unixDialer(sockPath),
+		CrewVersion: stubCrewVersion("0.3.15"),
+	}
+	_ = Run(context.Background(), deps, "demo", runFlags{Timeout: 2 * time.Second})
+	if gotVersion != "0.3.15" {
+		t.Fatalf("daemon saw version %q, want crew addon version %q (stderr=%s)", gotVersion, "0.3.15", stderr.String())
+	}
+}
+
+func TestRunSocketCrewVersionResolveFails(t *testing.T) {
+	t.Parallel()
+
+	home := t.TempDir()
+	writeTestAgent(t, home, "demo", ExecutionModeService)
+
+	var stderr bytes.Buffer
+	deps := runDeps{
+		Home:    home,
+		Stderr:  &stderr,
+		DialSocket: func(ctx context.Context, path string) (net.Conn, error) {
+			t.Fatal("dial must not be attempted when crew-version resolution fails")
+			return nil, nil
+		},
+		CrewVersion: func(ctx context.Context) (string, error) {
+			return "", errors.New("binary not installed")
+		},
+	}
+	code := Run(context.Background(), deps, "demo", runFlags{Timeout: time.Second})
+	if code != ExitInternal {
+		t.Fatalf("got exit %d, want %d (stderr=%s)", code, ExitInternal, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "could not determine shipyard-crew version") {
+		t.Fatalf("stderr missing resolver-error message: %q", stderr.String())
+	}
+}
+
+// captureHandshakeVersion accepts a single connection and records the
+// "version" field of the first JSON-RPC request, then responds with a generic
+// ok handshake so the client can proceed (or close).
+func captureHandshakeVersion(t *testing.T, listener net.Listener, dst *string) {
+	t.Helper()
+	conn, err := listener.Accept()
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+	reader := bufio.NewScanner(conn)
+	reader.Buffer(make([]byte, 1<<20), 1<<20)
+	writer := bufio.NewWriter(conn)
+	if !reader.Scan() {
+		return
+	}
+	var req struct {
+		ID     json.RawMessage `json:"id"`
+		Method string          `json:"method"`
+		Params struct {
+			Version string `json:"version"`
+		} `json:"params"`
+	}
+	_ = json.Unmarshal(reader.Bytes(), &req)
+	*dst = req.Params.Version
+	writeRPCResponse(writer, req.ID, json.RawMessage(`{"version":"ok"}`), nil)
+}
+
+// stubCrewVersion returns a CrewVersion resolver that always reports v with
+// no error. Used by tests that don't care about the value but do enter the
+// service-mode branch.
+func stubCrewVersion(v string) func(context.Context) (string, error) {
+	return func(context.Context) (string, error) { return v, nil }
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────

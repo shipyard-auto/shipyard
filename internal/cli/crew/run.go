@@ -21,7 +21,6 @@ import (
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
-	"github.com/shipyard-auto/shipyard/internal/app"
 	"github.com/shipyard-auto/shipyard/internal/crewctl"
 )
 
@@ -84,7 +83,6 @@ type runFlags struct {
 // withDefaults.
 type runDeps struct {
 	Home        string
-	Version     string
 	Stdout      io.Writer
 	Stderr      io.Writer
 	ReadFile    func(string) ([]byte, error)
@@ -93,6 +91,10 @@ type runDeps struct {
 	LookPath    func(string) (string, error)
 	MakeCommand func(ctx context.Context, name string, args ...string) *exec.Cmd
 	Now         func() time.Time
+	// CrewVersion returns the version reported by the installed shipyard-crew
+	// binary. The handshake compares this against the daemon's own version, so
+	// it must reflect the addon (not the shipyard core).
+	CrewVersion func(ctx context.Context) (string, error)
 }
 
 func (d runDeps) withDefaults() runDeps {
@@ -100,9 +102,6 @@ func (d runDeps) withDefaults() runDeps {
 		if home, err := os.UserHomeDir(); err == nil {
 			d.Home = filepath.Join(home, ".shipyard")
 		}
-	}
-	if d.Version == "" {
-		d.Version = app.Version
 	}
 	if d.Stdout == nil {
 		d.Stdout = os.Stdout
@@ -130,6 +129,9 @@ func (d runDeps) withDefaults() runDeps {
 	}
 	if d.Now == nil {
 		d.Now = time.Now
+	}
+	if d.CrewVersion == nil {
+		d.CrewVersion = crewctl.ResolveInstalledVersion
 	}
 	return d
 }
@@ -240,9 +242,15 @@ func dispatch(ctx context.Context, deps runDeps, meta *AgentMeta, name string, i
 	if meta.ExecutionMode == ExecutionModeService {
 		sockPath := crewctl.AgentSocketPath(deps.Home, name)
 		dialCtx, cancel := context.WithTimeout(ctx, socketDialTimeout)
+		crewVersion, vErr := deps.CrewVersion(dialCtx)
+		if vErr != nil {
+			cancel()
+			fmt.Fprintf(deps.Stderr, "shipyard crew run: could not determine shipyard-crew version: %s\n", vErr)
+			return nil, ExitInternal
+		}
 		client, err := crewctl.Dial(dialCtx, crewctl.Opts{
 			SocketPath:       sockPath,
-			Version:          deps.Version,
+			Version:          crewVersion,
 			HandshakeTimeout: handshakeTimeout,
 			Dial:             deps.DialSocket,
 		})
@@ -286,7 +294,7 @@ func runViaClient(ctx context.Context, client *crewctl.Client, input []byte, tot
 		var rpcErr *crewctl.RPCError
 		if errors.As(err, &rpcErr) {
 			if rpcErr.Code == crewctl.ErrCodeVersionMismatch {
-				return nil, ExitVersionMismatch, errors.New("version mismatch between shipyard and shipyard-crew daemon")
+				return nil, ExitVersionMismatch, errors.New("shipyard-crew client/daemon version mismatch — restart the daemon after installing a new version")
 			}
 			// App-specific errors from the daemon (e.g. runner failure) map
 			// to the business-error exit code; message is echoed on stdout
