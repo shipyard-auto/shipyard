@@ -166,3 +166,75 @@ func TestEventLogger_asyncCorrelatesByTraceID(t *testing.T) {
 	}
 }
 
+// TestEventLogger_async_emitsOutputTail asserts the async_dispatch_finished
+// record carries the tail of the executor body. On async, the 202 was sent
+// before the body existed, so without output_tail the operator has no
+// retrospective view of what cron.run / crew.run / http.forward produced.
+func TestEventLogger_async_emitsOutputTail(t *testing.T) {
+	t.Parallel()
+
+	const marker = "ASYNC_END"
+	padding := strings.Repeat("z", yardlogs.DefaultOutputTailBytes*2)
+	body := []byte(padding + marker)
+
+	exec := &fakeExecutor{result: fairway.Result{HTTPStatus: 200, Body: body, ExitCode: 0, Truncated: true}}
+	route := fairway.Route{
+		Path:    "/async-tail",
+		Async:   true,
+		Auth:    fairway.Auth{Type: fairway.AuthLocalOnly},
+		Action:  fairway.Action{Type: fairway.ActionCronRun, Target: "job"},
+		Timeout: time.Second,
+	}
+	srv, rec := newServerWithEventLogger(t, exec, route)
+	handler := fairway.ServerHandlerForTest(srv)
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/async-tail", strings.NewReader("{}"))
+	r.RemoteAddr = "127.0.0.1:1"
+	handler.ServeHTTP(w, r)
+
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("async ack status = %d, want 202", w.Code)
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if len(rec.snapshot()) >= 2 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	var asyncFin *recordedEntry
+	for _, e := range rec.snapshot() {
+		if e.record.Message == yardlogs.EventAsyncDispatch {
+			ef := e
+			asyncFin = &ef
+			break
+		}
+	}
+	if asyncFin == nil {
+		t.Fatal("missing async_dispatch_finished record")
+	}
+
+	var tail string
+	var sawTail bool
+	asyncFin.record.Attrs(func(a slog.Attr) bool {
+		if a.Key == yardlogs.KeyOutputTail {
+			tail = a.Value.String()
+			sawTail = true
+			return false
+		}
+		return true
+	})
+	if !sawTail {
+		t.Fatal("output_tail missing on async_dispatch_finished")
+	}
+	if !strings.HasSuffix(tail, marker) {
+		t.Fatalf("output_tail does not end with marker; tail tail = %q", tail[max(0, len(tail)-len(marker)-10):])
+	}
+	if len(tail) > yardlogs.DefaultOutputTailBytes {
+		t.Fatalf("output_tail = %d bytes, want ≤ %d", len(tail), yardlogs.DefaultOutputTailBytes)
+	}
+}
+

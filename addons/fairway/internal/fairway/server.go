@@ -403,14 +403,20 @@ func (s *Server) dispatchAsync(sc *statusCapture, r *http.Request, route Route, 
 			obs.Truncated = result.Truncated
 		}
 		s.observeRequest(obs)
-		s.logAsyncDispatch(asyncCtx, obs, execErr)
+		s.logAsyncDispatch(asyncCtx, obs, execErr, result.Body)
 	}()
 }
 
 // logAsyncDispatch emits a structured async_dispatch_finished line via the
 // event logger so async routes can be correlated with the synchronous 202
 // already logged by the middleware (same trace_id).
-func (s *Server) logAsyncDispatch(ctx context.Context, obs requestObservation, execErr error) {
+//
+// body is the captured subprocess output (cron.run/crew.run) or upstream
+// response body (http.forward) — sync requests already delivered it to the
+// caller, but on async the 202 was returned before this body existed, so
+// the operator has no other way to see what happened. We surface the tail
+// here under output_tail.
+func (s *Server) logAsyncDispatch(ctx context.Context, obs requestObservation, execErr error, body []byte) {
 	if s.eventLogger == nil {
 		return
 	}
@@ -425,6 +431,12 @@ func (s *Server) logAsyncDispatch(ctx context.Context, obs requestObservation, e
 		slog.Int(yardlogs.KeyRouteExitCode, obs.ExitCode),
 		slog.String(yardlogs.KeyAuthType, obs.AuthType),
 		slog.String(yardlogs.KeyAuthResult, obs.AuthResult),
+	}
+	if len(body) > 0 {
+		attrs = append(attrs,
+			slog.String(yardlogs.KeyOutputTail, yardlogs.Tail(string(body), yardlogs.DefaultOutputTailBytes)),
+			slog.Bool(yardlogs.KeyOutputTruncated, obs.Truncated || len(body) > yardlogs.DefaultOutputTailBytes),
+		)
 	}
 	level := slog.LevelInfo
 	if execErr != nil {
