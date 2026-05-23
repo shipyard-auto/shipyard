@@ -94,6 +94,14 @@ const (
 	KeyTokensInput  = "tokens_input"
 	KeyTokensOutput = "tokens_output"
 
+	// Subprocess output capture. Emitted on completion events (cron_job_run_*,
+	// run_end, future runners) so operators can see the tail of stdout without
+	// re-running the job. Paired with KeyOutputTruncated when callers want to
+	// expose whether truncation happened. Use logs.Tail(...) with
+	// DefaultOutputTailBytes to populate this consistently across sources.
+	KeyOutputTail      = "output_tail"
+	KeyOutputTruncated = "output_truncated"
+
 	KeyHostname       = "hostname"
 	KeyPID            = "pid"
 	KeyServiceVersion = "service_version"
