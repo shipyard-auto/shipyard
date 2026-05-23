@@ -177,7 +177,30 @@ func (i *Installer) IsInstalled() bool {
 // failures (non-executable file, exec timeout, unparseable output) surface
 // as wrapped errors so callers can distinguish "missing" from "broken".
 func (i *Installer) InstalledVersion() (string, error) {
-	binPath := i.BinPath()
+	return execBinaryVersion(i.BinPath())
+}
+
+// ResolveInstalledVersion locates the installed shipyard-crew binary
+// (via ResolveBinary) and returns the version it reports through --version.
+// Returns ErrNotInstalled when no binary can be found; other failures
+// (exec timeout, unparseable output) surface as wrapped errors.
+func ResolveInstalledVersion(ctx context.Context) (string, error) {
+	binPath, err := ResolveBinary()
+	if err != nil {
+		return "", err
+	}
+	return execBinaryVersionCtx(ctx, binPath)
+}
+
+// execBinaryVersion runs <binPath> --version with the default timeout. Used by
+// callers that already know the absolute binary path (e.g. Installer.BinPath).
+func execBinaryVersion(binPath string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), installedVersionTimeout)
+	defer cancel()
+	return execBinaryVersionCtx(ctx, binPath)
+}
+
+func execBinaryVersionCtx(ctx context.Context, binPath string) (string, error) {
 	info, err := os.Stat(binPath)
 	if errors.Is(err, os.ErrNotExist) {
 		return "", ErrNotInstalled
@@ -189,11 +212,11 @@ func (i *Installer) InstalledVersion() (string, error) {
 		return "", fmt.Errorf("crew: %s is a directory", binPath)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), installedVersionTimeout)
+	execCtx, cancel := context.WithTimeout(ctx, installedVersionTimeout)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, binPath, "--version").Output()
+	out, err := exec.CommandContext(execCtx, binPath, "--version").Output()
 	if err != nil {
-		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		if errors.Is(execCtx.Err(), context.DeadlineExceeded) {
 			return "", fmt.Errorf("crew: exec --version timed out after %s", installedVersionTimeout)
 		}
 		return "", fmt.Errorf("crew: exec --version: %w", err)
