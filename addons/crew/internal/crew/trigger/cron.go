@@ -4,12 +4,30 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
 
 	"github.com/shipyard-auto/shipyard/addons/crew/internal/crew"
 )
+
+// shipyardBin returns the absolute path to the shipyard CLI to embed in
+// crontab `--command` entries. When the SHIPYARD_BIN env var is set (the
+// `shipyard crew apply` parent populates it via os.Executable), that path is
+// used; otherwise the bare name "shipyard" is returned as a fallback so
+// direct callers of `shipyard-crew reconcile` keep working.
+//
+// Absolute paths matter because cron runs with a minimal PATH
+// (/usr/bin:/bin on macOS, varies on Linux) and shipyard is typically
+// installed under ~/.local/bin — invoking it by bare name yields
+// "command not found" at every tick.
+func shipyardBin() string {
+	if v := os.Getenv("SHIPYARD_BIN"); v != "" {
+		return v
+	}
+	return "shipyard"
+}
 
 // CronReconciler reconciles `cron` triggers declared in an agent.yaml with
 // entries registered in the core `shipyard cron` subsystem. Reconcilers are
@@ -123,7 +141,7 @@ func (r *CronReconciler) Reconcile(ctx context.Context, agent *crew.Agent) (Cron
 			"cron", "add",
 			"--name", c.Name,
 			"--schedule", c.Schedule,
-			"--command", fmt.Sprintf("shipyard crew run %s", agent.Name),
+			"--command", fmt.Sprintf("%s crew run %s", shipyardBin(), agent.Name),
 		}
 		if _, err := r.Runner.Run(ctx, "shipyard", args...); err != nil {
 			return CronDiff{}, fmt.Errorf("cron reconcile: add %s: %w", c.Name, err)
