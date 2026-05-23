@@ -217,6 +217,48 @@ mcp_servers:
 	}
 }
 
+func TestLoad_ProjectScope(t *testing.T) {
+	_, agentDir := buildAgentTree(t, "greeter")
+	writeTestFile(t, filepath.Join(agentDir, "agent.yaml"), `schema_version: "1"
+name: greeter
+description: ""
+backend:
+  type: cli
+  command: ["claude","--print"]
+execution:
+  mode: on-demand
+  pool: cli
+conversation:
+  mode: stateless
+triggers: []
+tools: []
+mcp_servers:
+  - ref: chrome-devtools
+project_scope: /Users/me/proj
+`)
+	writeTestFile(t, filepath.Join(agentDir, "prompt.md"), "p")
+
+	a, err := Load(agentDir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if a.ProjectScope != "/Users/me/proj" {
+		t.Fatalf("project_scope not loaded: %q", a.ProjectScope)
+	}
+
+	// Roundtrip: Write back, reload, scope must survive.
+	if err := Write(a); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	b, err := Load(agentDir)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if b.ProjectScope != "/Users/me/proj" {
+		t.Fatalf("project_scope lost on roundtrip: %q", b.ProjectScope)
+	}
+}
+
 func TestLoad_OutputSchemaRoundtrip(t *testing.T) {
 	_, agentDir := buildAgentTree(t, "greeter")
 	writeTestFile(t, filepath.Join(agentDir, "agent.yaml"), `schema_version: "1"
