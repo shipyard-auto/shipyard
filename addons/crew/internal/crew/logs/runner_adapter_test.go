@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -146,6 +147,69 @@ func TestRunnerAdapter_RunSuccess_EmitsStartAndEnd(t *testing.T) {
 	}
 	if errs := byName[yardlogs.EventRunError]; len(errs) != 0 {
 		t.Errorf("no run_error expected on success, got %d", len(errs))
+	}
+}
+
+// TestRunnerAdapter_RunEnd_emitsOutputTail asserts that RunEnd surfaces the
+// last DefaultOutputTailBytes of Output.Text so operators can confirm what
+// the agent said before its turn ended. Mirrors the cron runner behavior
+// (see internal/cron service_test.go) and validates the schema-v2
+// KeyOutputTail attribute on the run_end event.
+func TestRunnerAdapter_RunEnd_emitsOutputTail(t *testing.T) {
+	ad, rec := newAdapter(t, 10*time.Millisecond)
+
+	ag := sampleAgent()
+	const marker = "DONE_OK"
+	padding := strings.Repeat("x", yardlogs.DefaultOutputTailBytes*2)
+	full := padding + marker
+
+	ad.RunStart(context.Background(), ag, "trace-tail", "manual")
+	ad.RunEnd(context.Background(), ag, "trace-tail",
+		runner.Output{TraceID: "trace-tail", Text: full},
+		nil,
+	)
+
+	byName := eventsByName(rec.snapshot())
+	ends := byName[yardlogs.EventRunEnd]
+	if len(ends) != 1 {
+		t.Fatalf("RunEnd: got %d records, want 1", len(ends))
+	}
+	tailAttr, ok := findAttr(ends[0].record, yardlogs.KeyOutputTail)
+	if !ok {
+		t.Fatal("output_tail missing on run_end")
+	}
+	tail := tailAttr.String()
+	if !strings.HasSuffix(tail, marker) {
+		t.Fatalf("output_tail does not end with marker; got tail ending %q", tail[max(0, len(tail)-len(marker)-10):])
+	}
+	if len(tail) > yardlogs.DefaultOutputTailBytes {
+		t.Fatalf("output_tail = %d bytes, want ≤ %d", len(tail), yardlogs.DefaultOutputTailBytes)
+	}
+	truncAttr, ok := findAttr(ends[0].record, yardlogs.KeyOutputTruncated)
+	if !ok || !truncAttr.Bool() {
+		t.Errorf("output_truncated = %v (ok=%v), want true", truncAttr, ok)
+	}
+}
+
+// TestRunnerAdapter_RunEnd_emptyText_omitsOutputTail asserts the opposite:
+// when the agent produced no text (e.g. error before first response), we
+// don't pollute the JSONL with an empty output_tail attribute.
+func TestRunnerAdapter_RunEnd_emptyText_omitsOutputTail(t *testing.T) {
+	ad, rec := newAdapter(t, 10*time.Millisecond)
+
+	ad.RunStart(context.Background(), sampleAgent(), "trace-empty", "manual")
+	ad.RunEnd(context.Background(), sampleAgent(), "trace-empty",
+		runner.Output{TraceID: "trace-empty", Text: ""},
+		nil,
+	)
+
+	byName := eventsByName(rec.snapshot())
+	ends := byName[yardlogs.EventRunEnd]
+	if len(ends) != 1 {
+		t.Fatalf("RunEnd: got %d records, want 1", len(ends))
+	}
+	if _, ok := findAttr(ends[0].record, yardlogs.KeyOutputTail); ok {
+		t.Error("output_tail should be omitted when Text is empty")
 	}
 }
 

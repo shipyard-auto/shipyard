@@ -79,6 +79,12 @@ func (a *RunnerAdapter) RunEnd(ctx context.Context, agent *crew.Agent, traceID s
 		slog.Int(yardlogs.KeyTokensOutput, out.Usage.OutputTokens),
 		slog.String("status", status),
 	)
+	if tail := yardlogs.Tail(out.Text, yardlogs.DefaultOutputTailBytes); tail != "" {
+		endAttrs = append(endAttrs,
+			slog.String(yardlogs.KeyOutputTail, tail),
+			slog.Bool(yardlogs.KeyOutputTruncated, len(out.Text) > yardlogs.DefaultOutputTailBytes),
+		)
+	}
 	if msg != "" {
 		endAttrs = append(endAttrs,
 			slog.String(yardlogs.KeyError, msg),
