@@ -13,6 +13,7 @@ import (
 	"github.com/shipyard-auto/shipyard/addons/crew/internal/crew"
 	"github.com/shipyard-auto/shipyard/addons/crew/internal/crew/conversation"
 	"github.com/shipyard-auto/shipyard/addons/crew/internal/crew/tools"
+	"github.com/shipyard-auto/shipyard/internal/logs/trace"
 )
 
 type panicDisp struct{}
@@ -640,6 +641,97 @@ func TestCLI_MCPSyncEnvOnlyWhenServersDeclared(t *testing.T) {
 		}
 		if got := read(t); got != "false" {
 			t.Fatalf("env should be forced to 'false' for agent with mcp_servers, got %q", got)
+		}
+	})
+}
+
+// TestCLI_ForwardsTraceIDToSubprocess verifies that when the ctx carries
+// a trace id and the agent declares tools (which makes cfgPath != "" and
+// causes claude --print to spawn `shipyard-crew mcp-serve`), the trace id
+// is forwarded via SHIPYARD_CREW_TRACE_ID so the subprocess can emit
+// tool_call_start/end under the same trace as run_start/run_end.
+func TestCLI_ForwardsTraceIDToSubprocess(t *testing.T) {
+	dir := t.TempDir()
+	envFile := filepath.Join(dir, "trace.txt")
+	script := filepath.Join(dir, "shim.sh")
+	if err := os.WriteFile(script,
+		[]byte("#!/bin/sh\nprintenv SHIPYARD_CREW_TRACE_ID > "+envFile+" 2>&1 || echo __UNSET__ > "+envFile+"\n"),
+		0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	read := func() string {
+		raw, err := os.ReadFile(envFile)
+		if err != nil {
+			t.Fatalf("read env: %v", err)
+		}
+		return strings.TrimSpace(string(raw))
+	}
+
+	t.Run("with tools and trace ctx", func(t *testing.T) {
+		_ = os.Remove(envFile)
+		ctx := trace.WithID(context.Background(), "abc123")
+		b := NewCLIBackend()
+		_, err := b.Run(ctx, RunInput{
+			User: "x",
+			Agent: &crew.Agent{
+				Name:    "t",
+				Backend: crew.Backend{Type: crew.BackendCLI, Command: []string{script}},
+				Tools: []crew.Tool{{
+					Name:     "echo",
+					Protocol: crew.ToolExec,
+					Command:  []string{"/bin/true"},
+				}},
+			},
+		}, nil)
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		if got := read(); got != "abc123" {
+			t.Fatalf("subprocess SHIPYARD_CREW_TRACE_ID=%q, want abc123", got)
+		}
+	})
+
+	t.Run("with tools but no trace ctx leaves env unset", func(t *testing.T) {
+		_ = os.Remove(envFile)
+		b := NewCLIBackend()
+		_, err := b.Run(context.Background(), RunInput{
+			User: "x",
+			Agent: &crew.Agent{
+				Name:    "t",
+				Backend: crew.Backend{Type: crew.BackendCLI, Command: []string{script}},
+				Tools: []crew.Tool{{
+					Name:     "echo",
+					Protocol: crew.ToolExec,
+					Command:  []string{"/bin/true"},
+				}},
+			},
+		}, nil)
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		if got := read(); got != "__UNSET__" {
+			t.Fatalf("subprocess SHIPYARD_CREW_TRACE_ID=%q, want __UNSET__", got)
+		}
+	})
+
+	t.Run("no tools no MCP leaves env unset even with trace ctx", func(t *testing.T) {
+		_ = os.Remove(envFile)
+		ctx := trace.WithID(context.Background(), "abc123")
+		b := NewCLIBackend()
+		_, err := b.Run(ctx, RunInput{
+			User: "x",
+			Agent: &crew.Agent{
+				Name:    "t",
+				Backend: crew.Backend{Type: crew.BackendCLI, Command: []string{script}},
+			},
+		}, nil)
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		// No cfgPath → no mcp-serve subprocess → no point forwarding trace.
+		if got := read(); got != "__UNSET__" {
+			t.Fatalf("subprocess SHIPYARD_CREW_TRACE_ID=%q, want __UNSET__", got)
 		}
 	})
 }
