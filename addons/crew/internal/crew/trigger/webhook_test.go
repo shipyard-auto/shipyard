@@ -24,8 +24,8 @@ func TestWebhookReconcileAddsRoutesAndPersistsState(t *testing.T) {
 	agent := &crew.Agent{
 		Name: "demo",
 		Triggers: []crew.Trigger{
-			{Type: crew.TriggerWebhook, Route: "/a"},
-			{Type: crew.TriggerWebhook, Route: "/b"},
+			{Type: crew.TriggerWebhook, Route: "/a", Auth: "local-only"},
+			{Type: crew.TriggerWebhook, Route: "/b", Auth: "local-only"},
 			{Type: crew.TriggerCron, Schedule: "* * * * *"}, // ignored
 		},
 	}
@@ -75,7 +75,7 @@ func TestWebhookReconcileIdempotent(t *testing.T) {
 	agent := &crew.Agent{
 		Name: "demo",
 		Triggers: []crew.Trigger{
-			{Type: crew.TriggerWebhook, Route: "/a"},
+			{Type: crew.TriggerWebhook, Route: "/a", Auth: "local-only"},
 		},
 	}
 	diff, err := r.Reconcile(context.Background(), agent)
@@ -114,8 +114,8 @@ func TestWebhookReconcileRemovesStaleRoute(t *testing.T) {
 	agent := &crew.Agent{
 		Name: "demo",
 		Triggers: []crew.Trigger{
-			{Type: crew.TriggerWebhook, Route: "/a"},
-			{Type: crew.TriggerWebhook, Route: "/b"},
+			{Type: crew.TriggerWebhook, Route: "/a", Auth: "local-only"},
+			{Type: crew.TriggerWebhook, Route: "/b", Auth: "local-only"},
 		},
 	}
 	if _, err := r.Reconcile(context.Background(), agent); err != nil {
@@ -163,8 +163,8 @@ func TestWebhookUnreconcileRemovesAllAndDeletesStateFile(t *testing.T) {
 	agent := &crew.Agent{
 		Name: "demo",
 		Triggers: []crew.Trigger{
-			{Type: crew.TriggerWebhook, Route: "/a"},
-			{Type: crew.TriggerWebhook, Route: "/b"},
+			{Type: crew.TriggerWebhook, Route: "/a", Auth: "local-only"},
+			{Type: crew.TriggerWebhook, Route: "/b", Auth: "local-only"},
 		},
 	}
 	if _, err := r.Reconcile(context.Background(), agent); err != nil {
@@ -205,7 +205,7 @@ func TestWebhookUnreconcileIgnoresNotFound(t *testing.T) {
 	agent := &crew.Agent{
 		Name: "demo",
 		Triggers: []crew.Trigger{
-			{Type: crew.TriggerWebhook, Route: "/a"},
+			{Type: crew.TriggerWebhook, Route: "/a", Auth: "local-only"},
 		},
 	}
 	if _, err := r.Reconcile(context.Background(), agent); err != nil {
@@ -218,6 +218,131 @@ func TestWebhookUnreconcileIgnoresNotFound(t *testing.T) {
 	}
 	if err := r.Unreconcile(context.Background(), agent); err != nil {
 		t.Fatalf("unreconcile: %v", err)
+	}
+}
+
+func TestWebhookReconcileBearerPropagatesAuthArgs(t *testing.T) {
+	t.Parallel()
+
+	home := t.TempDir()
+	runner := &fakeRunner{}
+	r := NewWebhookReconciler(runner, home)
+	agent := &crew.Agent{
+		Name: "demo",
+		Triggers: []crew.Trigger{
+			{Type: crew.TriggerWebhook, Route: "/secret", Auth: "bearer", AuthToken: "s3cret"},
+		},
+	}
+	if _, err := r.Reconcile(context.Background(), agent); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	adds := runner.callsWith("fairway route add")
+	if len(adds) != 1 {
+		t.Fatalf("want 1 add, got %d", len(adds))
+	}
+	joined := strings.Join(adds[0].Args, " ")
+	for _, want := range []string{"--auth bearer", "--auth-token s3cret"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("missing %q in add args: %s", want, joined)
+		}
+	}
+}
+
+func TestWebhookReconcileLocalOnlyOmitsTokenArg(t *testing.T) {
+	t.Parallel()
+
+	home := t.TempDir()
+	runner := &fakeRunner{}
+	r := NewWebhookReconciler(runner, home)
+	agent := &crew.Agent{
+		Name: "demo",
+		Triggers: []crew.Trigger{
+			{Type: crew.TriggerWebhook, Route: "/loop", Auth: "local-only"},
+		},
+	}
+	if _, err := r.Reconcile(context.Background(), agent); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	adds := runner.callsWith("fairway route add")
+	if len(adds) != 1 {
+		t.Fatalf("want 1 add, got %d", len(adds))
+	}
+	joined := strings.Join(adds[0].Args, " ")
+	if !strings.Contains(joined, "--auth local-only") {
+		t.Fatalf("missing --auth local-only: %s", joined)
+	}
+	if strings.Contains(joined, "--auth-token") {
+		t.Fatalf("local-only must not pass --auth-token: %s", joined)
+	}
+}
+
+func TestWebhookReconcileAuthChangeForcesReadd(t *testing.T) {
+	t.Parallel()
+
+	home := t.TempDir()
+	runner := &fakeRunner{}
+	r := NewWebhookReconciler(runner, home)
+	agent := &crew.Agent{
+		Name: "demo",
+		Triggers: []crew.Trigger{
+			{Type: crew.TriggerWebhook, Route: "/x", Auth: "local-only"},
+		},
+	}
+	if _, err := r.Reconcile(context.Background(), agent); err != nil {
+		t.Fatalf("first reconcile: %v", err)
+	}
+	addsBefore := len(runner.callsWith("fairway route add"))
+	delsBefore := len(runner.callsWith("fairway route delete"))
+
+	agent.Triggers[0].Auth = "bearer"
+	agent.Triggers[0].AuthToken = "sec"
+	diff, err := r.Reconcile(context.Background(), agent)
+	if err != nil {
+		t.Fatalf("second reconcile: %v", err)
+	}
+	if len(diff.Added) != 1 || diff.Added[0].Route != "/x" {
+		t.Fatalf("auth change should add /x, got %+v", diff.Added)
+	}
+	if len(diff.Removed) != 1 || diff.Removed[0].Route != "/x" {
+		t.Fatalf("auth change should remove /x, got %+v", diff.Removed)
+	}
+	if got := len(runner.callsWith("fairway route add")); got != addsBefore+1 {
+		t.Fatalf("expected one new add, before=%d after=%d", addsBefore, got)
+	}
+	if got := len(runner.callsWith("fairway route delete")); got != delsBefore+1 {
+		t.Fatalf("expected one new delete, before=%d after=%d", delsBefore, got)
+	}
+}
+
+func TestWebhookReconcileBearerWithoutTokenRejected(t *testing.T) {
+	t.Parallel()
+
+	home := t.TempDir()
+	r := NewWebhookReconciler(&fakeRunner{}, home)
+	_, err := r.Reconcile(context.Background(), &crew.Agent{
+		Name: "demo",
+		Triggers: []crew.Trigger{
+			{Type: crew.TriggerWebhook, Route: "/x", Auth: "bearer"},
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "auth_token") {
+		t.Fatalf("expected auth_token error, got %v", err)
+	}
+}
+
+func TestWebhookReconcileMissingAuthRejected(t *testing.T) {
+	t.Parallel()
+
+	home := t.TempDir()
+	r := NewWebhookReconciler(&fakeRunner{}, home)
+	_, err := r.Reconcile(context.Background(), &crew.Agent{
+		Name: "demo",
+		Triggers: []crew.Trigger{
+			{Type: crew.TriggerWebhook, Route: "/x"},
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "requires auth") {
+		t.Fatalf("expected auth-required error, got %v", err)
 	}
 }
 
@@ -254,8 +379,8 @@ func TestWebhookReconcileDuplicateRoute(t *testing.T) {
 	_, err := r.Reconcile(context.Background(), &crew.Agent{
 		Name: "demo",
 		Triggers: []crew.Trigger{
-			{Type: crew.TriggerWebhook, Route: "/a"},
-			{Type: crew.TriggerWebhook, Route: "/a"},
+			{Type: crew.TriggerWebhook, Route: "/a", Auth: "local-only"},
+			{Type: crew.TriggerWebhook, Route: "/a", Auth: "local-only"},
 		},
 	})
 	if err == nil || !strings.Contains(err.Error(), "duplicate webhook route") {
@@ -288,7 +413,7 @@ func TestWebhookReconcileAtomicWritePreservesOriginalOnRenameFailure(t *testing.
 	r := NewWebhookReconciler(&fakeRunner{}, home)
 	agent := &crew.Agent{
 		Name:     "demo",
-		Triggers: []crew.Trigger{{Type: crew.TriggerWebhook, Route: "/a"}},
+		Triggers: []crew.Trigger{{Type: crew.TriggerWebhook, Route: "/a", Auth: "local-only"}},
 	}
 	if _, err := r.Reconcile(context.Background(), agent); err != nil {
 		t.Fatal(err)
@@ -302,7 +427,7 @@ func TestWebhookReconcileAtomicWritePreservesOriginalOnRenameFailure(t *testing.
 	}
 	defer os.Remove(originalPath)
 
-	agent.Triggers = append(agent.Triggers, crew.Trigger{Type: crew.TriggerWebhook, Route: "/b"})
+	agent.Triggers = append(agent.Triggers, crew.Trigger{Type: crew.TriggerWebhook, Route: "/b", Auth: "local-only"})
 	if _, err := r.Reconcile(context.Background(), agent); err == nil {
 		t.Fatal("expected rename failure")
 	}
@@ -350,7 +475,7 @@ func TestWebhookPlanDoesNotMutate(t *testing.T) {
 	r := NewWebhookReconciler(runner, home)
 	agent := &crew.Agent{
 		Name:     "demo",
-		Triggers: []crew.Trigger{{Type: crew.TriggerWebhook, Route: "/a"}},
+		Triggers: []crew.Trigger{{Type: crew.TriggerWebhook, Route: "/a", Auth: "local-only"}},
 	}
 	diff, err := r.Plan(context.Background(), agent)
 	if err != nil {
@@ -379,7 +504,7 @@ func TestWebhookRegisteredAtPreservedAcrossReconciles(t *testing.T) {
 	agent := &crew.Agent{
 		Name: "demo",
 		Triggers: []crew.Trigger{
-			{Type: crew.TriggerWebhook, Route: "/a"},
+			{Type: crew.TriggerWebhook, Route: "/a", Auth: "local-only"},
 		},
 	}
 	if _, err := r.Reconcile(context.Background(), agent); err != nil {
