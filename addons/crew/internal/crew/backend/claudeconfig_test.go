@@ -142,3 +142,126 @@ func TestResolveServerRefs_EmptySourceShowsNone(t *testing.T) {
 		t.Fatalf("want <none> marker, got %v", err)
 	}
 }
+
+// TestLoadClaudeMCPsForScope_emptyScope_returnsRoot guards the legacy
+// path: callers passing "" must see the root mcpServers map exactly as
+// LoadClaudeMCPs has always returned. Critical for backward compatibility
+// — every agent without project_scope set continues to behave as before.
+func TestLoadClaudeMCPsForScope_emptyScope_returnsRoot(t *testing.T) {
+	home, get := homeInTempDir(t)
+	writeClaudeConfig(t, home, `{
+		"mcpServers": {
+			"chrome-devtools": {"command":"npx"}
+		},
+		"projects": {
+			"/Users/leo/foo": {
+				"mcpServers": { "github": {"command":"npx"} }
+			}
+		}
+	}`)
+	got, err := LoadClaudeMCPsForScope(get, "")
+	if err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("want 1 root server, got %d (project entries leaked into root scope)", len(got))
+	}
+	if _, ok := got["chrome-devtools"]; !ok {
+		t.Fatal("chrome-devtools missing from root scope")
+	}
+	if _, leaked := got["github"]; leaked {
+		t.Fatal("project-scoped 'github' leaked into empty-scope result")
+	}
+}
+
+// TestLoadClaudeMCPsForScope_projectMergedOnTop asserts that entries in
+// projects.<scope>.mcpServers are exposed alongside root entries. Root
+// entries that don't clash continue to be visible — projects extend, not
+// replace, the global set.
+func TestLoadClaudeMCPsForScope_projectMergedOnTop(t *testing.T) {
+	home, get := homeInTempDir(t)
+	writeClaudeConfig(t, home, `{
+		"mcpServers": {
+			"chrome-devtools": {"command":"npx","args":["root"]}
+		},
+		"projects": {
+			"/Users/leo/foo": {
+				"mcpServers": { "github": {"command":"npx","args":["proj"]} }
+			}
+		}
+	}`)
+	got, err := LoadClaudeMCPsForScope(get, "/Users/leo/foo")
+	if err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("want 2 merged servers, got %d: %v", len(got), keys(got))
+	}
+	if _, ok := got["chrome-devtools"]; !ok {
+		t.Error("root chrome-devtools missing after project merge")
+	}
+	if _, ok := got["github"]; !ok {
+		t.Error("project-scoped github missing")
+	}
+}
+
+// TestLoadClaudeMCPsForScope_projectOverridesRoot guards the precedence
+// rule: when the same key exists in both root and project scope, the
+// project version wins. This matches how Claude Code itself layers
+// project config on top of root.
+func TestLoadClaudeMCPsForScope_projectOverridesRoot(t *testing.T) {
+	home, get := homeInTempDir(t)
+	writeClaudeConfig(t, home, `{
+		"mcpServers": {
+			"github": {"command":"npx","args":["root-version"]}
+		},
+		"projects": {
+			"/Users/leo/foo": {
+				"mcpServers": { "github": {"command":"npx","args":["project-version"]} }
+			}
+		}
+	}`)
+	got, err := LoadClaudeMCPsForScope(get, "/Users/leo/foo")
+	if err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	def := string(got["github"])
+	if !strings.Contains(def, "project-version") {
+		t.Fatalf("project entry did not override root; got: %s", def)
+	}
+	if strings.Contains(def, "root-version") {
+		t.Fatalf("root entry still visible after project override; got: %s", def)
+	}
+}
+
+// TestLoadClaudeMCPsForScope_unknownScope_fallsBackToRoot asserts that
+// declaring a project_scope that doesn't (yet) have an entry under
+// `projects` is not an error — root entries are still served. This
+// matches the realistic case "I just hired the agent; I'll run
+// `claude mcp add` inside the project later." If a declared ref then
+// turns out to be missing, ResolveServerRefs surfaces a clear error
+// listing available keys.
+func TestLoadClaudeMCPsForScope_unknownScope_fallsBackToRoot(t *testing.T) {
+	home, get := homeInTempDir(t)
+	writeClaudeConfig(t, home, `{
+		"mcpServers": {
+			"chrome-devtools": {"command":"npx"}
+		},
+		"projects": {}
+	}`)
+	got, err := LoadClaudeMCPsForScope(get, "/Users/leo/nonexistent")
+	if err != nil {
+		t.Fatalf("unknown scope must not error: %v", err)
+	}
+	if _, ok := got["chrome-devtools"]; !ok {
+		t.Fatal("root entries lost when scope is unknown")
+	}
+}
+
+func keys(m map[string]json.RawMessage) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
+}

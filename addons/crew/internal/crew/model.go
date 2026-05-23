@@ -67,6 +67,12 @@ type Agent struct {
 	Triggers     []Trigger      `yaml:"triggers"`
 	Tools        []Tool         `yaml:"tools"`
 	MCPServers   []MCPServerRef `yaml:"mcp_servers"`
+	// ProjectScope, when set, is the absolute project path used to look up
+	// MCP servers under `projects.<path>.mcpServers` in ~/.claude.json
+	// (the same per-project scoping Claude Code uses). Project-scoped
+	// servers take precedence over root mcpServers when both define the
+	// same key. Empty (default) preserves root-only behavior.
+	ProjectScope string         `yaml:"project_scope,omitempty"`
 	PromptPath   string         `yaml:"-"`
 	Dir          string         `yaml:"-"`
 }

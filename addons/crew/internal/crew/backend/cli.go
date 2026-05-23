@@ -290,7 +290,7 @@ func (b *CLIBackend) buildMCPConfig(agent *crew.Agent) (string, func(), error) {
 	}
 
 	if len(agent.MCPServers) > 0 {
-		src, err := LoadClaudeMCPs(b.userHomeDir)
+		src, err := LoadClaudeMCPsForScope(b.userHomeDir, agent.ProjectScope)
 		if err != nil {
 			return "", noop, err
 		}
