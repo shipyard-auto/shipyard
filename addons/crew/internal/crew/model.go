@@ -102,6 +102,17 @@ type Trigger struct {
 	Type     TriggerType `yaml:"type"`
 	Schedule string      `yaml:"schedule,omitempty"`
 	Route    string      `yaml:"route,omitempty"`
+	// Auth selects how fairway enforces access on this webhook route.
+	// Required for `type: webhook`. Supported values: "bearer", "local-only".
+	// The "token" type (custom header/query placement) is intentionally not
+	// exposed via crew triggers yet — operators who need it can `shipyard
+	// fairway route add` manually.
+	Auth string `yaml:"auth,omitempty"`
+	// AuthToken is the literal bearer secret. Required when Auth == "bearer";
+	// must be empty for "local-only". No env-var expansion is performed —
+	// agent.yaml lives under ~/.shipyard/crew/<name>/ which is per-user
+	// state and not committed by default.
+	AuthToken string `yaml:"auth_token,omitempty"`
 }
 
 type Tool struct {
@@ -266,6 +277,20 @@ func (t Trigger) Validate() error {
 		}
 		if t.Schedule != "" {
 			return errors.New(`type "webhook" must not set schedule`)
+		}
+		switch t.Auth {
+		case "bearer":
+			if strings.TrimSpace(t.AuthToken) == "" {
+				return errors.New(`type "webhook" with auth=bearer requires auth_token`)
+			}
+		case "local-only":
+			if t.AuthToken != "" {
+				return errors.New(`type "webhook" with auth=local-only must not set auth_token`)
+			}
+		case "":
+			return errors.New(`type "webhook" requires auth: one of [bearer, local-only]`)
+		default:
+			return fmt.Errorf(`type "webhook" auth %q invalid: must be one of [bearer, local-only] (token type not yet supported via crew triggers)`, t.Auth)
 		}
 	default:
 		return fmt.Errorf(`invalid type %q: must be "cron" or "webhook"`, t.Type)

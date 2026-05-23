@@ -190,8 +190,14 @@ func TestTriggerValidate(t *testing.T) {
 		{"cron with route", Trigger{Type: TriggerCron, Schedule: "* * * * *", Route: "/x"}, "must not set route"},
 		{"webhook no route", Trigger{Type: TriggerWebhook}, "starting with"},
 		{"webhook bad route", Trigger{Type: TriggerWebhook, Route: "foo"}, "starting with"},
-		{"webhook ok", Trigger{Type: TriggerWebhook, Route: "/foo"}, ""},
-		{"webhook with schedule", Trigger{Type: TriggerWebhook, Route: "/x", Schedule: "* * * * *"}, "must not set schedule"},
+		{"webhook no auth", Trigger{Type: TriggerWebhook, Route: "/foo"}, "requires auth"},
+		{"webhook bearer ok", Trigger{Type: TriggerWebhook, Route: "/foo", Auth: "bearer", AuthToken: "sec"}, ""},
+		{"webhook bearer no token", Trigger{Type: TriggerWebhook, Route: "/foo", Auth: "bearer"}, "requires auth_token"},
+		{"webhook local-only ok", Trigger{Type: TriggerWebhook, Route: "/foo", Auth: "local-only"}, ""},
+		{"webhook local-only with token", Trigger{Type: TriggerWebhook, Route: "/foo", Auth: "local-only", AuthToken: "sec"}, "must not set auth_token"},
+		{"webhook auth token type rejected", Trigger{Type: TriggerWebhook, Route: "/foo", Auth: "token"}, "not yet supported"},
+		{"webhook auth invalid", Trigger{Type: TriggerWebhook, Route: "/foo", Auth: "magic"}, "must be one of"},
+		{"webhook with schedule", Trigger{Type: TriggerWebhook, Route: "/x", Schedule: "* * * * *", Auth: "local-only"}, "must not set schedule"},
 		{"bad type", Trigger{Type: "foo"}, "invalid type"},
 	}
 	for _, tc := range tests {
