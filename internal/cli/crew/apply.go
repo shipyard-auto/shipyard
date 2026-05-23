@@ -36,6 +36,8 @@ type applyDeps struct {
 	Stderr      io.Writer
 	LookPath    func(string) (string, error)
 	MakeCommand func(ctx context.Context, name string, args ...string) *exec.Cmd
+	Executable  func() (string, error)
+	Environ     func() []string
 }
 
 func (d applyDeps) withDefaults() applyDeps {
@@ -55,6 +57,12 @@ func (d applyDeps) withDefaults() applyDeps {
 	}
 	if d.MakeCommand == nil {
 		d.MakeCommand = exec.CommandContext
+	}
+	if d.Executable == nil {
+		d.Executable = os.Executable
+	}
+	if d.Environ == nil {
+		d.Environ = os.Environ
 	}
 	return d
 }
@@ -135,6 +143,14 @@ func runApply(ctx context.Context, deps applyDeps, name string, f applyFlags) in
 	cmd := deps.MakeCommand(ctx, bin, args...)
 	cmd.Stdout = deps.Stdout
 	cmd.Stderr = deps.Stderr
+	// Propagate the absolute path of the running shipyard binary so the crew
+	// reconciler can embed it in crontab `--command` entries. Without this,
+	// cron ticks fail with "shipyard: command not found" because cron runs
+	// with a minimal PATH that excludes ~/.local/bin.
+	cmd.Env = deps.Environ()
+	if exe, err := deps.Executable(); err == nil && exe != "" {
+		cmd.Env = append(cmd.Env, "SHIPYARD_BIN="+exe)
+	}
 	if err := cmd.Run(); err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {

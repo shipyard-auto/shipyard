@@ -176,6 +176,52 @@ func TestCronReconcileAddsAndRemovesStale(t *testing.T) {
 	}
 }
 
+func TestCronReconcileUsesShipyardBinEnv(t *testing.T) {
+	// Not t.Parallel: t.Setenv is incompatible with parallel siblings.
+	t.Setenv("SHIPYARD_BIN", "/abs/path/to/shipyard")
+
+	runner := &stagedListRunner{lists: [][]CronEntry{nil, nil}}
+	r := NewCronReconciler(runner)
+	agent := &crew.Agent{
+		Name:     "demo",
+		Triggers: []crew.Trigger{{Type: crew.TriggerCron, Schedule: "* * * * *"}},
+	}
+	if _, err := r.Reconcile(context.Background(), agent); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	adds := runnerArgs(runner.calls, "cron add")
+	if len(adds) != 1 {
+		t.Fatalf("want 1 add, got %d", len(adds))
+	}
+	joined := strings.Join(adds[0].Args, " ")
+	if !strings.Contains(joined, "--command /abs/path/to/shipyard crew run demo") {
+		t.Fatalf("--command should use SHIPYARD_BIN, got: %s", joined)
+	}
+}
+
+func TestCronReconcileFallsBackToBareShipyardWithoutEnv(t *testing.T) {
+	// Not t.Parallel: ensure SHIPYARD_BIN is empty for the duration.
+	t.Setenv("SHIPYARD_BIN", "")
+
+	runner := &stagedListRunner{lists: [][]CronEntry{nil, nil}}
+	r := NewCronReconciler(runner)
+	agent := &crew.Agent{
+		Name:     "demo",
+		Triggers: []crew.Trigger{{Type: crew.TriggerCron, Schedule: "* * * * *"}},
+	}
+	if _, err := r.Reconcile(context.Background(), agent); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	adds := runnerArgs(runner.calls, "cron add")
+	if len(adds) != 1 {
+		t.Fatalf("want 1 add, got %d", len(adds))
+	}
+	joined := strings.Join(adds[0].Args, " ")
+	if !strings.Contains(joined, "--command shipyard crew run demo") {
+		t.Fatalf("--command should fall back to bare 'shipyard', got: %s", joined)
+	}
+}
+
 func TestCronReconcileMultipleTriggersUsesIndexedNames(t *testing.T) {
 	t.Parallel()
 

@@ -250,6 +250,83 @@ func TestApplyWithDefaults(t *testing.T) {
 	if d.LookPath == nil || d.MakeCommand == nil {
 		t.Errorf("default subprocess hooks not set")
 	}
+	if d.Executable == nil || d.Environ == nil {
+		t.Errorf("default Executable/Environ not set")
+	}
+}
+
+func TestRunApplySetsShipyardBinInSubprocessEnv(t *testing.T) {
+	home := t.TempDir()
+	writeApplyAgentDir(t, home, "alpha")
+
+	envByCmd := make([]*exec.Cmd, 0, 1)
+	makeCmd := func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		cmd := exec.CommandContext(ctx, "sh", "-c", "exit 0")
+		envByCmd = append(envByCmd, cmd)
+		return cmd
+	}
+
+	deps := applyDeps{
+		Home:        home,
+		Stdout:      &bytes.Buffer{},
+		Stderr:      &bytes.Buffer{},
+		LookPath:    func(string) (string, error) { return "/usr/bin/shipyard-crew", nil },
+		MakeCommand: makeCmd,
+		Executable:  func() (string, error) { return "/abs/path/to/shipyard", nil },
+		Environ:     func() []string { return []string{"PATH=/usr/bin", "HOME=/home/u"} },
+	}
+	code := runApply(context.Background(), deps, "alpha", applyFlags{})
+	if code != applyExitOK {
+		t.Fatalf("code = %d", code)
+	}
+	if len(envByCmd) != 1 {
+		t.Fatalf("want 1 subprocess, got %d", len(envByCmd))
+	}
+	env := envByCmd[0].Env
+	wantPresent := []string{"PATH=/usr/bin", "HOME=/home/u", "SHIPYARD_BIN=/abs/path/to/shipyard"}
+	for _, want := range wantPresent {
+		found := false
+		for _, e := range env {
+			if e == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("missing %q in cmd.Env: %v", want, env)
+		}
+	}
+}
+
+func TestRunApplyOmitsShipyardBinWhenExecutableFails(t *testing.T) {
+	home := t.TempDir()
+	writeApplyAgentDir(t, home, "alpha")
+
+	envByCmd := make([]*exec.Cmd, 0, 1)
+	makeCmd := func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		cmd := exec.CommandContext(ctx, "sh", "-c", "exit 0")
+		envByCmd = append(envByCmd, cmd)
+		return cmd
+	}
+
+	deps := applyDeps{
+		Home:        home,
+		Stdout:      &bytes.Buffer{},
+		Stderr:      &bytes.Buffer{},
+		LookPath:    func(string) (string, error) { return "/usr/bin/shipyard-crew", nil },
+		MakeCommand: makeCmd,
+		Executable:  func() (string, error) { return "", errors.New("kernel says no") },
+		Environ:     func() []string { return []string{"PATH=/usr/bin"} },
+	}
+	code := runApply(context.Background(), deps, "alpha", applyFlags{})
+	if code != applyExitOK {
+		t.Fatalf("code = %d", code)
+	}
+	for _, e := range envByCmd[0].Env {
+		if strings.HasPrefix(e, "SHIPYARD_BIN=") {
+			t.Fatalf("SHIPYARD_BIN must be absent when Executable fails: %q", e)
+		}
+	}
 }
 
 func TestApplyExitCodeContract(t *testing.T) {
