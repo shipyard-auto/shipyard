@@ -356,6 +356,63 @@ func TestServiceRunExecutesCommand(t *testing.T) {
 	}
 }
 
+// TestServiceRun_failedJob_emitsOutputTail asserts the failed branch
+// (cron_job_run_failed) carries output_tail too, not just the success
+// path. This is the path where output_tail matters *most*: a job that
+// exited non-zero is exactly when an operator wants the receipt.
+func TestServiceRun_failedJob_emitsOutputTail(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now().UTC()
+	rec := &recordingHandler{}
+	const marker = "MARKER_FAIL_END"
+	padding := strings.Repeat("b", yardlogs.DefaultOutputTailBytes*2)
+	// printf the padding+marker then exit 1 so the runner takes the failed branch.
+	script := "printf '%s%s' '" + padding + "' '" + marker + "'; exit 1"
+
+	service := Service{
+		Repo: &memoryRepo{store: Store{
+			Notice:  storeNotice,
+			Version: storeVersion,
+			Jobs: []Job{{
+				ID:        "AB12CD",
+				Name:      "Failing",
+				Schedule:  "0 * * * *",
+				Command:   script,
+				Enabled:   true,
+				CreatedAt: now,
+				UpdatedAt: now,
+			}},
+		}},
+		Crontab: &fakeCrontab{},
+		IDGen:   fakeIDGen{id: "AA11BB"},
+		Now:     time.Now,
+		Exec: func(name string, args ...string) *exec.Cmd {
+			return exec.Command("sh", "-lc", script)
+		},
+		Logger: slog.New(rec),
+	}
+
+	if _, _, err := service.Run(context.Background(), "AB12CD"); err == nil {
+		t.Fatal("Run() should return error for exit 1 job; got nil")
+	}
+
+	r, ok := rec.find(yardlogs.EventCronJobRunFailed)
+	if !ok {
+		t.Fatal("expected cron_job_run_failed record; got none")
+	}
+	tail, ok := attrString(r, yardlogs.KeyOutputTail)
+	if !ok {
+		t.Fatal("output_tail attr missing on cron_job_run_failed")
+	}
+	if !strings.HasSuffix(tail, marker) {
+		t.Fatalf("output_tail does not end with marker; ending = %q", tail[max(0, len(tail)-len(marker)-10):])
+	}
+	if len(tail) > yardlogs.DefaultOutputTailBytes {
+		t.Fatalf("output_tail = %d bytes, want ≤ %d", len(tail), yardlogs.DefaultOutputTailBytes)
+	}
+}
+
 // TestServiceRun_emitsOutputTail_withFinalBytes asserts that the cron
 // runner emits output_tail carrying the *last* DefaultOutputTailBytes of the
 // subprocess stdout. This is the canary for the C-02 generalization: errors
