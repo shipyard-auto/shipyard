@@ -211,9 +211,13 @@ func (r Route) Validate() error {
 		return err
 	}
 
-	if r.Async && r.Action.Type == ActionHTTPForward {
-		return ErrInvalidAsyncForward
-	}
+	// Note: async + http.forward is allowed as of F-03 (2026-05-23). The
+	// caller opted into fire-and-forget by setting async: true; the upstream
+	// response body is discarded after the goroutine completes, but the
+	// upstream HTTP status is preserved in the async_dispatch_finished log
+	// line as upstream_http_status. ErrInvalidAsyncForward stays exported
+	// for backward compatibility with any external code that imported it
+	// (the constant is no longer returned from Validate).
 
 	return nil
 }

@@ -84,6 +84,14 @@ const (
 	KeyRouteTarget   = "route_target"
 	KeyRouteExitCode = "route_exit_code"
 
+	// KeyUpstreamHTTPStatus carries the real HTTP status code returned by
+	// the upstream when an async http.forward route completes. The
+	// http_status field on async_dispatch_finished is hardcoded to 202 (the
+	// ack the client received); this attribute records what the upstream
+	// actually answered so operators can see whether the fire-and-forget
+	// notification succeeded. Only emitted on async http.forward routes.
+	KeyUpstreamHTTPStatus = "upstream_http_status"
+
 	KeyAuthType   = "auth_type"
 	KeyAuthResult = "auth_result"
 

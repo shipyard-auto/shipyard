@@ -408,7 +408,15 @@ func (s *Server) dispatchAsync(sc *statusCapture, r *http.Request, route Route, 
 			obs.Truncated = result.Truncated
 		}
 		s.observeRequest(obs)
-		s.logAsyncDispatch(asyncCtx, obs, execErr, result.Body)
+		// For async http.forward, the upstream status is the only signal
+		// that the fire-and-forget actually fired — preserve it in the log.
+		// For other async actions (cron/crew run, etc.) we pass 0 so the
+		// attribute is omitted.
+		upstreamStatus := 0
+		if route.Action.Type == ActionHTTPForward && execErr == nil {
+			upstreamStatus = result.HTTPStatus
+		}
+		s.logAsyncDispatch(asyncCtx, obs, execErr, result.Body, upstreamStatus)
 	}()
 }
 
@@ -421,7 +429,11 @@ func (s *Server) dispatchAsync(sc *statusCapture, r *http.Request, route Route, 
 // caller, but on async the 202 was returned before this body existed, so
 // the operator has no other way to see what happened. We surface the tail
 // here under output_tail.
-func (s *Server) logAsyncDispatch(ctx context.Context, obs requestObservation, execErr error, body []byte) {
+//
+// upstreamStatus is non-zero only for async http.forward (F-03) and
+// records the real status code the upstream answered. Zero means
+// "not applicable" and the attribute is omitted.
+func (s *Server) logAsyncDispatch(ctx context.Context, obs requestObservation, execErr error, body []byte, upstreamStatus int) {
 	if s.eventLogger == nil {
 		return
 	}
@@ -442,6 +454,9 @@ func (s *Server) logAsyncDispatch(ctx context.Context, obs requestObservation, e
 			slog.String(yardlogs.KeyOutputTail, yardlogs.Tail(string(body), yardlogs.DefaultOutputTailBytes)),
 			slog.Bool(yardlogs.KeyOutputTruncated, obs.Truncated || len(body) > yardlogs.DefaultOutputTailBytes),
 		)
+	}
+	if upstreamStatus != 0 {
+		attrs = append(attrs, slog.Int(yardlogs.KeyUpstreamHTTPStatus, upstreamStatus))
 	}
 	level := slog.LevelInfo
 	if execErr != nil {

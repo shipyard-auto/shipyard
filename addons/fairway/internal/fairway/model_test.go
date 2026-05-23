@@ -243,12 +243,17 @@ func TestRoute_Validate(t *testing.T) {
 			wantErr: nil,
 		},
 		{
-			name: "asyncWithHTTPForwardRejected",
+			// F-03 (2026-05-23): async http.forward is now allowed —
+			// fire-and-forget upstream notifications (Slack, Discord,
+			// analytics) are a legitimate pattern. Upstream response body
+			// is discarded, but upstream status is logged in
+			// async_dispatch_finished as upstream_http_status.
+			name: "asyncWithHTTPForwardAllowed",
 			mutate: func(r *fairway.Route) {
 				r.Async = true
 				r.Action = fairway.Action{Type: fairway.ActionHTTPForward, URL: "https://example.com"}
 			},
-			wantErr: fairway.ErrInvalidAsyncForward,
+			wantErr: nil,
 		},
 		{
 			name: "syncWithHTTPForwardAllowed",
