@@ -322,6 +322,11 @@ func (s *Server) handleRouted(w http.ResponseWriter, r *http.Request) {
 	sc.WriteHeader(result.HTTPStatus)
 	_, _ = sc.Write(result.Body)
 
+	// Mark the body so the logging middleware can surface it as output_tail
+	// on the http_request line. Without this the caller has the bytes but
+	// the operator has no retrospective record of what was returned.
+	yardlogs.MarkResponseBody(r, result.Body)
+
 	dur := time.Since(start)
 	s.observeRequest(requestObservation{
 		Route:      route,
