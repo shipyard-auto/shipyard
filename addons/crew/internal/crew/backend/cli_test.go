@@ -571,6 +571,79 @@ func (w *bytesWriter) Write(p []byte) (int, error) {
 }
 func (w *bytesWriter) String() string { return string(w.b) }
 
+// TestCLI_MCPSyncEnvOnlyWhenServersDeclared verifies the surgical fix for
+// the claude --print + async MCP race: MCP_CONNECTION_NONBLOCKING=false is
+// injected only when the agent declares mcp_servers (external MCP that may
+// take 500ms+ to handshake), and left alone for agents with no MCPs or
+// inline-only tools (whose internal stdio bridge connects instantly).
+//
+// The parent env is pinned to MCP_CONNECTION_NONBLOCKING=true so we can
+// distinguish "inherited from parent" (our code did not touch it) from
+// "explicitly forced to false" (our code overrode it).
+func TestCLI_MCPSyncEnvOnlyWhenServersDeclared(t *testing.T) {
+	t.Setenv("MCP_CONNECTION_NONBLOCKING", "true")
+
+	dir := t.TempDir()
+	envFile := filepath.Join(dir, "env.txt")
+	script := filepath.Join(dir, "shim.sh")
+	if err := os.WriteFile(script,
+		[]byte("#!/bin/sh\nprintenv MCP_CONNECTION_NONBLOCKING > "+envFile+" 2>&1 || echo __UNSET__ > "+envFile+"\n"),
+		0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	read := func(t *testing.T) string {
+		t.Helper()
+		raw, err := os.ReadFile(envFile)
+		if err != nil {
+			t.Fatalf("read env: %v", err)
+		}
+		return strings.TrimSpace(string(raw))
+	}
+
+	t.Run("without mcp_servers inherits parent env unchanged", func(t *testing.T) {
+		_ = os.Remove(envFile)
+		b := NewCLIBackend()
+		_, err := b.Run(context.Background(), RunInput{
+			User: "x",
+			Agent: &crew.Agent{
+				Name:    "t",
+				Backend: crew.Backend{Type: crew.BackendCLI, Command: []string{script}},
+			},
+		}, nil)
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		if got := read(t); got != "true" {
+			t.Fatalf("parent env should pass through unchanged, got %q", got)
+		}
+	})
+
+	t.Run("with mcp_servers overrides parent env to false", func(t *testing.T) {
+		_ = os.Remove(envFile)
+		home := t.TempDir()
+		if err := os.WriteFile(filepath.Join(home, ".claude.json"),
+			[]byte(`{"mcpServers":{"any":{"command":"true"}}}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		b := NewCLIBackend().WithUserHomeDir(func() (string, error) { return home, nil })
+		_, err := b.Run(context.Background(), RunInput{
+			User: "x",
+			Agent: &crew.Agent{
+				Name:       "t",
+				Backend:    crew.Backend{Type: crew.BackendCLI, Command: []string{script}},
+				MCPServers: []crew.MCPServerRef{{Ref: "any"}},
+			},
+		}, nil)
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		if got := read(t); got != "false" {
+			t.Fatalf("env should be forced to 'false' for agent with mcp_servers, got %q", got)
+		}
+	})
+}
+
 func itoa(n int) string {
 	if n == 0 {
 		return "0"
