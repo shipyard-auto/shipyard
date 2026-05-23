@@ -169,6 +169,17 @@ func (b *CLIBackend) Run(ctx context.Context, in RunInput, _ ToolDispatcher) (Ru
 	cmd.WaitDelay = cliWaitDelay
 	cmd.Stdin = strings.NewReader(in.User)
 
+	if len(in.Agent.MCPServers) > 0 {
+		// `claude --print` runs a single turn and exits; recent versions
+		// connect MCP servers asynchronously (MCP_CONNECTION_NONBLOCKING
+		// default), so any external server (especially npx-spawned ones
+		// that take 500ms+ to hand-shake) is not registered before the
+		// model decides its response. Tools appear missing, the run
+		// succeeds with a false-negative answer. Force synchronous
+		// connection so declared mcp_servers are guaranteed visible.
+		cmd.Env = append(os.Environ(), "MCP_CONNECTION_NONBLOCKING=false")
+	}
+
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &limitedWriter{w: &stdout, limit: cliMaxStdoutBytes}
 	cmd.Stderr = &limitedWriter{w: &stderr, limit: cliMaxStderrBytes}
