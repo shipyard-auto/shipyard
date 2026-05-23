@@ -2,6 +2,7 @@ package fairway_test
 
 import (
 	"context"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -227,6 +228,244 @@ func TestEventLogger_sync_emitsOutputTail_onHTTPRequest(t *testing.T) {
 	if len(tail) > yardlogs.DefaultOutputTailBytes {
 		t.Fatalf("output_tail = %d bytes, want ≤ %d", len(tail), yardlogs.DefaultOutputTailBytes)
 	}
+}
+
+// TestServeHTTP_asyncHTTPForward_realUpstream is the end-to-end integration
+// test for F-03: a real production Executor (NewExecutor) is wired against
+// a real httptest upstream, behind an async http.forward route. The client
+// gets 202 immediately; the upstream is hit in the background; the log
+// records the upstream status and body. Proves the whole pipeline
+// (Validate accepts → server dispatches → executor forwards → log
+// captures result) actually works together, not just in isolation.
+func TestServeHTTP_asyncHTTPForward_realUpstream(t *testing.T) {
+	t.Parallel()
+
+	// Upstream server: records the inbound request body and answers 201.
+	upstreamHits := make(chan []byte, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		upstreamHits <- body
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte("upstream-ok"))
+	}))
+	defer upstream.Close()
+
+	// Production executor, configured to call the upstream test server.
+	realExec := fairway.NewExecutor(fairway.ExecutorConfig{
+		HTTP: http.DefaultClient,
+	})
+	route := fairway.Route{
+		Path:    "/notify",
+		Async:   true,
+		Auth:    fairway.Auth{Type: fairway.AuthLocalOnly},
+		Action:  fairway.Action{Type: fairway.ActionHTTPForward, URL: upstream.URL},
+		Timeout: 5 * time.Second,
+	}
+
+	srv, rec := newServerWithEventLogger(t, realExec, route)
+	handler := fairway.ServerHandlerForTest(srv)
+
+	// Client request to fairway.
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/notify", strings.NewReader(`{"event":"deploy"}`))
+	r.RemoteAddr = "127.0.0.1:1"
+	handler.ServeHTTP(w, r)
+
+	// 1. Client got 202 immediately (sync ack).
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("client ack = %d, want 202", w.Code)
+	}
+
+	// 2. Upstream was eventually hit with the same body.
+	select {
+	case got := <-upstreamHits:
+		if !strings.Contains(string(got), "deploy") {
+			t.Fatalf("upstream body mismatch: got %q, want substring 'deploy'", string(got))
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("upstream was never called within 2s")
+	}
+
+	// 3. async_dispatch_finished log line records upstream status + body.
+	deadline := time.Now().Add(2 * time.Second)
+	var asyncFin *recordedEntry
+	for time.Now().Before(deadline) {
+		for _, e := range rec.snapshot() {
+			if e.record.Message == yardlogs.EventAsyncDispatch {
+				ef := e
+				asyncFin = &ef
+				break
+			}
+		}
+		if asyncFin != nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if asyncFin == nil {
+		t.Fatal("async_dispatch_finished record never emitted")
+	}
+
+	var upstreamStatus int64
+	var tail string
+	var routeAction string
+	asyncFin.record.Attrs(func(a slog.Attr) bool {
+		switch a.Key {
+		case yardlogs.KeyUpstreamHTTPStatus:
+			upstreamStatus = a.Value.Int64()
+		case yardlogs.KeyOutputTail:
+			tail = a.Value.String()
+		case yardlogs.KeyRouteAction:
+			routeAction = a.Value.String()
+		}
+		return true
+	})
+
+	if routeAction != string(fairway.ActionHTTPForward) {
+		t.Errorf("route_action = %q, want %q", routeAction, fairway.ActionHTTPForward)
+	}
+	if upstreamStatus != int64(http.StatusCreated) {
+		t.Errorf("upstream_http_status = %d, want 201", upstreamStatus)
+	}
+	if !strings.Contains(tail, "upstream-ok") {
+		t.Errorf("output_tail = %q, want substring 'upstream-ok'", tail)
+	}
+}
+
+// TestEventLogger_asyncHTTPForward_emitsUpstreamStatus asserts that async
+// http.forward (F-03) emits upstream_http_status carrying the real status
+// the upstream answered with. Without this, the operator's only signal
+// would be http_status=202 (the ack to the client) — they wouldn't know
+// whether the fire-and-forget notification actually succeeded upstream.
+func TestEventLogger_asyncHTTPForward_emitsUpstreamStatus(t *testing.T) {
+	t.Parallel()
+
+	// Fake executor returns the upstream's response — for http.forward,
+	// Result.HTTPStatus is the upstream code, not the ack.
+	exec := &fakeExecutor{result: fairway.Result{
+		HTTPStatus: http.StatusCreated, // upstream answered 201
+		Body:       []byte("created"),
+		ExitCode:   -1, // http.forward has no subprocess
+	}}
+	route := fairway.Route{
+		Path:    "/notify-async",
+		Async:   true,
+		Auth:    fairway.Auth{Type: fairway.AuthLocalOnly},
+		Action:  fairway.Action{Type: fairway.ActionHTTPForward, URL: "https://hooks.example.com"},
+		Timeout: time.Second,
+	}
+	srv, rec := newServerWithEventLogger(t, exec, route)
+	handler := fairway.ServerHandlerForTest(srv)
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/notify-async", strings.NewReader("{}"))
+	r.RemoteAddr = "127.0.0.1:1"
+	handler.ServeHTTP(w, r)
+
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("client ack = %d, want 202", w.Code)
+	}
+
+	// Wait for async goroutine to write the dispatch record.
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if len(rec.snapshot()) >= 2 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	var asyncFin *recordedEntry
+	for _, e := range rec.snapshot() {
+		if e.record.Message == yardlogs.EventAsyncDispatch {
+			ef := e
+			asyncFin = &ef
+			break
+		}
+	}
+	if asyncFin == nil {
+		t.Fatal("missing async_dispatch_finished record")
+	}
+
+	var upstreamStatus int64
+	var sawUpstream bool
+	asyncFin.record.Attrs(func(a slog.Attr) bool {
+		if a.Key == yardlogs.KeyUpstreamHTTPStatus {
+			upstreamStatus = a.Value.Int64()
+			sawUpstream = true
+			return false
+		}
+		return true
+	})
+	if !sawUpstream {
+		t.Fatal("upstream_http_status missing on async http.forward dispatch")
+	}
+	if upstreamStatus != int64(http.StatusCreated) {
+		t.Fatalf("upstream_http_status = %d, want %d", upstreamStatus, http.StatusCreated)
+	}
+
+	// http_status stays at 202 — that's what the client received.
+	var clientStatus int64
+	asyncFin.record.Attrs(func(a slog.Attr) bool {
+		if a.Key == yardlogs.KeyHTTPStatus {
+			clientStatus = a.Value.Int64()
+			return false
+		}
+		return true
+	})
+	if clientStatus != int64(http.StatusAccepted) {
+		t.Errorf("http_status = %d, want 202 (the client ack, not upstream)", clientStatus)
+	}
+}
+
+// TestEventLogger_async_cronRun_omitsUpstreamStatus is the regression guard
+// for non-forward async actions: upstream_http_status is meaningful only
+// for http.forward, so cron/crew async dispatches must NOT carry it.
+func TestEventLogger_async_cronRun_omitsUpstreamStatus(t *testing.T) {
+	t.Parallel()
+
+	exec := &fakeExecutor{result: fairway.Result{HTTPStatus: 200, Body: []byte("ok"), ExitCode: 0}}
+	route := fairway.Route{
+		Path:    "/cron-async",
+		Async:   true,
+		Auth:    fairway.Auth{Type: fairway.AuthLocalOnly},
+		Action:  fairway.Action{Type: fairway.ActionCronRun, Target: "job"},
+		Timeout: time.Second,
+	}
+	srv, rec := newServerWithEventLogger(t, exec, route)
+	handler := fairway.ServerHandlerForTest(srv)
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/cron-async", strings.NewReader("{}"))
+	r.RemoteAddr = "127.0.0.1:1"
+	handler.ServeHTTP(w, r)
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if len(rec.snapshot()) >= 2 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	for _, e := range rec.snapshot() {
+		if e.record.Message != yardlogs.EventAsyncDispatch {
+			continue
+		}
+		var sawUpstream bool
+		e.record.Attrs(func(a slog.Attr) bool {
+			if a.Key == yardlogs.KeyUpstreamHTTPStatus {
+				sawUpstream = true
+				return false
+			}
+			return true
+		})
+		if sawUpstream {
+			t.Fatal("upstream_http_status should NOT appear on cron.run async dispatch")
+		}
+		return
+	}
+	t.Fatal("missing async_dispatch_finished record")
 }
 
 // TestEventLogger_async_emptyBody_omitsOutputTail asserts the symmetrical
