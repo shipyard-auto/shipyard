@@ -88,7 +88,7 @@ func TestRunApplyBinaryMissing(t *testing.T) {
 	if code != applyExitError {
 		t.Errorf("code = %d, want %d", code, applyExitError)
 	}
-	if !strings.Contains(stderr.String(), "not found in PATH") {
+	if !strings.Contains(stderr.String(), "not found") {
 		t.Errorf("stderr = %q", stderr.String())
 	}
 }
@@ -252,6 +252,36 @@ func TestApplyWithDefaults(t *testing.T) {
 	}
 	if d.Executable == nil || d.Environ == nil {
 		t.Errorf("default Executable/Environ not set")
+	}
+}
+
+// TestApplyDefaultLookPathFindsCrewBinaryUnderLocalBin verifies that the
+// default resolver finds shipyard-crew via crewctl.ResolveBinary
+// (~/.local/bin first, then PATH) instead of relying solely on PATH. This is
+// the cron-tick scenario from bug #4 follow-up: cron runs with a minimal
+// PATH that excludes ~/.local/bin.
+func TestApplyDefaultLookPathFindsCrewBinaryUnderLocalBin(t *testing.T) {
+	// Build a fake home with a real-looking shipyard-crew binary, and a PATH
+	// that intentionally excludes it.
+	fakeHome := t.TempDir()
+	binDir := filepath.Join(fakeHome, ".local", "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	binPath := filepath.Join(binDir, "shipyard-crew")
+	if err := os.WriteFile(binPath, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	t.Setenv("HOME", fakeHome)
+	t.Setenv("PATH", "/usr/bin:/bin") // cron-like minimal PATH
+
+	d := applyDeps{}.withDefaults()
+	got, err := d.LookPath(subprocessBinary)
+	if err != nil {
+		t.Fatalf("default LookPath should locate %s under ~/.local/bin, got: %v", subprocessBinary, err)
+	}
+	if got != binPath {
+		t.Fatalf("LookPath got %q, want %q", got, binPath)
 	}
 }
 

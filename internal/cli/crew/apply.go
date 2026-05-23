@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 
 	"github.com/spf13/cobra"
+
+	"github.com/shipyard-auto/shipyard/internal/crewctl"
 )
 
 // Exit codes produced by `shipyard crew apply`. The mapping mirrors the
@@ -53,7 +55,17 @@ func (d applyDeps) withDefaults() applyDeps {
 		d.Stderr = os.Stderr
 	}
 	if d.LookPath == nil {
-		d.LookPath = exec.LookPath
+		// shipyard-crew is installed under ~/.local/bin by default. cron
+		// ticks invoke this code path with a minimal PATH (/usr/bin:/bin)
+		// that excludes that directory, so a plain exec.LookPath would
+		// fail. crewctl.ResolveBinary checks ~/.local/bin first (via
+		// $HOME, which cron preserves) and only then falls back to PATH.
+		d.LookPath = func(name string) (string, error) {
+			if name == subprocessBinary {
+				return crewctl.ResolveBinary()
+			}
+			return exec.LookPath(name)
+		}
 	}
 	if d.MakeCommand == nil {
 		d.MakeCommand = exec.CommandContext
@@ -128,7 +140,7 @@ func runApply(ctx context.Context, deps applyDeps, name string, f applyFlags) in
 
 	bin, err := deps.LookPath(subprocessBinary)
 	if err != nil {
-		fmt.Fprintf(deps.Stderr, "shipyard crew apply: %s not found in PATH; run 'shipyard crew install'\n", subprocessBinary)
+		fmt.Fprintf(deps.Stderr, "shipyard crew apply: %s not found; run 'shipyard crew install'\n", subprocessBinary)
 		return applyExitError
 	}
 
