@@ -22,6 +22,7 @@ import (
 	"github.com/shipyard-auto/shipyard/addons/crew/internal/crew/conversation"
 	"github.com/shipyard-auto/shipyard/addons/crew/internal/crew/pool"
 	"github.com/shipyard-auto/shipyard/addons/crew/internal/crew/tools"
+	"github.com/shipyard-auto/shipyard/internal/logs/trace"
 )
 
 // Input is the payload a trigger hands to the runner for one execution.
@@ -126,7 +127,11 @@ func (r *Runner) runInner(ctx context.Context, in Input, traceID string) (Output
 		History: history,
 		Agent:   r.Agent,
 	}
-	runOut, err := r.Backend.Run(ctx, runIn, disp)
+	// Propagate the active trace id via context so the backend can forward
+	// it to subprocesses (e.g. CLIBackend → `shipyard-crew mcp-serve`),
+	// which need it to emit tool_call_start/end records under the same
+	// trace_id as run_start/run_end.
+	runOut, err := r.Backend.Run(trace.WithID(ctx, traceID), runIn, disp)
 	if err != nil {
 		return Output{}, fmt.Errorf("backend run: %w", err)
 	}

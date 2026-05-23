@@ -15,7 +15,14 @@ import (
 
 	"github.com/shipyard-auto/shipyard/addons/crew/internal/crew"
 	"github.com/shipyard-auto/shipyard/addons/crew/internal/crew/conversation"
+	"github.com/shipyard-auto/shipyard/internal/logs/trace"
 )
+
+// TraceEnvVar names the environment variable used to forward the active
+// trace id from the parent process (`shipyard crew run` → CLIBackend) to
+// the spawned `shipyard-crew mcp-serve` subprocess. Exported so the serve
+// side (cmd/mcp_serve.go) and tests can reference the single constant.
+const TraceEnvVar = "SHIPYARD_CREW_TRACE_ID"
 
 const (
 	cliMaxStdoutBytes = 4 * 1024 * 1024
@@ -169,6 +176,9 @@ func (b *CLIBackend) Run(ctx context.Context, in RunInput, _ ToolDispatcher) (Ru
 	cmd.WaitDelay = cliWaitDelay
 	cmd.Stdin = strings.NewReader(in.User)
 
+	// env layering: start from the parent env so the child inherits PATH,
+	// HOME, ANTHROPIC_API_KEY, etc. Add overrides on top only when needed.
+	var env []string
 	if len(in.Agent.MCPServers) > 0 {
 		// `claude --print` runs a single turn and exits; recent versions
 		// connect MCP servers asynchronously (MCP_CONNECTION_NONBLOCKING
@@ -177,7 +187,20 @@ func (b *CLIBackend) Run(ctx context.Context, in RunInput, _ ToolDispatcher) (Ru
 		// model decides its response. Tools appear missing, the run
 		// succeeds with a false-negative answer. Force synchronous
 		// connection so declared mcp_servers are guaranteed visible.
-		cmd.Env = append(os.Environ(), "MCP_CONNECTION_NONBLOCKING=false")
+		env = append(env, "MCP_CONNECTION_NONBLOCKING=false")
+	}
+	if cfgPath != "" {
+		// cfgPath != "" means claude will spawn `shipyard-crew mcp-serve`
+		// for the internal bridge. Forward the active trace id so the
+		// subprocess can emit tool_call_start/end records under the same
+		// trace_id as run_start/run_end. Empty trace is fine — the serve
+		// side treats absence as "skip tool-call logging".
+		if traceID := trace.ID(ctx); traceID != "" {
+			env = append(env, TraceEnvVar+"="+traceID)
+		}
+	}
+	if len(env) > 0 {
+		cmd.Env = append(os.Environ(), env...)
 	}
 
 	var stdout, stderr bytes.Buffer

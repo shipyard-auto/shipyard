@@ -12,9 +12,20 @@ import (
 	"github.com/shipyard-auto/shipyard/addons/crew/internal/app"
 	"github.com/shipyard-auto/shipyard/addons/crew/internal/crew"
 	"github.com/shipyard-auto/shipyard/addons/crew/internal/crew/agent"
+	"github.com/shipyard-auto/shipyard/addons/crew/internal/crew/backend"
+	cwlogs "github.com/shipyard-auto/shipyard/addons/crew/internal/crew/logs"
 	"github.com/shipyard-auto/shipyard/addons/crew/internal/crew/mcpserver"
 	"github.com/shipyard-auto/shipyard/addons/crew/internal/crew/tools"
+	yardlogs "github.com/shipyard-auto/shipyard/internal/logs"
 )
+
+// toolCallEmitter is the subset of the runner.Emitter interface that
+// dispatcherHandler relies on. Kept narrow so tests can inject a fake
+// without dragging the whole adapter.
+type toolCallEmitter interface {
+	ToolCallStart(ctx context.Context, agent *crew.Agent, traceID, tool string, input map[string]any)
+	ToolCallEnd(ctx context.Context, agent *crew.Agent, traceID, tool string, env tools.Envelope, err error)
+}
 
 // Exit codes for the `mcp-serve` subcommand. Share the general addon table
 // where the semantics match (2 invalid input, 20 failed to load agent) and
@@ -23,9 +34,13 @@ import (
 type mcpServeRequest struct {
 	AgentName string
 	AgentDir  string
-	Stdin     io.Reader
-	Stdout    io.Writer
-	Stderr    io.Writer
+	// LogsDir is the parent directory that hosts <source>/YYYY-MM-DD.jsonl
+	// (i.e. <SHIPYARD_HOME>/logs). Empty disables tool-call logging — the
+	// serve loop still runs, but dispatcherHandler does not emit records.
+	LogsDir string
+	Stdin   io.Reader
+	Stdout  io.Writer
+	Stderr  io.Writer
 }
 
 // runMCPServeMode parses flags for `mcp-serve` and dispatches to the
@@ -67,6 +82,7 @@ func runMCPServeMode(parent context.Context, deps runtimeDeps, args []string) in
 	req := mcpServeRequest{
 		AgentName: agentName,
 		AgentDir:  filepath.Join(home, "crew", agentName),
+		LogsDir:   filepath.Join(home, "logs"),
 		Stdin:     deps.Stdin,
 		Stdout:    deps.Stdout,
 		Stderr:    deps.Stderr,
@@ -104,7 +120,33 @@ func defaultRunMCPServe(ctx context.Context, req mcpServeRequest) (int, error) {
 	}
 
 	disp := tools.NewDispatcher()
-	handler := &dispatcherHandler{agent: a, disp: disp}
+
+	// Build the tool-call logger only when we have both a trace id (set by
+	// the parent CLIBackend) and a logs directory. When either is absent
+	// (standalone invocation, tests) we fall through with a nil emitter
+	// and dispatcherHandler silently skips logging — preserving the
+	// previous behavior for callers that don't need the recordings.
+	var emitter toolCallEmitter
+	var traceID string
+	if req.LogsDir != "" {
+		if id := os.Getenv(backend.TraceEnvVar); id != "" {
+			store := yardlogs.NewStore(req.LogsDir)
+			defer store.Close()
+			logger := yardlogs.New(yardlogs.SourceCrew, yardlogs.Options{
+				Store:   store,
+				Version: app.Version,
+			})
+			emitter = cwlogs.NewRunnerAdapter(logger)
+			traceID = id
+		}
+	}
+
+	handler := &dispatcherHandler{
+		agent:   a,
+		disp:    disp,
+		emitter: emitter,
+		traceID: traceID,
+	}
 
 	srv := mcpserver.NewServer(handler, "shipyard-crew", app.Version)
 	if err := srv.Serve(ctx, req.Stdin, req.Stdout); err != nil {
@@ -119,13 +161,26 @@ func defaultRunMCPServe(ctx context.Context, req mcpServeRequest) (int, error) {
 
 // dispatcherHandler bridges the mcpserver.Handler surface to the real
 // tools.Dispatcher, which needs the *crew.Agent that owns the tools.
+// emitter and traceID are set only when the parent process forwarded a
+// trace id via SHIPYARD_CREW_TRACE_ID — otherwise both are nil/empty and
+// Call falls back to the silent path that has always existed here.
 type dispatcherHandler struct {
-	agent *crew.Agent
-	disp  *tools.Dispatcher
+	agent   *crew.Agent
+	disp    *tools.Dispatcher
+	emitter toolCallEmitter
+	traceID string
 }
 
 func (h *dispatcherHandler) Tools() []crew.Tool { return h.agent.Tools }
 
 func (h *dispatcherHandler) Call(ctx context.Context, name string, args map[string]any) (tools.Envelope, error) {
-	return h.disp.Call(ctx, h.agent, name, args)
+	if h.emitter != nil {
+		h.emitter.ToolCallStart(ctx, h.agent, h.traceID, name, args)
+	}
+	env, err := h.disp.Call(ctx, h.agent, name, args)
+	if h.emitter != nil {
+		h.emitter.ToolCallEnd(ctx, h.agent, h.traceID, name, env, err)
+	}
+	return env, err
 }
+
