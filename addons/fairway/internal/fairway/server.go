@@ -379,6 +379,43 @@ func (s *Server) dispatchAsync(sc *statusCapture, r *http.Request, route Route, 
 	method := r.Method
 	remoteAddr := r.RemoteAddr
 
+	// F-01: pre-acquire a pool slot BEFORE writing the 202 ack so we never
+	// promise work the executor can't actually run. Skip for http.forward,
+	// which doesn't use the pool. Skip when the executor doesn't implement
+	// PoolGate (older/test executors): preserve the v1 behavior.
+	var release func()
+	if route.Action.Type != ActionHTTPForward {
+		if gate, ok := s.executor.(PoolGate); ok {
+			rel, acquired := gate.Acquire(asyncCtx)
+			if !acquired {
+				// Honest 503 instead of a lying 202. observeRequest reflects
+				// what the client received; logAsyncDispatch records the
+				// pool-full failure mode for the operator.
+				cancel()
+				sc.Header().Set("X-Trace-Id", traceID)
+				sc.Header().Set("Retry-After", "1")
+				sc.Header().Set("Content-Type", "application/json")
+				sc.WriteHeader(http.StatusServiceUnavailable)
+				_, _ = sc.Write([]byte(`{"error":"pool full","status":"rejected"}`))
+				rejObs := requestObservation{
+					Route:      route,
+					Method:     method,
+					Status:     http.StatusServiceUnavailable,
+					Duration:   time.Since(start),
+					RemoteAddr: remoteAddr,
+					AuthType:   authType,
+					AuthResult: "ok",
+					ExitCode:   -1,
+					TraceID:    traceID,
+				}
+				s.observeRequest(rejObs)
+				s.logAsyncDispatch(asyncCtx, rejObs, nil, nil, 0)
+				return
+			}
+			release = rel
+		}
+	}
+
 	sc.Header().Set("X-Trace-Id", traceID)
 	sc.Header().Set("Content-Type", "application/json")
 	sc.WriteHeader(http.StatusAccepted)
@@ -388,8 +425,20 @@ func (s *Server) dispatchAsync(sc *statusCapture, r *http.Request, route Route, 
 	go func() {
 		defer s.asyncWG.Done()
 		defer cancel()
+		if release != nil {
+			defer release()
+		}
 
-		result, execErr := s.executor.Execute(asyncCtx, route, reqCopy)
+		// Use ExecuteWithoutPool when we pre-acquired the slot, so the
+		// executor doesn't try to re-enter the pool inside Execute. Falls
+		// back to Execute when the executor doesn't implement PoolGate.
+		var result Result
+		var execErr error
+		if gate, ok := s.executor.(PoolGate); ok && release != nil {
+			result, execErr = gate.ExecuteWithoutPool(asyncCtx, route, reqCopy)
+		} else {
+			result, execErr = s.executor.Execute(asyncCtx, route, reqCopy)
+		}
 
 		obs := requestObservation{
 			Route:      route,

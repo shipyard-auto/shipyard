@@ -116,6 +116,23 @@ func NewExecutor(cfg ExecutorConfig) *executor {
 	}
 }
 
+// PoolGate is the optional contract an Executor implements to let the
+// server pre-acquire a pool slot BEFORE writing the 202 ack on async
+// routes. F-01 motivation: without this gate, the server writes 202
+// before the executor tries to grab a slot — when the pool is full the
+// work is dropped silently and the client never learns. With the gate
+// the server can refuse with 503 + Retry-After up-front.
+//
+// Implementations must be safe to call from any goroutine. Acquire
+// either returns a non-nil release function and ok=true, or release=nil
+// and ok=false. The release function must be invoked exactly once when
+// the work is complete (typically deferred inside the goroutine that
+// runs ExecuteWithoutPool).
+type PoolGate interface {
+	Acquire(ctx context.Context) (release func(), ok bool)
+	ExecuteWithoutPool(ctx context.Context, route Route, req *http.Request) (Result, error)
+}
+
 // Execute dispatches the route action for the incoming request.
 // http.forward routes bypass the subprocess pool.
 func (e *executor) Execute(ctx context.Context, route Route, req *http.Request) (Result, error) {
@@ -130,20 +147,56 @@ func (e *executor) InFlight() int {
 	return len(e.pool)
 }
 
-// executeSubprocess runs the shipyard CLI as a subprocess and returns the result.
-func (e *executor) executeSubprocess(ctx context.Context, route Route, req *http.Request) (Result, error) {
-	start := e.cfg.Now()
-
-	// Acquire a worker pool slot. Return 503 if the queue is full for too long.
+// Acquire reserves a subprocess pool slot, returning a release function.
+// When the pool is full, it waits up to cfg.QueueTimeout before giving
+// up; the ctx can shorten that further. ok=false means "pool exhausted —
+// do not pretend the work was accepted." Part of the PoolGate contract.
+func (e *executor) Acquire(ctx context.Context) (release func(), ok bool) {
 	select {
 	case e.pool <- struct{}{}:
-		// slot acquired — release it when we return
+		return func() { <-e.pool }, true
 	case <-time.After(e.cfg.QueueTimeout):
-		return Result{HTTPStatus: 503, ExitCode: -1, Duration: e.cfg.Now().Sub(start)}, nil
+		return nil, false
 	case <-ctx.Done():
-		return Result{HTTPStatus: 504, ExitCode: -1, Duration: e.cfg.Now().Sub(start)}, nil
+		return nil, false
 	}
-	defer func() { <-e.pool }()
+}
+
+// ExecuteWithoutPool runs the action assuming the caller already holds
+// a pool slot (acquired via Acquire). It skips the slot acquisition
+// inside executeSubprocess so the slot is not double-counted.
+// For action types that don't use the pool (http.forward), behaves like
+// Execute. Part of the PoolGate contract.
+func (e *executor) ExecuteWithoutPool(ctx context.Context, route Route, req *http.Request) (Result, error) {
+	if route.Action.Type == ActionHTTPForward {
+		return e.executeHTTPForward(ctx, route, req)
+	}
+	return e.executeSubprocessLocked(ctx, route, req)
+}
+
+// executeSubprocess runs the shipyard CLI as a subprocess and returns the
+// result. It acquires a pool slot first; when the pool is exhausted past
+// cfg.QueueTimeout it returns 503. Used by sync routes; async routes
+// should pre-acquire via PoolGate and call ExecuteWithoutPool instead.
+func (e *executor) executeSubprocess(ctx context.Context, route Route, req *http.Request) (Result, error) {
+	start := e.cfg.Now()
+	release, ok := e.Acquire(ctx)
+	if !ok {
+		// Differentiate 504 (ctx already done) from 503 (queue timeout).
+		if ctx.Err() != nil {
+			return Result{HTTPStatus: 504, ExitCode: -1, Duration: e.cfg.Now().Sub(start)}, nil
+		}
+		return Result{HTTPStatus: 503, ExitCode: -1, Duration: e.cfg.Now().Sub(start)}, nil
+	}
+	defer release()
+	return e.executeSubprocessLocked(ctx, route, req)
+}
+
+// executeSubprocessLocked is the body of executeSubprocess after the pool
+// slot has been acquired. Split out so async routes can pre-acquire via
+// PoolGate.Acquire and invoke this path without re-entering the pool.
+func (e *executor) executeSubprocessLocked(ctx context.Context, route Route, req *http.Request) (Result, error) {
+	start := e.cfg.Now()
 
 	// Determine effective timeout for this action.
 	timeout := e.cfg.DefaultTimeout

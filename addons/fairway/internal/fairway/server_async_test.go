@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os/exec"
 	"regexp"
 	"strings"
 	"sync"
@@ -225,6 +226,252 @@ func TestServeHTTP_sync_carriesTraceIDHeader(t *testing.T) {
 
 // Legacy v1 async observe test removed — equivalent schema-v2 coverage
 // lives in server_event_logger_test.go.
+
+// ── F-01: pool gate backpressure on async ack ───────────────────────────────
+
+// countingPoolExecutor implements PoolGate with controllable Acquire/Execute
+// behavior so we can assert server-side decisions independently from the
+// real pool mechanics. Mock targeted at server-level F-01 invariants;
+// real-executor coverage lives in TestServeHTTP_async_poolFull_returns503.
+type countingPoolExecutor struct {
+	mu             sync.Mutex
+	acquireCalls   int
+	acquireRefuse  bool // when true, Acquire returns ok=false
+	releaseCalled  bool
+	executeCalls   int
+	executeNoPool  int
+	executeResult  fairway.Result
+}
+
+func (c *countingPoolExecutor) Acquire(_ context.Context) (release func(), ok bool) {
+	c.mu.Lock()
+	c.acquireCalls++
+	refuse := c.acquireRefuse
+	c.mu.Unlock()
+	if refuse {
+		return nil, false
+	}
+	return func() {
+		c.mu.Lock()
+		c.releaseCalled = true
+		c.mu.Unlock()
+	}, true
+}
+
+func (c *countingPoolExecutor) Execute(_ context.Context, _ fairway.Route, _ *http.Request) (fairway.Result, error) {
+	c.mu.Lock()
+	c.executeCalls++
+	c.mu.Unlock()
+	return c.executeResult, nil
+}
+
+func (c *countingPoolExecutor) ExecuteWithoutPool(_ context.Context, _ fairway.Route, _ *http.Request) (fairway.Result, error) {
+	c.mu.Lock()
+	c.executeNoPool++
+	c.mu.Unlock()
+	return c.executeResult, nil
+}
+
+// TestServeHTTP_async_poolRefused_returns503_withRetryAfter asserts the
+// server refuses the request with 503 + Retry-After when PoolGate.Acquire
+// returns ok=false. Without F-01 the client would have received a lying
+// 202 and the work would have been dropped silently.
+func TestServeHTTP_async_poolRefused_returns503_withRetryAfter(t *testing.T) {
+	t.Parallel()
+
+	exec := &countingPoolExecutor{acquireRefuse: true}
+	route := fairway.Route{
+		Path:    "/async",
+		Async:   true,
+		Auth:    fairway.Auth{Type: fairway.AuthLocalOnly},
+		Action:  fairway.Action{Type: fairway.ActionCrewRun, Target: "agent"},
+		Timeout: time.Second,
+	}
+	srv := buildServer(t, exec, route)
+	handler := fairway.ServerHandlerForTest(srv)
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/async", strings.NewReader("{}"))
+	r.RemoteAddr = "127.0.0.1:1"
+	handler.ServeHTTP(w, r)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", w.Code)
+	}
+	if ra := w.Header().Get("Retry-After"); ra == "" {
+		t.Error("Retry-After header missing on 503; client has no signal to back off")
+	}
+	if exec.executeCalls != 0 || exec.executeNoPool != 0 {
+		t.Errorf("executor must NOT run when pool refuses: Execute=%d ExecuteWithoutPool=%d",
+			exec.executeCalls, exec.executeNoPool)
+	}
+	// The X-Trace-Id should still echo (operator may want to grep the log
+	// even for refusals).
+	if trace := w.Header().Get("X-Trace-Id"); trace == "" {
+		t.Error("X-Trace-Id missing on 503 response")
+	}
+}
+
+// TestServeHTTP_async_poolAcquired_releasedAfterExecute asserts the
+// server uses ExecuteWithoutPool (not Execute) when it pre-acquired a
+// slot, and that the release function runs exactly once after the
+// goroutine finishes — otherwise we'd leak slots indefinitely.
+func TestServeHTTP_async_poolAcquired_releasedAfterExecute(t *testing.T) {
+	t.Parallel()
+
+	exec := &countingPoolExecutor{
+		executeResult: fairway.Result{HTTPStatus: 200, Body: []byte("ok")},
+	}
+	route := fairway.Route{
+		Path:    "/async",
+		Async:   true,
+		Auth:    fairway.Auth{Type: fairway.AuthLocalOnly},
+		Action:  fairway.Action{Type: fairway.ActionCrewRun, Target: "agent"},
+		Timeout: time.Second,
+	}
+	srv := buildServer(t, exec, route)
+	handler := fairway.ServerHandlerForTest(srv)
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/async", strings.NewReader("{}"))
+	r.RemoteAddr = "127.0.0.1:1"
+	handler.ServeHTTP(w, r)
+
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202", w.Code)
+	}
+
+	// Wait for the detached goroutine to finish.
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		exec.mu.Lock()
+		done := exec.releaseCalled
+		exec.mu.Unlock()
+		if done {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	exec.mu.Lock()
+	defer exec.mu.Unlock()
+	if exec.acquireCalls != 1 {
+		t.Errorf("Acquire called %d times, want 1", exec.acquireCalls)
+	}
+	if exec.executeNoPool != 1 {
+		t.Errorf("ExecuteWithoutPool called %d times, want 1 (server must skip pool re-entry)", exec.executeNoPool)
+	}
+	if exec.executeCalls != 0 {
+		t.Errorf("Execute (pool-acquiring path) called %d times, want 0; server must use ExecuteWithoutPool", exec.executeCalls)
+	}
+	if !exec.releaseCalled {
+		t.Error("release() never called — pool slot would leak forever")
+	}
+}
+
+// TestServeHTTP_async_httpForward_doesNotAcquirePool guards the carve-out:
+// http.forward async routes don't use the subprocess pool, so PoolGate.
+// Acquire must NOT be invoked. Otherwise a saturated subprocess pool
+// would block fire-and-forget webhook notifications that have nothing to
+// do with subprocesses.
+func TestServeHTTP_async_httpForward_doesNotAcquirePool(t *testing.T) {
+	t.Parallel()
+
+	exec := &countingPoolExecutor{
+		executeResult: fairway.Result{HTTPStatus: 200, Body: []byte("ok")},
+	}
+	route := fairway.Route{
+		Path:    "/notify",
+		Async:   true,
+		Auth:    fairway.Auth{Type: fairway.AuthLocalOnly},
+		Action:  fairway.Action{Type: fairway.ActionHTTPForward, URL: "https://example.com"},
+		Timeout: time.Second,
+	}
+	srv := buildServer(t, exec, route)
+	handler := fairway.ServerHandlerForTest(srv)
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/notify", strings.NewReader("{}"))
+	r.RemoteAddr = "127.0.0.1:1"
+	handler.ServeHTTP(w, r)
+
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202", w.Code)
+	}
+
+	// Wait briefly for goroutine to complete the executor call.
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		exec.mu.Lock()
+		done := exec.executeCalls + exec.executeNoPool
+		exec.mu.Unlock()
+		if done > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	exec.mu.Lock()
+	defer exec.mu.Unlock()
+	if exec.acquireCalls != 0 {
+		t.Errorf("Acquire called %d times for http.forward async; want 0 (forward bypasses pool)", exec.acquireCalls)
+	}
+}
+
+// TestServeHTTP_async_poolFull_returns503 is the end-to-end version using
+// the real production executor with MaxInFlight=1 and a real (slow)
+// subprocess. Proves the F-01 fix works when wired against the actual
+// pool implementation, not just against a mock — guards against the mock
+// drifting from real semantics.
+func TestServeHTTP_async_poolFull_returns503(t *testing.T) {
+	t.Parallel()
+
+	// Real executor: 1 slot, 100ms queue timeout, sleep-based subprocess
+	// to keep the slot busy long enough for the second request to be
+	// refused.
+	realExec := fairway.NewExecutor(fairway.ExecutorConfig{
+		MaxInFlight:    1,
+		QueueTimeout:   100 * time.Millisecond,
+		DefaultTimeout: 2 * time.Second,
+		Run: func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
+			return exec.CommandContext(ctx, "sleep", "1")
+		},
+	})
+	route := fairway.Route{
+		Path:    "/async",
+		Async:   true,
+		Auth:    fairway.Auth{Type: fairway.AuthLocalOnly},
+		Action:  fairway.Action{Type: fairway.ActionCrewRun, Target: "agent"},
+		Timeout: 2 * time.Second,
+	}
+	srv := buildServer(t, realExec, route)
+	handler := fairway.ServerHandlerForTest(srv)
+
+	// First request occupies the only slot.
+	first := httptest.NewRecorder()
+	r1 := httptest.NewRequest(http.MethodPost, "/async", strings.NewReader("{}"))
+	r1.RemoteAddr = "127.0.0.1:1"
+	handler.ServeHTTP(first, r1)
+	if first.Code != http.StatusAccepted {
+		t.Fatalf("first request = %d, want 202", first.Code)
+	}
+
+	// Give the goroutine a moment to start the subprocess (acquire the slot).
+	time.Sleep(50 * time.Millisecond)
+
+	// Second request finds the pool full. With F-01 the server refuses
+	// with 503 instead of writing a lying 202.
+	second := httptest.NewRecorder()
+	r2 := httptest.NewRequest(http.MethodPost, "/async", strings.NewReader("{}"))
+	r2.RemoteAddr = "127.0.0.1:2"
+	handler.ServeHTTP(second, r2)
+	if second.Code != http.StatusServiceUnavailable {
+		t.Fatalf("second request = %d, want 503 (pool was full)", second.Code)
+	}
+	if ra := second.Header().Get("Retry-After"); ra == "" {
+		t.Error("Retry-After header missing on real-executor 503")
+	}
+}
 
 // ── graceful shutdown waits for async goroutines ─────────────────────────────
 
