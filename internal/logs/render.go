@@ -13,7 +13,10 @@ type RenderOptions struct {
 	// ShowSource adds the source name as a prefix. Useful when querying
 	// across multiple sources.
 	ShowSource bool
-	// ShowTrace appends the trace id (first 8 chars) when present.
+	// ShowTrace appends the full trace id when present. The id is short
+	// enough (16 hex chars) to fit beside the rest of the pretty line, and
+	// rendering only a prefix made grep-by-trace impossible — operators
+	// would copy the truncated id and find no matches in the JSONL.
 	ShowTrace bool
 }
 
@@ -50,11 +53,7 @@ func RenderPretty(w io.Writer, rec Record, opts RenderOptions) error {
 		parts = append(parts, ui.Paint("error="+rec.Error, ui.StyleRed))
 	}
 	if opts.ShowTrace && rec.TraceID != "" {
-		short := rec.TraceID
-		if len(short) > 8 {
-			short = short[:8]
-		}
-		parts = append(parts, ui.Paint("trace="+short, ui.StyleDim))
+		parts = append(parts, ui.Paint("trace="+rec.TraceID, ui.StyleDim))
 	}
 
 	_, err := fmt.Fprintln(w, strings.Join(parts, " "))

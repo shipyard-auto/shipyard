@@ -229,13 +229,16 @@ func (s Service) Run(ctx context.Context, id string) (Job, string, error) {
 	cmd := s.Exec("/bin/sh", "-lc", job.Command)
 	output, err := cmd.CombinedOutput()
 	durationMs := s.Now().UTC().Sub(startedAt).Milliseconds()
-	text, truncated := truncateOutput(string(output))
+	rawOutput := strings.TrimSpace(string(output))
+	text, truncated := truncateOutput(rawOutput)
+	tail := yardlogs.Tail(rawOutput, yardlogs.DefaultOutputTailBytes)
 	if err != nil {
 		s.logger().LogAttrs(ctx, slog.LevelError, yardlogs.EventCronJobRunFailed,
 			jobAttrs(job, runID,
 				slog.Int64(yardlogs.KeyDurationMs, durationMs),
 				slog.String("output", text),
-				slog.Bool("output_truncated", truncated),
+				slog.Bool(yardlogs.KeyOutputTruncated, truncated),
+				slog.String(yardlogs.KeyOutputTail, tail),
 				slog.String(yardlogs.KeyError, err.Error()),
 				slog.String(yardlogs.KeyErrorKind, fmt.Sprintf("%T", err)),
 			)...,
@@ -247,7 +250,8 @@ func (s Service) Run(ctx context.Context, id string) (Job, string, error) {
 		jobAttrs(job, runID,
 			slog.Int64(yardlogs.KeyDurationMs, durationMs),
 			slog.String("output", text),
-			slog.Bool("output_truncated", truncated),
+			slog.Bool(yardlogs.KeyOutputTruncated, truncated),
+			slog.String(yardlogs.KeyOutputTail, tail),
 		)...,
 	)
 	return job, string(output), nil

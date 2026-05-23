@@ -166,3 +166,189 @@ func TestEventLogger_asyncCorrelatesByTraceID(t *testing.T) {
 	}
 }
 
+// TestEventLogger_sync_emitsOutputTail_onHTTPRequest asserts that on a
+// synchronous route the http_request log line carries output_tail from the
+// executor's Result.Body. Sync delivers the body to the caller, but the
+// operator still wants a retrospective record in the JSONL.
+func TestEventLogger_sync_emitsOutputTail_onHTTPRequest(t *testing.T) {
+	t.Parallel()
+
+	const marker = "SYNC_BODY_END"
+	padding := strings.Repeat("s", yardlogs.DefaultOutputTailBytes*2)
+	body := []byte(padding + marker)
+
+	exec := &fakeExecutor{result: fairway.Result{HTTPStatus: 200, Body: body, ExitCode: 0}}
+	route := fairway.Route{
+		Path:   "/sync-tail",
+		Auth:   fairway.Auth{Type: fairway.AuthLocalOnly},
+		Action: fairway.Action{Type: fairway.ActionCronRun, Target: "job"},
+	}
+	srv, rec := newServerWithEventLogger(t, exec, route)
+	handler := fairway.ServerHandlerForTest(srv)
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/sync-tail", strings.NewReader("{}"))
+	r.RemoteAddr = "127.0.0.1:1"
+	handler.ServeHTTP(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("sync status = %d, want 200", w.Code)
+	}
+
+	var http_ *recordedEntry
+	for _, e := range rec.snapshot() {
+		if e.record.Message == yardlogs.EventHTTPRequest {
+			ef := e
+			http_ = &ef
+			break
+		}
+	}
+	if http_ == nil {
+		t.Fatal("missing http_request record")
+	}
+
+	var tail string
+	var sawTail bool
+	http_.record.Attrs(func(a slog.Attr) bool {
+		if a.Key == yardlogs.KeyOutputTail {
+			tail = a.Value.String()
+			sawTail = true
+			return false
+		}
+		return true
+	})
+	if !sawTail {
+		t.Fatal("output_tail missing on sync http_request")
+	}
+	if !strings.HasSuffix(tail, marker) {
+		t.Fatalf("output_tail does not end with marker; tail tail = %q",
+			tail[max(0, len(tail)-len(marker)-10):])
+	}
+	if len(tail) > yardlogs.DefaultOutputTailBytes {
+		t.Fatalf("output_tail = %d bytes, want ≤ %d", len(tail), yardlogs.DefaultOutputTailBytes)
+	}
+}
+
+// TestEventLogger_async_emptyBody_omitsOutputTail asserts the symmetrical
+// case: when the executor returned no bytes (e.g. timeout, exec error
+// before any output), async_dispatch_finished does NOT carry a spurious
+// empty output_tail. Keeps the JSONL clean.
+func TestEventLogger_async_emptyBody_omitsOutputTail(t *testing.T) {
+	t.Parallel()
+
+	exec := &fakeExecutor{result: fairway.Result{HTTPStatus: 200, Body: nil, ExitCode: 0}}
+	route := fairway.Route{
+		Path:    "/async-empty",
+		Async:   true,
+		Auth:    fairway.Auth{Type: fairway.AuthLocalOnly},
+		Action:  fairway.Action{Type: fairway.ActionCronRun, Target: "job"},
+		Timeout: time.Second,
+	}
+	srv, rec := newServerWithEventLogger(t, exec, route)
+	handler := fairway.ServerHandlerForTest(srv)
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/async-empty", strings.NewReader("{}"))
+	r.RemoteAddr = "127.0.0.1:1"
+	handler.ServeHTTP(w, r)
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if len(rec.snapshot()) >= 2 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	for _, e := range rec.snapshot() {
+		if e.record.Message != yardlogs.EventAsyncDispatch {
+			continue
+		}
+		var sawTail bool
+		e.record.Attrs(func(a slog.Attr) bool {
+			if a.Key == yardlogs.KeyOutputTail {
+				sawTail = true
+				return false
+			}
+			return true
+		})
+		if sawTail {
+			t.Fatal("output_tail should be omitted when body is empty")
+		}
+		return
+	}
+	t.Fatal("missing async_dispatch_finished record")
+}
+
+// TestEventLogger_async_emitsOutputTail asserts the async_dispatch_finished
+// record carries the tail of the executor body. On async, the 202 was sent
+// before the body existed, so without output_tail the operator has no
+// retrospective view of what cron.run / crew.run / http.forward produced.
+func TestEventLogger_async_emitsOutputTail(t *testing.T) {
+	t.Parallel()
+
+	const marker = "ASYNC_END"
+	padding := strings.Repeat("z", yardlogs.DefaultOutputTailBytes*2)
+	body := []byte(padding + marker)
+
+	exec := &fakeExecutor{result: fairway.Result{HTTPStatus: 200, Body: body, ExitCode: 0, Truncated: true}}
+	route := fairway.Route{
+		Path:    "/async-tail",
+		Async:   true,
+		Auth:    fairway.Auth{Type: fairway.AuthLocalOnly},
+		Action:  fairway.Action{Type: fairway.ActionCronRun, Target: "job"},
+		Timeout: time.Second,
+	}
+	srv, rec := newServerWithEventLogger(t, exec, route)
+	handler := fairway.ServerHandlerForTest(srv)
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/async-tail", strings.NewReader("{}"))
+	r.RemoteAddr = "127.0.0.1:1"
+	handler.ServeHTTP(w, r)
+
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("async ack status = %d, want 202", w.Code)
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if len(rec.snapshot()) >= 2 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	var asyncFin *recordedEntry
+	for _, e := range rec.snapshot() {
+		if e.record.Message == yardlogs.EventAsyncDispatch {
+			ef := e
+			asyncFin = &ef
+			break
+		}
+	}
+	if asyncFin == nil {
+		t.Fatal("missing async_dispatch_finished record")
+	}
+
+	var tail string
+	var sawTail bool
+	asyncFin.record.Attrs(func(a slog.Attr) bool {
+		if a.Key == yardlogs.KeyOutputTail {
+			tail = a.Value.String()
+			sawTail = true
+			return false
+		}
+		return true
+	})
+	if !sawTail {
+		t.Fatal("output_tail missing on async_dispatch_finished")
+	}
+	if !strings.HasSuffix(tail, marker) {
+		t.Fatalf("output_tail does not end with marker; tail tail = %q", tail[max(0, len(tail)-len(marker)-10):])
+	}
+	if len(tail) > yardlogs.DefaultOutputTailBytes {
+		t.Fatalf("output_tail = %d bytes, want ≤ %d", len(tail), yardlogs.DefaultOutputTailBytes)
+	}
+}
+

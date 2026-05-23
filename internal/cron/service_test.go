@@ -3,11 +3,57 @@ package cron
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"os/exec"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	yardlogs "github.com/shipyard-auto/shipyard/internal/logs"
 )
+
+// recordingHandler captures slog records emitted by a Service under test so
+// assertions can inspect emitted attributes (e.g. output_tail).
+type recordingHandler struct {
+	mu      sync.Mutex
+	records []slog.Record
+}
+
+func (h *recordingHandler) Enabled(context.Context, slog.Level) bool { return true }
+func (h *recordingHandler) Handle(_ context.Context, r slog.Record) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.records = append(h.records, r.Clone())
+	return nil
+}
+func (h *recordingHandler) WithAttrs(_ []slog.Attr) slog.Handler { return h }
+func (h *recordingHandler) WithGroup(_ string) slog.Handler      { return h }
+
+func (h *recordingHandler) find(event string) (slog.Record, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, r := range h.records {
+		if r.Message == event {
+			return r, true
+		}
+	}
+	return slog.Record{}, false
+}
+
+func attrString(r slog.Record, key string) (string, bool) {
+	var out string
+	var ok bool
+	r.Attrs(func(a slog.Attr) bool {
+		if a.Key == key {
+			out = a.Value.String()
+			ok = true
+			return false
+		}
+		return true
+	})
+	return out, ok
+}
 
 type memoryRepo struct {
 	store Store
@@ -307,6 +353,124 @@ func TestServiceRunExecutesCommand(t *testing.T) {
 	}
 	if strings.TrimSpace(output) != "hello" {
 		t.Fatalf("output = %q, want %q", output, "hello")
+	}
+}
+
+// TestServiceRun_failedJob_emitsOutputTail asserts the failed branch
+// (cron_job_run_failed) carries output_tail too, not just the success
+// path. This is the path where output_tail matters *most*: a job that
+// exited non-zero is exactly when an operator wants the receipt.
+func TestServiceRun_failedJob_emitsOutputTail(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now().UTC()
+	rec := &recordingHandler{}
+	const marker = "MARKER_FAIL_END"
+	padding := strings.Repeat("b", yardlogs.DefaultOutputTailBytes*2)
+	// printf the padding+marker then exit 1 so the runner takes the failed branch.
+	script := "printf '%s%s' '" + padding + "' '" + marker + "'; exit 1"
+
+	service := Service{
+		Repo: &memoryRepo{store: Store{
+			Notice:  storeNotice,
+			Version: storeVersion,
+			Jobs: []Job{{
+				ID:        "AB12CD",
+				Name:      "Failing",
+				Schedule:  "0 * * * *",
+				Command:   script,
+				Enabled:   true,
+				CreatedAt: now,
+				UpdatedAt: now,
+			}},
+		}},
+		Crontab: &fakeCrontab{},
+		IDGen:   fakeIDGen{id: "AA11BB"},
+		Now:     time.Now,
+		Exec: func(name string, args ...string) *exec.Cmd {
+			return exec.Command("sh", "-lc", script)
+		},
+		Logger: slog.New(rec),
+	}
+
+	if _, _, err := service.Run(context.Background(), "AB12CD"); err == nil {
+		t.Fatal("Run() should return error for exit 1 job; got nil")
+	}
+
+	r, ok := rec.find(yardlogs.EventCronJobRunFailed)
+	if !ok {
+		t.Fatal("expected cron_job_run_failed record; got none")
+	}
+	tail, ok := attrString(r, yardlogs.KeyOutputTail)
+	if !ok {
+		t.Fatal("output_tail attr missing on cron_job_run_failed")
+	}
+	if !strings.HasSuffix(tail, marker) {
+		t.Fatalf("output_tail does not end with marker; ending = %q", tail[max(0, len(tail)-len(marker)-10):])
+	}
+	if len(tail) > yardlogs.DefaultOutputTailBytes {
+		t.Fatalf("output_tail = %d bytes, want ≤ %d", len(tail), yardlogs.DefaultOutputTailBytes)
+	}
+}
+
+// TestServiceRun_emitsOutputTail_withFinalBytes asserts that the cron
+// runner emits output_tail carrying the *last* DefaultOutputTailBytes of the
+// subprocess stdout. This is the canary for the C-02 generalization: errors
+// usually surface at the end of process output, so the tail is what an
+// operator wants to see post-mortem.
+func TestServiceRun_emitsOutputTail_withFinalBytes(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now().UTC()
+	rec := &recordingHandler{}
+
+	// Build a script whose total stdout > DefaultOutputTailBytes and whose
+	// distinctive marker is at the very end. The tail must contain MARKER_END,
+	// the head field (output) might or might not.
+	const marker = "MARKER_END_OF_OUTPUT"
+	padding := strings.Repeat("a", yardlogs.DefaultOutputTailBytes*2)
+	script := "printf '%s%s' '" + padding + "' '" + marker + "'"
+
+	service := Service{
+		Repo: &memoryRepo{store: Store{
+			Notice:  storeNotice,
+			Version: storeVersion,
+			Jobs: []Job{{
+				ID:        "AB12CD",
+				Name:      "Loud",
+				Schedule:  "0 * * * *",
+				Command:   script,
+				Enabled:   true,
+				CreatedAt: now,
+				UpdatedAt: now,
+			}},
+		}},
+		Crontab: &fakeCrontab{},
+		IDGen:   fakeIDGen{id: "AA11BB"},
+		Now:     time.Now,
+		Exec: func(name string, args ...string) *exec.Cmd {
+			return exec.Command("sh", "-lc", script)
+		},
+		Logger: slog.New(rec),
+	}
+
+	if _, _, err := service.Run(context.Background(), "AB12CD"); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	r, ok := rec.find(yardlogs.EventCronJobRunFinished)
+	if !ok {
+		t.Fatal("expected cron_job_run_finished record; got none")
+	}
+	tail, ok := attrString(r, yardlogs.KeyOutputTail)
+	if !ok {
+		t.Fatal("output_tail attr missing on cron_job_run_finished")
+	}
+	if !strings.HasSuffix(tail, marker) {
+		t.Fatalf("output_tail does not end with marker; tail tail = %q", tail[max(0, len(tail)-len(marker)-10):])
+	}
+	if len(tail) > yardlogs.DefaultOutputTailBytes {
+		t.Fatalf("output_tail = %d bytes, want ≤ %d", len(tail), yardlogs.DefaultOutputTailBytes)
 	}
 }
 

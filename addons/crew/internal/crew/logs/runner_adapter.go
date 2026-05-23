@@ -79,6 +79,12 @@ func (a *RunnerAdapter) RunEnd(ctx context.Context, agent *crew.Agent, traceID s
 		slog.Int(yardlogs.KeyTokensOutput, out.Usage.OutputTokens),
 		slog.String("status", status),
 	)
+	if tail := yardlogs.Tail(out.Text, yardlogs.DefaultOutputTailBytes); tail != "" {
+		endAttrs = append(endAttrs,
+			slog.String(yardlogs.KeyOutputTail, tail),
+			slog.Bool(yardlogs.KeyOutputTruncated, len(out.Text) > yardlogs.DefaultOutputTailBytes),
+		)
+	}
 	if msg != "" {
 		endAttrs = append(endAttrs,
 			slog.String(yardlogs.KeyError, msg),
@@ -144,6 +150,17 @@ func (a *RunnerAdapter) ToolCallEnd(ctx context.Context, agent *crew.Agent, trac
 		slog.Int64(yardlogs.KeyDurationMs, dur),
 		slog.Bool(yardlogs.KeyToolOK, ok),
 	)
+	// Surface the tool's structured payload as output_tail so operators can
+	// see what the tool actually returned, not just whether it ok'd. The
+	// motivating C-02 case (agent did edit+commit but no PR) shows up here:
+	// inspect the tool_call_end of the github call and you see the response
+	// payload, including any silent failure-as-success in the upstream API.
+	if payload := envelopePayload(env); payload != "" {
+		attrs = append(attrs,
+			slog.String(yardlogs.KeyOutputTail, yardlogs.Tail(payload, yardlogs.DefaultOutputTailBytes)),
+			slog.Bool(yardlogs.KeyOutputTruncated, len(payload) > yardlogs.DefaultOutputTailBytes),
+		)
+	}
 	if msg != "" {
 		attrs = append(attrs, slog.String(yardlogs.KeyError, msg))
 	}
@@ -194,6 +211,20 @@ func agentName(a *crew.Agent) string {
 		return ""
 	}
 	return a.Name
+}
+
+// envelopePayload picks the tool envelope field that carries the "what
+// happened" bytes for logging. Successful envelopes expose Data (the
+// returned payload); failed ones expose Details (the failure context).
+// Returns "" when neither is present — caller then omits output_tail.
+func envelopePayload(env tools.Envelope) string {
+	if env.Ok && len(env.Data) > 0 {
+		return string(env.Data)
+	}
+	if !env.Ok && len(env.Details) > 0 {
+		return string(env.Details)
+	}
+	return ""
 }
 
 func protocolFor(a *crew.Agent, tool string) string {
