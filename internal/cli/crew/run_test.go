@@ -158,9 +158,9 @@ func TestNewRunCmdPositionalConflictsWithInput(t *testing.T) {
 	writeTestAgent(t, home, "demo", ExecutionModeOnDemand)
 
 	deps := runDeps{
-		Home:    home,
-		Stdout:  io.Discard,
-		Stderr:  io.Discard,
+		Home:   home,
+		Stdout: io.Discard,
+		Stderr: io.Discard,
 	}
 	cmd := newRunCmdWith(deps)
 	cmd.SetArgs([]string{"demo", "vai", "--input", `{"a":1}`})
@@ -180,7 +180,7 @@ func TestRunAgentNotFound(t *testing.T) {
 	t.Parallel()
 
 	deps := runDeps{
-		Home:    t.TempDir(),
+		Home: t.TempDir(),
 		LoadAgent: func(dir string) (*AgentMeta, error) {
 			return nil, fmt.Errorf("load agent %s: read agent.yaml: %w", dir, fs.ErrNotExist)
 		},
@@ -201,7 +201,7 @@ func TestRunInvalidInput(t *testing.T) {
 	t.Parallel()
 
 	deps := runDeps{
-		Home:    t.TempDir(),
+		Home: t.TempDir(),
 	}
 	var stderr bytes.Buffer
 	deps.Stderr = &stderr
@@ -327,7 +327,7 @@ func TestRunSocketFallbackToSubprocess(t *testing.T) {
 	// back to subprocess.
 	var commands [][]string
 	deps := runDeps{
-		Home:    home,
+		Home: home,
 		DialSocket: func(ctx context.Context, path string) (net.Conn, error) {
 			return nil, errors.New("no listener")
 		},
@@ -365,7 +365,7 @@ func TestRunOnDemandNeverDials(t *testing.T) {
 	dialCalled := false
 	var commands [][]string
 	deps := runDeps{
-		Home:    home,
+		Home: home,
 		DialSocket: func(ctx context.Context, path string) (net.Conn, error) {
 			dialCalled = true
 			return nil, errors.New("should not be called")
@@ -393,7 +393,7 @@ func TestRunSubprocessBusinessError(t *testing.T) {
 
 	var commands [][]string
 	deps := runDeps{
-		Home:    home,
+		Home: home,
 		DialSocket: func(ctx context.Context, path string) (net.Conn, error) {
 			return nil, errors.New("never")
 		},
@@ -646,8 +646,8 @@ func TestRunSocketCrewVersionResolveFails(t *testing.T) {
 
 	var stderr bytes.Buffer
 	deps := runDeps{
-		Home:    home,
-		Stderr:  &stderr,
+		Home:   home,
+		Stderr: &stderr,
 		DialSocket: func(ctx context.Context, path string) (net.Conn, error) {
 			t.Fatal("dial must not be attempted when crew-version resolution fails")
 			return nil, nil

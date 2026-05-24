@@ -35,9 +35,9 @@ type Info struct {
 
 // File is the serialized form of ~/.shipyard/addons.json.
 type File struct {
-	SchemaVersion int             `json:"schemaVersion"`
-	Addons        map[Kind]*Info  `json:"addons"`
-	WrittenAt     time.Time       `json:"writtenAt"`
+	SchemaVersion int            `json:"schemaVersion"`
+	Addons        map[Kind]*Info `json:"addons"`
+	WrittenAt     time.Time      `json:"writtenAt"`
 	// Unknown holds fields we did not recognise so round-tripping is lossless.
 	Unknown map[string]json.RawMessage `json:"-"`
 }

@@ -51,12 +51,12 @@ const (
 	EventServiceRestartFailed = "service_restart_failed"
 
 	// HTTP / fairway.
-	EventHTTPRequest    = "http_request"
-	EventAsyncDispatch  = "async_dispatch_finished"
+	EventHTTPRequest   = "http_request"
+	EventAsyncDispatch = "async_dispatch_finished"
 
 	// Crew runs.
-	EventRunStart     = "run_start"
-	EventRunEnd       = "run_end"
+	EventRunStart      = "run_start"
+	EventRunEnd        = "run_end"
 	EventToolCallStart = "tool_call_start"
 	EventToolCallEnd   = "tool_call_end"
 	EventRunError      = "run_error"
@@ -74,11 +74,11 @@ const (
 	KeyError      = "error"
 	KeyErrorKind  = "error_kind"
 
-	KeyHTTPMethod      = "http_method"
-	KeyHTTPPath        = "http_path"
-	KeyHTTPStatus      = "http_status"
-	KeyHTTPRemoteAddr  = "http_remote_addr"
-	KeyHTTPResponseSz  = "http_response_bytes"
+	KeyHTTPMethod     = "http_method"
+	KeyHTTPPath       = "http_path"
+	KeyHTTPStatus     = "http_status"
+	KeyHTTPRemoteAddr = "http_remote_addr"
+	KeyHTTPResponseSz = "http_response_bytes"
 
 	KeyRouteAction   = "route_action"
 	KeyRouteTarget   = "route_target"

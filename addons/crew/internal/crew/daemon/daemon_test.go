@@ -426,12 +426,17 @@ func TestRunPoolFullReturnsErrorWhenConcurrentRequestExceedsCapacity(t *testing.
 	}
 
 	// Slow backend that ignores any flags the cli backend appends
-	// (--permission-mode, --mcp-config, …). Sleeps long enough that the
-	// second client's run RPC fires while the first is still holding the
-	// pool slot. 2s is the smallest comfortable margin for CI runners
-	// (Actions ubuntu-latest is occasionally slow under load).
+	// (--permission-mode, --mcp-config, …). Writes a marker file the moment
+	// it starts and then sleeps long enough that the second client's run
+	// RPC fires while the first is still holding the pool slot.
+	//
+	// The marker (instead of a wall-clock sleep in the test) makes the
+	// "client 1 has acquired the pool" signal deterministic: we poll the
+	// marker before firing client 2, so the test stays green under
+	// arbitrary host load (parallel suites, -race overhead, CI cold cache).
 	slowCmd := filepath.Join(root, "slow-backend.sh")
-	script := "#!/bin/sh\nsleep 2\nexit 0\n"
+	startedMarker := filepath.Join(root, "started.flag")
+	script := fmt.Sprintf("#!/bin/sh\ntouch %q\nsleep 2\nexit 0\n", startedMarker)
 	if err := os.WriteFile(slowCmd, []byte(script), 0o755); err != nil {
 		t.Fatalf("write script: %v", err)
 	}
@@ -527,10 +532,13 @@ tools: []
 		first <- result{resp: runCall(t, "client1", true)}
 	}()
 
-	// Give client 1 enough time to handshake + dispatch run + acquire the
-	// pool slot. The first echo through the dispatcher is microseconds;
-	// 150ms is a comfortable margin even under CI load.
-	time.Sleep(150 * time.Millisecond)
+	// Wait deterministically for the slow backend to start. Once the
+	// marker file exists, client 1 is mid-execution → pool slot is held.
+	// Polling with a 5s deadline tolerates arbitrary host load (race
+	// detector overhead, parallel suite contention, CI cold cache).
+	if err := waitForMarker(startedMarker, 5*time.Second); err != nil {
+		t.Fatalf("client1 backend never started: %v", err)
+	}
 
 	// Second client fires synchronously — should be rejected with
 	// ErrPoolFull surfaced as a JSON-RPC error.
@@ -565,4 +573,19 @@ tools: []
 	case <-time.After(5 * time.Second):
 		t.Fatal("daemon did not exit")
 	}
+}
+
+// waitForMarker polls path until it exists or the deadline elapses. Used by
+// tests that need to wait for a child process to reach a specific point
+// before continuing, without relying on wall-clock sleeps that drift under
+// load (CI runners, -race overhead).
+func waitForMarker(path string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(path); err == nil {
+			return nil
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return fmt.Errorf("marker %s did not appear within %s", path, timeout)
 }

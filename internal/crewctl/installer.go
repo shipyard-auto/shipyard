@@ -111,7 +111,7 @@ type Installer struct {
 	Force       bool
 	HTTPClient  HTTPClient
 	ReleaseBase string
-	Warn        io.Writer // PATH warning destination; defaults to os.Stderr
+	Warn        io.Writer           // PATH warning destination; defaults to os.Stderr
 	Getenv      func(string) string // overridable for tests; defaults to os.Getenv
 	Now         func() time.Time
 
