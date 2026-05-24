@@ -44,8 +44,10 @@ mental model:
 - **Terminal rendering / TUI wizards**: [`internal/ui`](./internal/ui).
 - **Release source of truth**: [`manifest`](./manifest) — three lines:
   `shipyard=`, `fairway=`, `crew=`.
-- **Agent-specific operating contract**: [`AGENTS.md`](./AGENTS.md) (this
-  repo) and [`CLAUDE.md`](./CLAUDE.md) (Claude-Code-specific extension).
+- **Agent-specific operating contract**: [`CLAUDE.md`](./CLAUDE.md)
+  (Claude-Code-specific extension). A local `AGENTS.md` lives in the
+  working tree but is intentionally gitignored — it's a per-machine
+  reference for the maintainer's agent stack.
 
 The CLI already has real OS integration. `cron` modifies the current user's
 crontab. `service` writes systemd / launchd units. `logs` writes JSONL event
@@ -186,8 +188,9 @@ Reflected in the codebase and intended to stay true:
 
 ## Where to Look Next
 
-- Operating constraints for AI coding agents: [`AGENTS.md`](./AGENTS.md)
-  and [`CLAUDE.md`](./CLAUDE.md).
+- Operating contract for AI coding agents: [`CLAUDE.md`](./CLAUDE.md).
+  (A local-only `AGENTS.md` may also be present in the maintainer's
+  working tree.)
 - Per-command CLI reference: [`CLAUDE.md`](./CLAUDE.md).
 - Internal documentation (gitignored): `docs/` — debt backlog, test
   scenarios, protocols.
