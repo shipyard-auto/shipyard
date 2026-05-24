@@ -90,7 +90,9 @@ jobs:
 
       - name: Upload coverage to Codecov
         if: matrix.os == 'ubuntu-latest'
-        uses: codecov/codecov-action@v4
+        # v5 runs on Node.js 24; v4 (Node 20) is being deprecated by
+        # GitHub on 2026-06-02 and will be force-migrated anyway.
+        uses: codecov/codecov-action@v5
         with:
           files: ./coverage.out
           fail_ci_if_error: false
