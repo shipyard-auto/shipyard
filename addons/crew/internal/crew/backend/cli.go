@@ -305,10 +305,20 @@ func (b *CLIBackend) buildMCPConfig(agent *crew.Agent) (string, func(), error) {
 	}
 
 	servers := map[string]json.RawMessage{}
+	// tempPaths accumulates per-ref upstream-config files written for the
+	// mcp-filter wrapper. The combined cleanup at the end removes them all
+	// alongside the main --mcp-config file.
+	var tempPaths []string
+	cleanup := func() {
+		for _, p := range tempPaths {
+			_ = os.Remove(p)
+		}
+	}
 
 	if len(agent.Tools) > 0 {
 		self, err := b.resolveSelfPath()
 		if err != nil {
+			cleanup()
 			return "", noop, fmt.Errorf("self path: %w", err)
 		}
 		internal := map[string]any{
@@ -318,6 +328,7 @@ func (b *CLIBackend) buildMCPConfig(agent *crew.Agent) (string, func(), error) {
 		}
 		raw, err := json.Marshal(internal)
 		if err != nil {
+			cleanup()
 			return "", noop, fmt.Errorf("marshal internal server: %w", err)
 		}
 		servers[internalServerKey] = raw
@@ -326,32 +337,74 @@ func (b *CLIBackend) buildMCPConfig(agent *crew.Agent) (string, func(), error) {
 	if len(agent.MCPServers) > 0 {
 		src, err := LoadClaudeMCPsForScope(b.userHomeDir, agent.ProjectScope)
 		if err != nil {
+			cleanup()
 			return "", noop, err
 		}
 		resolved, err := ResolveServerRefs(agent.MCPServers, src)
 		if err != nil {
+			cleanup()
 			return "", noop, err
 		}
-		for k, v := range resolved {
-			if _, clash := servers[k]; clash {
-				return "", noop, fmt.Errorf("mcp_servers: ref %q collides with internal server key", k)
+		// Iterate the original ref slice (not the resolved map) so we can
+		// access each ref's Tools whitelist.
+		for _, ref := range agent.MCPServers {
+			if _, clash := servers[ref.Ref]; clash {
+				cleanup()
+				return "", noop, fmt.Errorf("mcp_servers: ref %q collides with internal server key", ref.Ref)
 			}
-			servers[k] = v
+			upstream := resolved[ref.Ref]
+			if ref.AllowsAllTools() {
+				// Operator opted into the full surface of this MCP. No
+				// proxy hop — pass the original entry through.
+				servers[ref.Ref] = upstream
+				continue
+			}
+			// Restricted whitelist: write the upstream config to a temp
+			// file and replace the entry with an mcp-filter invocation
+			// that proxies stdio between claude and the real server.
+			upstreamPath, err := writeUpstreamConfig(upstream)
+			if err != nil {
+				cleanup()
+				return "", noop, fmt.Errorf("write upstream config for %q: %w", ref.Ref, err)
+			}
+			tempPaths = append(tempPaths, upstreamPath)
+			self, err := b.resolveSelfPath()
+			if err != nil {
+				cleanup()
+				return "", noop, fmt.Errorf("self path: %w", err)
+			}
+			wrapper := map[string]any{
+				"type":    "stdio",
+				"command": self,
+				"args": []string{
+					"mcp-filter",
+					"--upstream-config", upstreamPath,
+					"--tools", strings.Join(ref.Tools, ","),
+				},
+			}
+			raw, err := json.Marshal(wrapper)
+			if err != nil {
+				cleanup()
+				return "", noop, fmt.Errorf("marshal wrapper for %q: %w", ref.Ref, err)
+			}
+			servers[ref.Ref] = raw
 		}
 	}
 
 	body := map[string]any{"mcpServers": servers}
 	data, err := json.Marshal(body)
 	if err != nil {
+		cleanup()
 		return "", noop, fmt.Errorf("marshal mcp config: %w", err)
 	}
 
 	tmp, err := os.CreateTemp("", "shipyard-crew-mcp-*.json")
 	if err != nil {
+		cleanup()
 		return "", noop, fmt.Errorf("create temp: %w", err)
 	}
-	path := tmp.Name()
-	cleanup := func() { _ = os.Remove(path) }
+	mainPath := tmp.Name()
+	tempPaths = append(tempPaths, mainPath)
 	if _, err := tmp.Write(data); err != nil {
 		_ = tmp.Close()
 		cleanup()
@@ -361,7 +414,29 @@ func (b *CLIBackend) buildMCPConfig(agent *crew.Agent) (string, func(), error) {
 		cleanup()
 		return "", noop, fmt.Errorf("close temp: %w", err)
 	}
-	return path, cleanup, nil
+	return mainPath, cleanup, nil
+}
+
+// writeUpstreamConfig persists a single MCP server definition (as it
+// appeared in ~/.claude.json) to a temp file consumed by the mcp-filter
+// subcommand. The file is auto-removed by buildMCPConfig's combined
+// cleanup function.
+func writeUpstreamConfig(raw json.RawMessage) (string, error) {
+	tmp, err := os.CreateTemp("", "shipyard-crew-mcp-upstream-*.json")
+	if err != nil {
+		return "", err
+	}
+	path := tmp.Name()
+	if _, err := tmp.Write(raw); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(path)
+		return "", err
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(path)
+		return "", err
+	}
+	return path, nil
 }
 
 // resolveSelfPath returns the path to the running shipyard-crew binary,

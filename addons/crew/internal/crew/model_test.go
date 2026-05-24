@@ -54,20 +54,26 @@ func TestAgentValidate(t *testing.T) {
 		{"duplicate trigger", func(a *Agent) {
 			a.Triggers = append(a.Triggers, Trigger{Type: TriggerCron, Schedule: "0 */3 * * *"})
 		}, "duplicate trigger"},
-		{"mcp_servers ok", func(a *Agent) {
-			a.MCPServers = []MCPServerRef{{Ref: "chrome-devtools"}}
+		{"mcp_servers ok with explicit tools", func(a *Agent) {
+			a.MCPServers = []MCPServerRef{{Ref: "chrome-devtools", Tools: []string{"take_screenshot"}}}
 		}, ""},
+		{"mcp_servers ok with wildcard", func(a *Agent) {
+			a.MCPServers = []MCPServerRef{{Ref: "chrome-devtools", Tools: []string{"*"}}}
+		}, ""},
+		{"mcp_servers missing tools", func(a *Agent) {
+			a.MCPServers = []MCPServerRef{{Ref: "chrome-devtools"}}
+		}, "requires tools"},
 		{"mcp_servers empty ref", func(a *Agent) {
-			a.MCPServers = []MCPServerRef{{Ref: ""}}
+			a.MCPServers = []MCPServerRef{{Ref: "", Tools: []string{"*"}}}
 		}, "mcp_servers[0]"},
 		{"mcp_servers bad ref chars", func(a *Agent) {
-			a.MCPServers = []MCPServerRef{{Ref: "has space"}}
+			a.MCPServers = []MCPServerRef{{Ref: "has space", Tools: []string{"*"}}}
 		}, "mcp_servers[0]"},
 		{"mcp_servers duplicate", func(a *Agent) {
-			a.MCPServers = []MCPServerRef{{Ref: "x"}, {Ref: "x"}}
+			a.MCPServers = []MCPServerRef{{Ref: "x", Tools: []string{"*"}}, {Ref: "x", Tools: []string{"*"}}}
 		}, "duplicate ref"},
 		{"mcp_servers collides with tool", func(a *Agent) {
-			a.MCPServers = []MCPServerRef{{Ref: "scraper"}}
+			a.MCPServers = []MCPServerRef{{Ref: "scraper", Tools: []string{"*"}}}
 		}, "collides with tools"},
 		{"tool output_schema ok", func(a *Agent) {
 			a.Tools[0].OutputSchema = map[string]string{"ok": "boolean"}
@@ -266,23 +272,30 @@ func TestToolValidate_AllSchemaTypes(t *testing.T) {
 func TestMCPServerRefValidate(t *testing.T) {
 	tests := []struct {
 		name    string
-		ref     string
+		ref     MCPServerRef
 		wantErr string
 	}{
-		{"simple", "github", ""},
-		{"with dash", "chrome-devtools", ""},
-		{"with dot", "company.internal", ""},
-		{"with underscore", "my_mcp", ""},
-		{"digits only", "42", ""},
-		{"empty", "", "must match"},
-		{"leading dash", "-foo", "must match"},
-		{"space", "foo bar", "must match"},
-		{"slash", "foo/bar", "must match"},
-		{"too long", strings.Repeat("a", 64), "must match"},
+		{"simple", MCPServerRef{Ref: "github", Tools: []string{"*"}}, ""},
+		{"with dash", MCPServerRef{Ref: "chrome-devtools", Tools: []string{"take_screenshot"}}, ""},
+		{"with dot", MCPServerRef{Ref: "company.internal", Tools: []string{"*"}}, ""},
+		{"with underscore", MCPServerRef{Ref: "my_mcp", Tools: []string{"*"}}, ""},
+		{"digits only", MCPServerRef{Ref: "42", Tools: []string{"*"}}, ""},
+		{"explicit list", MCPServerRef{Ref: "chrome-devtools", Tools: []string{"take_screenshot", "click"}}, ""},
+		{"empty ref", MCPServerRef{Ref: "", Tools: []string{"*"}}, "must match"},
+		{"leading dash", MCPServerRef{Ref: "-foo", Tools: []string{"*"}}, "must match"},
+		{"space in ref", MCPServerRef{Ref: "foo bar", Tools: []string{"*"}}, "must match"},
+		{"slash in ref", MCPServerRef{Ref: "foo/bar", Tools: []string{"*"}}, "must match"},
+		{"ref too long", MCPServerRef{Ref: strings.Repeat("a", 64), Tools: []string{"*"}}, "must match"},
+		{"tools missing", MCPServerRef{Ref: "github"}, "requires tools"},
+		{"tools empty slice", MCPServerRef{Ref: "github", Tools: []string{}}, "requires tools"},
+		{"tools entry empty", MCPServerRef{Ref: "github", Tools: []string{"a", ""}}, "tools[1] is empty"},
+		{"tools entry blank", MCPServerRef{Ref: "github", Tools: []string{"a", "   "}}, "tools[1] is empty"},
+		{"tools duplicate", MCPServerRef{Ref: "github", Tools: []string{"a", "a"}}, "duplicate"},
+		{"wildcard mixed", MCPServerRef{Ref: "github", Tools: []string{"*", "extra"}}, "must appear alone"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			err := MCPServerRef{Ref: tc.ref}.Validate()
+			err := tc.ref.Validate()
 			if tc.wantErr == "" {
 				if err != nil {
 					t.Fatalf("unexpected: %v", err)
@@ -291,6 +304,26 @@ func TestMCPServerRefValidate(t *testing.T) {
 			}
 			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 				t.Fatalf("want %q, got %v", tc.wantErr, err)
+			}
+		})
+	}
+}
+
+func TestMCPServerRefAllowsAllTools(t *testing.T) {
+	tests := []struct {
+		name string
+		ref  MCPServerRef
+		want bool
+	}{
+		{"wildcard", MCPServerRef{Ref: "x", Tools: []string{"*"}}, true},
+		{"explicit list", MCPServerRef{Ref: "x", Tools: []string{"a", "b"}}, false},
+		{"single explicit", MCPServerRef{Ref: "x", Tools: []string{"a"}}, false},
+		{"empty", MCPServerRef{Ref: "x", Tools: nil}, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.ref.AllowsAllTools(); got != tc.want {
+				t.Fatalf("got %v want %v", got, tc.want)
 			}
 		})
 	}

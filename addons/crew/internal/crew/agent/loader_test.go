@@ -201,7 +201,9 @@ triggers: []
 tools: []
 mcp_servers:
   - ref: chrome-devtools
+    tools: ["*"]
   - ref: playwright
+    tools: [navigate, click]
 `)
 	writeTestFile(t, filepath.Join(agentDir, "prompt.md"), "p")
 
@@ -234,6 +236,7 @@ triggers: []
 tools: []
 mcp_servers:
   - ref: chrome-devtools
+    tools: ["*"]
 project_scope: /Users/me/proj
 `)
 	writeTestFile(t, filepath.Join(agentDir, "prompt.md"), "p")
