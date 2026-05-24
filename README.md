@@ -8,211 +8,190 @@
 curl -fsSL https://raw.githubusercontent.com/shipyard-auto/shipyard/main/scripts/install.sh | sh
 ```
 
-`shipyard` is a standalone Go CLI for local automation and OS-integrated operations on Linux and macOS.
+`shipyard` is a standalone Go CLI for **local automation and OS-integrated
+operations** on Linux and macOS. Local-first by design: no cloud account, no
+mandatory background service, no remote control plane.
 
-This project is intentionally local-first. The current focus is:
+Today it covers five subsystems behind a single binary:
 
-- installing, updating, and uninstalling the CLI
-- managing Shipyard-owned cron jobs for the current user
-- storing structured local logs for Shipyard operations
+| Subsystem | What it owns |
+|---|---|
+| **cron** | Shipyard-managed entries in the current user's crontab. |
+| **service** | User-scope services (`systemd --user` on Linux, `launchd` agents on macOS). |
+| **logs** | Structured JSONL events shared by every subsystem. |
+| **fairway** *(addon)* | HTTP gateway daemon that forwards routes to crew agents, shell actions or upstream URLs. |
+| **crew** *(addon)* | LLM-backed agents with tool dispatching, MCP bridges, cron/webhook triggers, and stateful conversations. |
+
+Both addons ship as separate binaries (`shipyard-fairway`, `shipyard-crew`)
+that the main `shipyard` CLI installs, upgrades and controls.
 
 ## Fast Context
 
-If you are another engineer or an AI entering this repository, the quickest accurate model is:
+If you are an engineer or AI entering this repository, the quickest accurate
+mental model:
 
-- entrypoint: [`cmd/shipyard/main.go`](./cmd/shipyard/main.go)
-- root command wiring: [`internal/cli/root.go`](./internal/cli/root.go)
-- main implemented subsystem: [`internal/cron`](./internal/cron)
-- reusable observability foundation: [`internal/logs`](./internal/logs)
-- terminal rendering/help styling: [`internal/ui`](./internal/ui)
-- release source of truth: [`manifest`](./manifest)
+- **Entrypoint**: [`cmd/shipyard/main.go`](./cmd/shipyard/main.go)
+- **Root command wiring**: [`internal/cli/root.go`](./internal/cli/root.go)
+- **Subsystems (live in `internal/`)**: [`cron`](./internal/cron),
+  [`service`](./internal/service), [`logs`](./internal/logs),
+  [`fairwayctl`](./internal/fairwayctl) (talks to fairway daemon),
+  [`crewctl`](./internal/crewctl) (talks to crew daemon).
+- **Addons (separate Go modules under `addons/`)**:
+  [`addons/fairway`](./addons/fairway),
+  [`addons/crew`](./addons/crew). The core never imports
+  `addons/*/internal/*`; communication is via subprocess contracts and
+  JSON-RPC sockets.
+- **Terminal rendering / TUI wizards**: [`internal/ui`](./internal/ui).
+- **Release source of truth**: [`manifest`](./manifest) — three lines:
+  `shipyard=`, `fairway=`, `crew=`.
+- **Agent-specific operating contract**: [`AGENTS.md`](./AGENTS.md) (this
+  repo) and [`CLAUDE.md`](./CLAUDE.md) (Claude-Code-specific extension).
 
-The CLI already has real OS integration. `cron` commands modify the current user's crontab. `logs` writes JSONL event files under `~/.shipyard/logs/`.
+The CLI already has real OS integration. `cron` modifies the current user's
+crontab. `service` writes systemd / launchd units. `logs` writes JSONL event
+files under `~/.shipyard/logs/`. `fairway` binds an HTTP listener (default
+`127.0.0.1:9876`). `crew` spawns subprocesses against `claude --print` or
+the Anthropic API.
 
-## Implemented Commands
+## Quick Start by Subsystem
 
-Top-level commands:
+```bash
+# Cron
+shipyard cron list
+shipyard cron add --name "Backup" --schedule "0 * * * *" --command "/usr/local/bin/backup"
 
-- `shipyard version`
-- `shipyard update`
-- `shipyard uninstall`
-- `shipyard cron ...`
-- `shipyard service ...`
-- `shipyard logs ...`
+# Service
+shipyard service add --name "Worker" --command "/usr/local/bin/worker"
+shipyard service status <id>
 
-`shipyard cron` currently supports:
+# Logs (reads all sources by default)
+shipyard logs show
+shipyard logs tail --source crew --trace <trace-id>
 
-- `list`
-- `show`
-- `add`
-- `update`
-- `delete`
-- `enable`
-- `disable`
-- `run`
+# Fairway (HTTP gateway addon)
+shipyard fairway install
+shipyard fairway route add --path /hook --action crew.run --target my-agent --auth bearer --auth-token <secret>
 
-`shipyard logs` currently supports:
+# Crew (LLM agent addon)
+shipyard crew install
+shipyard crew hire my-agent
+shipyard crew apply my-agent
+shipyard crew run my-agent "do the thing"
+```
 
-- `list`
-- `show`
-- `tail`
-- `prune`
-- `config`
-- `config set retention-days <n>`
+The interactive control panels are reachable via `shipyard <subsystem>
+config` (cron, service, logs, fairway, crew) and require a real TTY.
 
-`shipyard service` currently supports:
-
-- `list`
-- `show`
-- `add`
-- `update`
-- `delete`
-- `enable`
-- `disable`
-- `start`
-- `stop`
-- `restart`
-- `status`
-- `config`
-
-### `shipyard cron config`
-
-`shipyard cron config` opens an interactive full-screen control panel for Shipyard-managed cron jobs.
-Use it for guided add, browse, update, enable, disable, run, and delete flows.
-The wizard only manages jobs created by Shipyard and preserves external crontab entries.
-
-### `shipyard logs config`
-
-`shipyard logs config` opens an interactive logs control panel when running in a real terminal with no extra args.
-Use it to inspect sources, review recent events, tail live events, change retention, and prune old files.
-For scripts and automation, `shipyard logs config set retention-days <n>` remains the non-interactive path.
-
-### `shipyard service config`
-
-`shipyard service config` opens an interactive service control panel for Shipyard-managed user services.
-Use it for guided add, browse, update, lifecycle, enable/disable, status, and delete flows.
-The wizard only manages services created by Shipyard and preserves external units or launch agents.
-
-## How Shipyard Works
-
-### CLI structure
-
-- `cmd/shipyard`: binary entrypoint
-- `internal/cli`: command definitions and help rendering
-- `internal/ui`: splash/help formatting helpers
-
-### Cron subsystem
-
-`shipyard cron` is the main OS-facing feature today.
-
-Key rules:
-
-- it manages only jobs created by Shipyard
-- it operates on the current user's crontab only
-- it preserves external cron entries
-- it does not import non-Shipyard jobs automatically
-- local state is stored in `~/.shipyard/crons.json`
-
-Shipyard-managed jobs are rendered into the crontab with Shipyard markers so they can be updated or removed safely without touching unrelated entries.
-
-### Logs subsystem
-
-`shipyard logs` is the foundation for future observability across cron, services, and later agent runtimes.
-
-Current model:
-
-- config file: `~/.shipyard/logs.json`
-- log root: `~/.shipyard/logs/`
-- file format: JSONL
-- layout: `~/.shipyard/logs/<source>/YYYY-MM-DD.jsonl`
-- initial source: `cron`
-- default retention: `14` days
-
-Logs are normalized structured events. The storage format is intentionally source-neutral so future modules like `service` or `agent` can reuse the same event pipeline.
-
-### Service subsystem
-
-`shipyard service` is the local service/process management layer for user-scoped services.
-
-Key rules:
-
-- it manages only services created by Shipyard
-- it operates only in user scope
-- Linux uses `systemd --user`
-- macOS uses user `launchd` agents
-- local state is stored in `~/.shipyard/services.json`
-- service unit files are derived projections, not the source of truth
-
-Shipyard-managed units are identified by stable prefixes:
-
-- Linux: `shipyard-<ID>.service`
-- macOS: `com.shipyard.service.<ID>`
+Full per-command reference lives in [`CLAUDE.md`](./CLAUDE.md).
 
 ## Local State
 
-Shipyard currently uses `~/.shipyard/` as its local base directory.
+Shipyard keeps everything under `~/.shipyard/`:
 
-Important files and directories:
+| Path | Purpose |
+|---|---|
+| `~/.shipyard/install.json` | Installation metadata |
+| `~/.shipyard/crons.json` | Shipyard-managed cron jobs |
+| `~/.shipyard/services.json` | Shipyard-managed user services |
+| `~/.shipyard/logs.json` | Logs subsystem config |
+| `~/.shipyard/logs/<source>/YYYY-MM-DD.jsonl` | Daily JSONL log files |
+| `~/.shipyard/fairway/` | Fairway addon state (config, routes, stats) |
+| `~/.shipyard/crew/<name>/` | Crew agent definition (`agent.yaml`, `prompt.md`) |
+| `~/.shipyard/crew/<name>/sessions/` | Stateful conversation history (JSONL) |
+| `~/.shipyard/crew/tools/` | Reusable tool definitions for crew agents |
+| `~/.shipyard/run/` | Unix sockets and PID files for daemons |
 
-- `~/.shipyard/install.json`
-- `~/.shipyard/crons.json`
-- `~/.shipyard/services.json`
-- `~/.shipyard/logs.json`
-- `~/.shipyard/logs/`
+State files are auto-created on demand. Shipyard never touches anything
+outside `~/.shipyard/` automatically — external crontab entries, third-party
+launchd agents and unrelated `~/.claude.json` MCP servers stay untouched.
 
-Important behavior:
-
-- local directories are auto-created when needed
-- logs auto-initialize on first write
-- `crons.json` is Shipyard state, not a user-facing manual config surface
-
-## Build And Validation
-
-Primary toolchain target:
-
-- Go `1.26.2`
-
-Useful commands:
+## Building From Source
 
 ```bash
-GOTOOLCHAIN=go1.26.2 go test ./...
+# Build the main binary
 GOTOOLCHAIN=go1.26.2 go build ./cmd/shipyard
+
+# Run all tests (root module)
+GOTOOLCHAIN=go1.26.2 go test ./...
+
+# Test a specific addon
+cd addons/fairway && GOTOOLCHAIN=go1.26.2 go test ./... -count=1
+cd addons/crew    && GOTOOLCHAIN=go1.26.2 go test ./... -count=1
+```
+
+Toolchain pin: **Go 1.26.2**. CI enforces it; local builds should match.
+
+## Continuous Integration
+
+Every pull request triggers [`.github/workflows/ci.yml`](.github/workflows/ci.yml):
+
+- **Lint**: `gofmt -l` (must be empty), `go vet ./...`, `golangci-lint run`
+  (config in [`.golangci.yml`](./.golangci.yml)).
+- **Test matrix**: `ubuntu-latest` and `macos-latest`. Full suite with
+  `-race -coverprofile`, 5-minute timeout.
+- **Coverage**: uploaded to Codecov from the ubuntu run.
+
+Main is protected: PRs cannot merge unless all three checks (Lint, Test
+ubuntu, Test macOS) are green and the branch is up to date with main. Push
+to main and force-push are blocked.
+
+Release workflows ([`shipyard-release.yml`](.github/workflows/shipyard-release.yml),
+[`fairway-release.yml`](.github/workflows/fairway-release.yml),
+[`crew-release.yml`](.github/workflows/crew-release.yml)) fire on push to
+main and build artifacts only when the corresponding line in `manifest`
+changes. Each release runs a post-publish smoke matrix that installs from
+the published artifact on ubuntu + macOS and exercises the binary.
+
+Before opening a PR, run locally:
+
+```bash
+gofmt -w .
+go vet ./...
+golangci-lint run --timeout=5m
+GOTOOLCHAIN=go1.26.2 go test ./... -race
 ```
 
 ## Release Model
 
-- release versions are read from [`manifest`](./manifest) (`shipyard=` and `fairway=` lines)
-- GitHub Actions publishes releases from `main`
-- shipyard tags use `v<version>`, fairway tags use `fairway-v<version>`
-- version bumps are manual and intentional
+Three independently-versioned components, all tracked in [`manifest`](./manifest):
 
-## Active Engineering Rules
+- `shipyard=` — main CLI binary. Tag: `v<version>`.
+- `fairway=` — HTTP gateway daemon. Tag: `fairway-v<version>`.
+- `crew=` — LLM agent daemon. Tag: `crew-v<version>`.
 
-These constraints are already reflected in the codebase and should stay true:
+A release fires when its line in `manifest` changes and the commit lands on
+main. Bumps are deliberate human actions (or part of the
+[tech-debt protocol](./docs/protocolos/debito-tecnico.md) for agents).
 
-- keep shell scripts minimal; core behavior belongs in Go
-- keep business logic in `internal/`
-- keep OS boundaries explicit and easy to test
-- preserve non-Shipyard system state
-- prefer structured local state over hidden behavior
-- prefer modular subsystems that future services can plug into
+Pre-1.0 components (`crew` today) can ship breaking changes in minor bumps;
+post-1.0 components follow strict semver.
 
-## Near-Term Product Direction
+## Architecture Rules
 
-The current foundation is:
+Reflected in the codebase and intended to stay true:
 
-1. local CLI operations
-2. cron management
-3. service management
-4. structured local logs
+- Business logic lives in `internal/`; `cmd/` is thin.
+- OS boundaries (crontab, systemd, launchd, sockets) belong in subsystem
+  packages, not in CLI handlers.
+- The core CLI must not import `addons/*/internal/*`. Communication with
+  addons is by subprocess contracts (`shipyard-crew reconcile`,
+  `shipyard-crew mcp-serve`, `shipyard-crew mcp-filter`) and JSON-RPC
+  Unix sockets.
+- Shipyard manages only state it created. External crontab entries,
+  third-party systemd units and unrelated `~/.claude.json` keys are never
+  touched.
+- Prefer structured local state (`~/.shipyard/*.json`,
+  `~/.shipyard/crew/<name>/.reconciled.json`) over hidden side effects.
+- Keep shell scripts minimal; real logic belongs in Go.
 
-The intended next layers are:
+## Where to Look Next
 
-1. service/process management
-2. richer observability
-3. agent and subagent runtime features
+- Operating constraints for AI coding agents: [`AGENTS.md`](./AGENTS.md)
+  and [`CLAUDE.md`](./CLAUDE.md).
+- Per-command CLI reference: [`CLAUDE.md`](./CLAUDE.md).
+- Internal documentation (gitignored): `docs/` — debt backlog, test
+  scenarios, protocols.
 
-## Repo-Specific Notes
-
-- [`AGENTS.md`](../AGENTS.md) defines repo-specific operating constraints for coding agents working from the project root.
-- This repository is the standalone `shipyard` project. Do not assume it is a subdirectory of another Go module when editing code or release workflow files.
+This repository is the standalone `shipyard` project. Even though it lives
+inside a larger monorepo on the author's machine, do not assume it is a
+subdirectory of another Go module when editing code or release workflows.

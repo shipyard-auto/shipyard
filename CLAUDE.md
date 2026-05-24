@@ -52,6 +52,21 @@ cd addons/fairway && GOTOOLCHAIN=go1.26.2 go test ./... -count=1
 cd addons/crew    && GOTOOLCHAIN=go1.26.2 go test ./... -count=1
 ```
 
+## Pre-PR checks
+
+Run these locally before opening a PR. CI will run the same set and bounce
+the PR if anything fails — saving you the round-trip is cheap insurance.
+
+```bash
+gofmt -w .                                        # format in-place
+go vet ./...
+golangci-lint run --timeout=5m                    # config in .golangci.yml
+GOTOOLCHAIN=go1.26.2 go test ./... -race          # race detector matches CI
+```
+
+`golangci-lint` v2.x is required (matches `.golangci.yml` schema). On macOS
+`brew install golangci-lint` ships the right version.
+
 ## CLI Reference
 
 ### Top-Level Commands
@@ -85,7 +100,7 @@ shipyard version
 
 ### `shipyard update`
 
-Download the latest published release for this platform and replace the running binary. If shipyard-fairway is installed, it is also updated.
+Download the latest published release for this platform and replace the running binary. Any installed addons (`shipyard-fairway`, `shipyard-crew`) are reconciled in the same run.
 
 ```bash
 shipyard update
@@ -285,26 +300,30 @@ shipyard logs list
 
 #### `shipyard logs show`
 
-Print recent log entries. Defaults to the `cron` source.
+Print recent log entries. Reads every source by default; pass `--source` (repeatable) to narrow.
 
 ```bash
-shipyard logs show --source cron
-shipyard logs show --source cron --id AB12CD --limit 20
+shipyard logs show
+shipyard logs show --source crew --id <agent>
+shipyard logs show --source fairway --source cron --since 1h
+shipyard logs show --trace <trace-id>
 shipyard logs show --level error
 ```
 
-Flags: `--source` (default `cron`), `--id`, `--level`, `--limit` (default `50`).
+Flags: `--source` (repeatable, default = all known sources), `--trace`, `--id`, `--level`, `--since`, `--limit` (default `50`), `--json`.
 
 #### `shipyard logs tail`
 
-Stream live log entries as they are written. Press `Ctrl+C` to stop.
+Stream live log entries as they are written. Press `Ctrl+C` to stop. Same
+filters as `show`.
 
 ```bash
-shipyard logs tail --source cron
-shipyard logs tail --source cron --id AB12CD
+shipyard logs tail
+shipyard logs tail --source crew --id <agent>
+shipyard logs tail --trace <trace-id>
 ```
 
-Flags: `--source`, `--id`, `--level`.
+Flags: `--source` (repeatable), `--trace`, `--id`, `--level`, `--json`.
 
 #### `shipyard logs prune`
 
@@ -510,6 +529,50 @@ Reading: `shipyard logs show|tail` reads all sources by default; filter with `--
 
 Sampling is plumbed (`logs.Options.Sampler`) but disabled by default; production keeps every record.
 
+## Continuous Integration
+
+PRs run [`.github/workflows/ci.yml`](.github/workflows/ci.yml):
+
+- **lint job** — `gofmt -l` (fail on any unformatted file), `go vet ./...`,
+  `golangci-lint run` (v2.x, config in [`.golangci.yml`](.golangci.yml)).
+- **test job** — matrix `ubuntu-latest + macos-latest`, full suite with
+  `-race -coverprofile=coverage.out -covermode=atomic`. Coverage uploaded
+  to Codecov from the ubuntu run.
+
+Branch protection on `main` requires all three checks (Lint, Test ubuntu,
+Test macOS) to be green and the PR branch to be up to date before merge.
+Direct push, force-push and deletion of `main` are blocked.
+
+`.golangci.yml` enables a deliberately conservative starting set
+(`govet`, `ineffassign`, `bodyclose`). Other linters (`errcheck`,
+`staticcheck`, `unused`, `errorlint`, `revive`, `misspell`) are listed in
+the config as deferred, each with the rough count of pre-existing
+findings to triage before flipping them on. Enable them incrementally
+with a focused cleanup PR per linter.
+
+Release workflows (`shipyard-release.yml`, `fairway-release.yml`,
+`crew-release.yml`) fire on push to `main`, gated on the corresponding
+line in `manifest` having changed. Each release publishes artifacts and
+runs a post-publish smoke matrix that installs from the published
+artifact on ubuntu + macOS.
+
+## Test invariants (do not remove silently)
+
+These patterns exist because of CI-specific concerns; an agent that
+"simplifies" them will break the pipeline.
+
+- [`internal/ui/tui/fairwaywiz/fairwaywiz_snapshot_test.go`](internal/ui/tui/fairwaywiz/fairwaywiz_snapshot_test.go)
+  carries `//go:build !race`. The bubbletea event loop races with key
+  input under the race detector — a test-framework artifact, not a
+  production bug. **Do not remove the build tag.** If the file is
+  renamed, the tag must move with it.
+- [`addons/crew/internal/crew/daemon/daemon_test.go`](addons/crew/internal/crew/daemon/daemon_test.go):
+  `TestRunPoolFullReturnsErrorWhenConcurrentRequestExceedsCapacity`
+  waits on a marker file the slow backend touches, not on
+  `time.Sleep`. **Do not replace with a sleep.** The marker-file
+  synchronization is what makes the test deterministic under parallel
+  suite load and `-race` overhead in CI.
+
 ## Architecture Rules
 
 - Keep business logic in `internal/`; keep `cmd/` thin.
@@ -518,7 +581,8 @@ Sampling is plumbed (`logs.Options.Sampler`) but disabled by default; production
 - Shipyard only manages state it created. Never modify external crontab entries, units, or agents automatically.
 - Prefer structured local state (`~/.shipyard/*.json`) over hidden side effects.
 - Bumping version fields in `manifest` from code is allowed **only** as part of the tech-debt protocol in [docs/protocolos/debito-tecnico.md](docs/protocolos/debito-tecnico.md) (step 8: bump goes in its own `chore: bump <componente> to <versão>` commit, separate from the code commit, following the subsystem-to-field mapping documented there). Outside that protocol, manifest bumps remain a manual human step.
-- Never touch `.github/workflows/` or `.github/actions/` unless the task is explicitly about CI.
+- Doc-only and CI-only PRs do **not** bump `manifest` — they ship no binary changes.
+- Never touch `.github/workflows/`, `.github/actions/`, or `.golangci.yml` unless the task is explicitly about CI / tooling.
 
 ## Tech-debt workflow
 
