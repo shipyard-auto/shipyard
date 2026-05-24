@@ -71,3 +71,24 @@ func (w *Writer) Write(v any) error {
 	_, err = w.w.Write(data)
 	return err
 }
+
+// WriteRaw sends a pre-marshaled JSON frame followed by a trailing newline.
+// It is used by callers that proxy bytes through without re-encoding (e.g.
+// the mcpfilter package forwarding frames between claude and an upstream
+// MCP server). The newline is appended only when the input lacks one.
+func (w *Writer) WriteRaw(frame []byte) error {
+	if len(frame) == 0 {
+		return nil
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if _, err := w.w.Write(frame); err != nil {
+		return err
+	}
+	if frame[len(frame)-1] != '\n' {
+		if _, err := w.w.Write([]byte{'\n'}); err != nil {
+			return err
+		}
+	}
+	return nil
+}

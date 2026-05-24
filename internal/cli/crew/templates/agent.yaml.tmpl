@@ -26,13 +26,28 @@ triggers: []
 # See `shipyard crew tool add --help` to manage the library.
 tools: []
 
-# External MCP servers to expose alongside this agent's tools. Each entry
-# is a ref to a key defined in ~/.claude.json (root-level mcpServers).
-# Missing refs hard-fail at run-time so the agent cannot silently lose
-# capabilities.
-# Example:
+# External MCP servers to expose alongside this agent's tools.
+#
+# Each entry references an MCP server defined in ~/.claude.json
+# (key under root "mcpServers"). The `tools` field is REQUIRED and lists
+# the exact tools the agent may call from that MCP server. Use ["*"] only
+# when you intentionally want to expose every tool the MCP offers — there
+# is no silent "expose all" default.
+#
+# Two patterns:
+#
 #   mcp_servers:
 #     - ref: chrome-devtools
+#       tools: [take_screenshot, click]   # whitelist
+#     - ref: filesystem
+#       tools: ["*"]                      # explicit "everything"
+#
+# Why explicit? MCP servers commonly expose tools you don't need
+# (chrome-devtools also offers evaluate_javascript). Listing what the
+# agent actually uses keeps blast radius scoped to intent.
+#
+# Missing refs hard-fail at apply time; missing or empty `tools` also
+# hard-fails with a clear message.
 # mcp_servers: []
 
 # Path of the Claude Code project whose mcpServers map should be layered

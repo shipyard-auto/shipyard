@@ -633,7 +633,7 @@ func TestCLI_MCPSyncEnvOnlyWhenServersDeclared(t *testing.T) {
 			Agent: &crew.Agent{
 				Name:       "t",
 				Backend:    crew.Backend{Type: crew.BackendCLI, Command: []string{script}},
-				MCPServers: []crew.MCPServerRef{{Ref: "any"}},
+				MCPServers: []crew.MCPServerRef{{Ref: "any", Tools: []string{"*"}}},
 			},
 		}, nil)
 		if err != nil {

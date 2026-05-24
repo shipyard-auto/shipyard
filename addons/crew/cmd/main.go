@@ -72,6 +72,7 @@ type runtimeDeps struct {
 	RunOnDemand  func(ctx context.Context, req onDemandRequest) (int, error)
 	RunReconcile func(ctx context.Context, req reconcileRequest) (int, error)
 	RunMCPServe  func(ctx context.Context, req mcpServeRequest) (int, error)
+	RunMCPFilter func(ctx context.Context, req mcpFilterRequest) (int, error)
 }
 
 type onDemandRequest struct {
@@ -109,6 +110,10 @@ func run(ctx context.Context, deps runtimeDeps) int {
 
 	if len(deps.Args) > 0 && deps.Args[0] == "mcp-serve" {
 		return runMCPServeMode(ctx, deps, deps.Args[1:])
+	}
+
+	if len(deps.Args) > 0 && deps.Args[0] == "mcp-filter" {
+		return runMCPFilterMode(ctx, deps, deps.Args[1:])
 	}
 
 	fs := flag.NewFlagSet("shipyard-crew", flag.ContinueOnError)
@@ -340,6 +345,9 @@ func (d runtimeDeps) withDefaults() runtimeDeps {
 	}
 	if d.RunMCPServe == nil {
 		d.RunMCPServe = defaultRunMCPServe
+	}
+	if d.RunMCPFilter == nil {
+		d.RunMCPFilter = defaultRunMCPFilter
 	}
 	return d
 }

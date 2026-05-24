@@ -134,12 +134,29 @@ type Tool struct {
 // server definition through to Claude Code via --mcp-config, so the agent
 // can call that MCP's tools alongside its own.
 //
-// Client-side filtering (e.g. "expose only take_screenshot of chrome-devtools")
-// is intentionally out of scope in v1: it would require a proxy MCP server
-// between Claude and the real one. See docs/crew/roadmap.md for the
-// follow-up item.
+// The Tools field is REQUIRED and acts as a whitelist of tool names the
+// agent may call from this MCP server. Use ["*"] to explicitly opt into
+// every tool the server offers. There is no implicit "expose all" — every
+// MCP entry must declare intent. Rationale: MCP servers commonly bundle
+// tools well beyond what any single agent needs (chrome-devtools also
+// offers evaluate_javascript, navigate, etc.); making the operator name
+// the subset keeps blast radius scoped to intent.
 type MCPServerRef struct {
-	Ref string `yaml:"ref"`
+	Ref   string   `yaml:"ref"`
+	Tools []string `yaml:"tools"`
+}
+
+// MCPWildcardAll is the sentinel value used in MCPServerRef.Tools to mean
+// "expose every tool this MCP server offers". It must appear alone — mixing
+// it with explicit tool names is a validation error.
+const MCPWildcardAll = "*"
+
+// AllowsAllTools reports whether this ref exposes every tool the MCP
+// offers (Tools == ["*"]). Callers that need to know whether to bypass
+// the proxy filter (perf optimization) should use this helper instead of
+// raw slice comparison.
+func (m MCPServerRef) AllowsAllTools() bool {
+	return len(m.Tools) == 1 && m.Tools[0] == MCPWildcardAll
 }
 
 func (a Agent) Validate() error {
@@ -196,12 +213,35 @@ func (a Agent) Validate() error {
 	return nil
 }
 
-// Validate enforces the server-ref identifier regex. Resolution against
-// ~/.claude.json happens later, in the backend — the domain layer only
-// ensures the reference is syntactically sane.
+// Validate enforces the server-ref identifier regex and the Tools whitelist
+// contract. Resolution against ~/.claude.json happens later, in the
+// backend — the domain layer only ensures the reference is syntactically
+// sane and that the operator declared explicit intent about which tools
+// the agent may call.
 func (m MCPServerRef) Validate() error {
 	if !MCPRefRe.MatchString(m.Ref) {
 		return fmt.Errorf("ref %q: must match %s", m.Ref, MCPRefRe)
+	}
+	if len(m.Tools) == 0 {
+		return fmt.Errorf("ref %q requires tools: list every tool the agent may call from this MCP server, or use tools: [%q] to explicitly allow all", m.Ref, MCPWildcardAll)
+	}
+	seen := map[string]struct{}{}
+	hasWildcard := false
+	for i, t := range m.Tools {
+		trimmed := strings.TrimSpace(t)
+		if trimmed == "" {
+			return fmt.Errorf("ref %q: tools[%d] is empty", m.Ref, i)
+		}
+		if _, dup := seen[trimmed]; dup {
+			return fmt.Errorf("ref %q: tools[%d]: duplicate %q", m.Ref, i, trimmed)
+		}
+		seen[trimmed] = struct{}{}
+		if trimmed == MCPWildcardAll {
+			hasWildcard = true
+		}
+	}
+	if hasWildcard && len(m.Tools) > 1 {
+		return fmt.Errorf("ref %q: tools: %q must appear alone — cannot mix with explicit tool names", m.Ref, MCPWildcardAll)
 	}
 	return nil
 }
