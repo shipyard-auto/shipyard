@@ -32,11 +32,11 @@ type Record struct {
 	Error      string `json:"error,omitempty"`
 	ErrorKind  string `json:"error_kind,omitempty"`
 
-	HTTPMethod      string `json:"http_method,omitempty"`
-	HTTPPath        string `json:"http_path,omitempty"`
-	HTTPStatus      int    `json:"http_status,omitempty"`
-	HTTPRemoteAddr  string `json:"http_remote_addr,omitempty"`
-	HTTPResponseSz  int64  `json:"http_response_bytes,omitempty"`
+	HTTPMethod     string `json:"http_method,omitempty"`
+	HTTPPath       string `json:"http_path,omitempty"`
+	HTTPStatus     int    `json:"http_status,omitempty"`
+	HTTPRemoteAddr string `json:"http_remote_addr,omitempty"`
+	HTTPResponseSz int64  `json:"http_response_bytes,omitempty"`
 
 	RouteAction   string `json:"route_action,omitempty"`
 	RouteTarget   string `json:"route_target,omitempty"`

@@ -25,6 +25,10 @@ concurrency:
 jobs:
   release:
     runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      version: ${{ steps.version.outputs.version }}
+      changed: ${{ steps.detect.outputs.changed }}
 
     steps:
       - name: Checkout repository
@@ -149,3 +153,45 @@ jobs:
             dist/shipyard_${{ steps.version.outputs.version }}_linux_arm64.tar.gz
             dist/shipyard_${{ steps.version.outputs.version }}_darwin_amd64.tar.gz
             dist/shipyard_${{ steps.version.outputs.version }}_darwin_arm64.tar.gz
+
+  # Mirror the fairway/crew workflows: after publishing, install the
+  # released binary on each supported OS and run a minimal sanity check
+  # against the public artifact. Catches packaging-level regressions
+  # (wrong arch in archive, broken install script, etc.) that the
+  # in-tree tests can't see.
+  smoke-test:
+    needs: release
+    if: needs.release.outputs.changed == 'true'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Wait for release to be visible
+        run: |
+          tag="${{ needs.release.outputs.tag }}"
+          for i in $(seq 1 30); do
+            if curl -fsS "https://api.github.com/repos/${{ github.repository }}/releases/tags/$tag" >/dev/null 2>&1; then
+              echo "Release $tag is live."
+              exit 0
+            fi
+            echo "Release $tag not yet visible (attempt $i/30)…"
+            sleep 5
+          done
+          echo "::error::Release $tag never appeared." >&2
+          exit 1
+
+      - name: Install via published artifact
+        env:
+          VERSION: ${{ needs.release.outputs.version }}
+        run: sh scripts/install.sh
+
+      - name: Run shipyard version
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          out="$(shipyard version 2>&1)"
+          echo "$out"
+          echo "$out" | grep -F "${{ needs.release.outputs.version }}"

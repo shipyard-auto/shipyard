@@ -72,9 +72,9 @@ type Agent struct {
 	// (the same per-project scoping Claude Code uses). Project-scoped
 	// servers take precedence over root mcpServers when both define the
 	// same key. Empty (default) preserves root-only behavior.
-	ProjectScope string         `yaml:"project_scope,omitempty"`
-	PromptPath   string         `yaml:"-"`
-	Dir          string         `yaml:"-"`
+	ProjectScope string `yaml:"project_scope,omitempty"`
+	PromptPath   string `yaml:"-"`
+	Dir          string `yaml:"-"`
 }
 
 type Backend struct {

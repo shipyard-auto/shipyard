@@ -234,13 +234,13 @@ func TestServeHTTP_sync_carriesTraceIDHeader(t *testing.T) {
 // real pool mechanics. Mock targeted at server-level F-01 invariants;
 // real-executor coverage lives in TestServeHTTP_async_poolFull_returns503.
 type countingPoolExecutor struct {
-	mu             sync.Mutex
-	acquireCalls   int
-	acquireRefuse  bool // when true, Acquire returns ok=false
-	releaseCalled  bool
-	executeCalls   int
-	executeNoPool  int
-	executeResult  fairway.Result
+	mu            sync.Mutex
+	acquireCalls  int
+	acquireRefuse bool // when true, Acquire returns ok=false
+	releaseCalled bool
+	executeCalls  int
+	executeNoPool int
+	executeResult fairway.Result
 }
 
 func (c *countingPoolExecutor) Acquire(_ context.Context) (release func(), ok bool) {

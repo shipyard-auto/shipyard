@@ -1,5 +1,9 @@
 # Shipyard
 
+[![CI](https://github.com/shipyard-auto/shipyard/actions/workflows/ci.yml/badge.svg)](https://github.com/shipyard-auto/shipyard/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/shipyard-auto/shipyard/branch/main/graph/badge.svg)](https://codecov.io/gh/shipyard-auto/shipyard)
+[![Go Report Card](https://goreportcard.com/badge/github.com/shipyard-auto/shipyard)](https://goreportcard.com/report/github.com/shipyard-auto/shipyard)
+
 ```sh
 curl -fsSL https://raw.githubusercontent.com/shipyard-auto/shipyard/main/scripts/install.sh | sh
 ```

@@ -1,0 +1,58 @@
+# golangci-lint v2 configuration.
+#
+# Philosophy: start conservative. Only checks that catch real bugs (or that
+# are universally agreed Go style) are enabled. Opinionated linters
+# (forbidigo, gochecknoglobals, depguard) are intentionally off until the
+# codebase opts in explicitly.
+
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: none
+  enable:
+    # High-signal core. These never produce false positives at meaningful
+    # rates on idiomatic Go and catch real defects.
+    - govet        # stdlib vet — printf format mismatches, struct tag
+                   # typos, shadowed errors, etc.
+    - ineffassign  # assignment whose value is never used (typo/copy-paste).
+    - bodyclose    # forgot to close http.Response.Body in production code.
+  # Linters intentionally NOT enabled in the first CI iteration:
+  #
+  # - errcheck:     false-positives on every idiomatic `defer x.Close()`
+  #                 against custom types (matches by concrete receiver,
+  #                 not interface). Re-enable when we have a canonical
+  #                 Close() exclude list.
+  # - staticcheck:  ~12 pre-existing findings to triage (SA*, S*). Worth
+  #                 enabling once the codebase is clean.
+  # - unused:       ~10 dead-code findings (mostly leftover helpers).
+  #                 Enable after a sweep.
+  # - errorlint:    ~8 `err ==` vs `errors.Is` cases. Real bugs, but want
+  #                 to audit each individually before flipping.
+  # - revive:       ~15 style nits. Low ROI vs noise.
+  # - misspell:     ~70 hits because comments mix Portuguese and English;
+  #                 needs locale config or per-comment opt-out.
+  #
+  # Each of the above can be enabled in a follow-up PR with the
+  # corresponding cleanup batch.
+  exclusions:
+    rules:
+      # Tests construct fake http.Response objects with io.NopCloser
+      # bodies (no real resource leak risk).
+      - path: _test\.go$
+        linters:
+          - bodyclose
+      # Generated test fixtures sometimes need quirky names.
+      - path: testdata/
+        linters:
+          - bodyclose
+          - govet
+          - ineffassign
+
+issues:
+  # Show every issue — full visibility on CI. Local devs can use
+  # `--max-issues-per-linter` for their own runs.
+  max-issues-per-linter: 0
+  max-same-issues: 0

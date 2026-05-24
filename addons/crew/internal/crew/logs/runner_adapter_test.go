@@ -38,7 +38,7 @@ func (h *recordingHandler) Handle(ctx context.Context, r slog.Record) error {
 	return nil
 }
 func (h *recordingHandler) WithAttrs(_ []slog.Attr) slog.Handler { return h }
-func (h *recordingHandler) WithGroup(_ string) slog.Handler     { return h }
+func (h *recordingHandler) WithGroup(_ string) slog.Handler      { return h }
 
 func (h *recordingHandler) snapshot() []recordedEntry {
 	h.mu.Lock()

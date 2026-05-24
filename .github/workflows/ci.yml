@@ -1,0 +1,102 @@
+name: CI
+
+# Runs on every pull request. Direct pushes to non-main branches without
+# an open PR can be validated via workflow_dispatch. Release workflows
+# (shipyard-release.yml / fairway-release.yml / crew-release.yml) handle
+# main pushes; this workflow is the pre-merge safety net.
+#
+# Note: we deliberately do NOT trigger on `push` events. When a branch
+# has an open PR, both pull_request and push fire on the same commit,
+# burning Actions minutes twice on identical work.
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Cancel in-flight runs of the same PR when new commits land. Keeps the
+# queue short and saves Actions minutes.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ── Quick syntactic + static checks that should fail fast ───────────────
+  lint:
+    name: Lint (gofmt, vet, golangci-lint)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.2"
+          cache: true
+
+      - name: gofmt -l (fail on any unformatted file)
+        run: |
+          unformatted="$(gofmt -l . | grep -v '^vendor/' || true)"
+          if [ -n "$unformatted" ]; then
+            echo "::error::The following files are not gofmt-clean:"
+            echo "$unformatted"
+            echo
+            echo "Run 'gofmt -w .' locally and commit the result."
+            exit 1
+          fi
+
+      - name: go vet ./...
+        run: go vet ./...
+
+      - name: golangci-lint
+        # v7 of the action is the first that supports golangci-lint v2.x
+        # (the schema our .golangci.yml uses) and runs on Node.js 24
+        # instead of the deprecated Node 20.
+        uses: golangci/golangci-lint-action@v7
+        with:
+          version: v2.12.2
+          args: --timeout=5m
+
+  # ── Tests, matrixed across the two supported operating systems ──────────
+  test:
+    name: Test (${{ matrix.os }})
+    needs: lint
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.2"
+          cache: true
+
+      # -race catches data races in any package with concurrent code (pool,
+      # socket, runner, mcpfilter, …). The TUI snapshot tests are gated
+      # behind `//go:build !race` because their race is a bubbletea event-
+      # loop quirk under heavy slowdown, not a production bug.
+      # -coverprofile collects coverage for the Codecov upload step below.
+      # -covermode=atomic is mandatory when combining -race with coverage.
+      - name: Run tests
+        run: |
+          go test ./... \
+            -race \
+            -timeout 5m \
+            -coverprofile=coverage.out \
+            -covermode=atomic
+
+      - name: Upload coverage to Codecov
+        if: matrix.os == 'ubuntu-latest'
+        # v5 runs on Node.js 24; v4 (Node 20) is being deprecated by
+        # GitHub on 2026-06-02 and will be force-migrated anyway.
+        uses: codecov/codecov-action@v5
+        with:
+          files: ./coverage.out
+          fail_ci_if_error: false
+          # Public repo: no token needed. Codecov auto-detects the repo
+          # via OIDC.
+          flags: unit
+          name: shipyard-${{ matrix.os }}

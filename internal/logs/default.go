@@ -47,7 +47,7 @@ func NopHandler() slog.Handler { return nopHandler{} }
 
 type nopHandler struct{}
 
-func (nopHandler) Enabled(_ context.Context, _ slog.Level) bool   { return false }
-func (nopHandler) Handle(_ context.Context, _ slog.Record) error  { return nil }
-func (nopHandler) WithAttrs(_ []slog.Attr) slog.Handler           { return nopHandler{} }
-func (nopHandler) WithGroup(_ string) slog.Handler                { return nopHandler{} }
+func (nopHandler) Enabled(_ context.Context, _ slog.Level) bool  { return false }
+func (nopHandler) Handle(_ context.Context, _ slog.Record) error { return nil }
+func (nopHandler) WithAttrs(_ []slog.Attr) slog.Handler          { return nopHandler{} }
+func (nopHandler) WithGroup(_ string) slog.Handler               { return nopHandler{} }
