@@ -409,3 +409,160 @@ func TestRunReloadAfterEdit(t *testing.T) {
 	cancel()
 	<-done
 }
+
+// TestRunPoolFullReturnsErrorWhenConcurrentRequestExceedsCapacity exercises
+// the full path that surfaces ErrPoolFull through the JSON-RPC socket: a
+// slow backend occupies the only slot of a cli pool with max=1, then a
+// second client fires a `run` and must see an error response carrying the
+// "pool full" message. Closes the integration gap that bug #6 fix touched
+// (socket→runner→pool) without any external dependency (no claude CLI,
+// no API key).
+func TestRunPoolFullReturnsErrorWhenConcurrentRequestExceedsCapacity(t *testing.T) {
+	root := shortTempDir(t)
+	agentName := "poolfull"
+	agentDir := filepath.Join(root, "crew", agentName)
+	if err := os.MkdirAll(agentDir, 0o700); err != nil {
+		t.Fatalf("mkdir agent: %v", err)
+	}
+
+	// Slow backend that ignores any flags the cli backend appends
+	// (--permission-mode, --mcp-config, …). Sleeps long enough that the
+	// second client's run RPC fires while the first is still holding the
+	// pool slot. 2s is the smallest comfortable margin for CI runners
+	// (Actions ubuntu-latest is occasionally slow under load).
+	slowCmd := filepath.Join(root, "slow-backend.sh")
+	script := "#!/bin/sh\nsleep 2\nexit 0\n"
+	if err := os.WriteFile(slowCmd, []byte(script), 0o755); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+
+	agentYAML := fmt.Sprintf(`schema_version: "1"
+name: %s
+description: pool-full integration probe
+backend:
+  type: cli
+  command: ["%s"]
+execution:
+  mode: service
+  pool: cli
+conversation:
+  mode: stateless
+triggers:
+  - type: cron
+    schedule: "0 * * * *"
+tools: []
+`, agentName, slowCmd)
+	if err := os.WriteFile(filepath.Join(agentDir, "agent.yaml"), []byte(agentYAML), 0o600); err != nil {
+		t.Fatalf("write agent yaml: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(agentDir, "prompt.md"), []byte("p"), 0o600); err != nil {
+		t.Fatalf("write prompt: %v", err)
+	}
+
+	// Pool of size 1 with the reject strategy → ErrPoolFull is returned
+	// immediately when the single slot is occupied. No timing knobs, no
+	// queue → deterministic test even on a loaded CI runner.
+	configYAML := `concurrency:
+  default_pool: cli
+  pools:
+    cli:
+      max: 1
+  queue:
+    strategy: reject
+    max_wait: 0s
+    max_queue_size: 0
+`
+	configPath := filepath.Join(root, "config.yaml")
+	if err := os.WriteFile(configPath, []byte(configYAML), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	opts := Options{
+		AgentName:  agentName,
+		AgentDir:   agentDir,
+		RunDir:     filepath.Join(root, "run"),
+		ConfigPath: configPath,
+		Version:    "1.0.0",
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	daemonDone := make(chan int, 1)
+	go func() {
+		code, _ := Run(ctx, opts)
+		daemonDone <- code
+	}()
+
+	sockPath := filepath.Join(opts.RunDir, opts.AgentName+".sock")
+
+	// Helper: handshake then fire `run`, return the raw response map.
+	runCall := func(t *testing.T, label string, wantBlocking bool) map[string]any {
+		t.Helper()
+		c := dialSocket(t, sockPath)
+		t.Cleanup(func() { _ = c.Close() })
+		sc := bufio.NewScanner(c)
+		sc.Buffer(make([]byte, 64*1024), 1<<20)
+		sendJSON(t, c, map[string]any{"jsonrpc": "2.0", "id": 1, "method": "handshake", "params": map[string]any{"version": "1.0.0"}})
+		_ = c.SetReadDeadline(time.Now().Add(2 * time.Second))
+		if hs := readJSON(t, sc); hs["error"] != nil {
+			t.Fatalf("[%s] handshake err: %+v", label, hs["error"])
+		}
+		sendJSON(t, c, map[string]any{"jsonrpc": "2.0", "id": 2, "method": "run", "params": map[string]any{"input": map[string]any{}}})
+		// Client 1 holds the pool ~2s; give its read a longer deadline.
+		// Client 2 should answer immediately (ErrPoolFull).
+		deadline := 1 * time.Second
+		if wantBlocking {
+			deadline = 5 * time.Second
+		}
+		_ = c.SetReadDeadline(time.Now().Add(deadline))
+		return readJSON(t, sc)
+	}
+
+	// First client fires async — its run holds the pool slot for ~2s.
+	type result struct {
+		resp map[string]any
+	}
+	first := make(chan result, 1)
+	go func() {
+		first <- result{resp: runCall(t, "client1", true)}
+	}()
+
+	// Give client 1 enough time to handshake + dispatch run + acquire the
+	// pool slot. The first echo through the dispatcher is microseconds;
+	// 150ms is a comfortable margin even under CI load.
+	time.Sleep(150 * time.Millisecond)
+
+	// Second client fires synchronously — should be rejected with
+	// ErrPoolFull surfaced as a JSON-RPC error.
+	resp2 := runCall(t, "client2", false)
+	if resp2["error"] == nil {
+		t.Fatalf("client2 expected error response, got result: %+v", resp2["result"])
+	}
+	errObj, _ := resp2["error"].(map[string]any)
+	msg, _ := errObj["message"].(string)
+	if !strings.Contains(strings.ToLower(msg), "pool full") {
+		t.Fatalf("client2 error message should contain \"pool full\", got: %q", msg)
+	}
+
+	// Drain client 1 so the daemon shutdown does not race a pending RPC.
+	select {
+	case r := <-first:
+		// Either the call returned a result or a benign error — we don't
+		// assert on its content. The contract is that the second client
+		// saw the rejection, not that the first one succeeded (sleep can
+		// be killed by ctx cancel on shutdown depending on timing).
+		_ = r
+	case <-time.After(6 * time.Second):
+		t.Fatal("client1 never received a response")
+	}
+
+	cancel()
+	select {
+	case code := <-daemonDone:
+		if code != ExitOK {
+			t.Errorf("daemon exit = %d, want %d", code, ExitOK)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("daemon did not exit")
+	}
+}
