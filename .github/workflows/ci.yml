@@ -1,13 +1,15 @@
 name: CI
 
-# Runs on every pull request and on every branch push that is NOT main.
-# Release workflows (shipyard-release.yml / fairway-release.yml / crew-release.yml)
-# handle main pushes; this workflow is the pre-merge safety net.
+# Runs on every pull request. Direct pushes to non-main branches without
+# an open PR can be validated via workflow_dispatch. Release workflows
+# (shipyard-release.yml / fairway-release.yml / crew-release.yml) handle
+# main pushes; this workflow is the pre-merge safety net.
+#
+# Note: we deliberately do NOT trigger on `push` events. When a branch
+# has an open PR, both pull_request and push fire on the same commit,
+# burning Actions minutes twice on identical work.
 on:
   pull_request:
-  push:
-    branches-ignore:
-      - main
   workflow_dispatch:
 
 permissions:
@@ -49,10 +51,12 @@ jobs:
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v6
         with:
-          version: v1.62.2
-          # Default checks are conservative: errcheck, gosimple, govet,
-          # ineffassign, staticcheck, unused. No extra opinionated linters
-          # until the codebase opts in.
+          # v2 of the tool — the local .golangci.yml uses the v2 schema.
+          # Must also be a build that targets go1.26+; the v1.x line was
+          # built with go1.23 and refuses to lint code targeting a newer
+          # Go (`Go language version (go1.23) used to build golangci-lint
+          # is lower than the targeted Go version`).
+          version: v2.12.2
           args: --timeout=5m
 
   # ── Tests, matrixed across the two supported operating systems ──────────
