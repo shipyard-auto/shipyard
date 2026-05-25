@@ -16,6 +16,7 @@ import (
 
 	"github.com/shipyard-auto/shipyard/internal/addon"
 	"github.com/shipyard-auto/shipyard/internal/app"
+	"github.com/shipyard-auto/shipyard/internal/commsctl"
 	"github.com/shipyard-auto/shipyard/internal/crewctl"
 	"github.com/shipyard-auto/shipyard/internal/fairwayctl"
 	"github.com/shipyard-auto/shipyard/internal/ui"
@@ -40,8 +41,8 @@ func newUpdateCmd() *cobra.Command {
 		Use:   "update",
 		Short: "Update Shipyard to the latest release",
 		Long: `Download the latest published Shipyard release for this platform and replace
-the current binary. If shipyard-fairway or shipyard-crew is installed, the
-new binary is invoked to reconcile them in the same run.`,
+the current binary. If shipyard-fairway, shipyard-crew or shipyard-comms is
+installed, the new binary is invoked to reconcile them in the same run.`,
 		Example: "shipyard update",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			executablePath, err := os.Executable()
@@ -65,7 +66,10 @@ new binary is invoked to reconcile them in the same run.`,
 				if err := updateFairwayIfInstalled(cmd, w); err != nil {
 					return err
 				}
-				return updateCrewIfInstalled(cmd, w)
+				if err := updateCrewIfInstalled(cmd, w); err != nil {
+					return err
+				}
+				return updateCommsIfInstalled(cmd, w)
 			}
 
 			ui.Printf(w, "%s\n", ui.SectionTitle("Shipyard Update"))
@@ -194,6 +198,73 @@ func updateCrewIfInstalled(cmd *cobra.Command, w interface{ Write([]byte) (int, 
 
 	ui.Printf(w, "%s\n", ui.Emphasis("Crew updated successfully."))
 	return nil
+}
+
+// updateCommsIfInstalled is the comms-side mirror of updateCrewIfInstalled.
+// Comms has no service to query (stateless v1), so installation is detected
+// purely by binary presence via commsctl.ResolveBinary. The rest of the
+// flow — resolve latest, build installer, call Upgrade, surface
+// ErrAlreadyAtVersion as a friendly message, record the registry entry — is
+// identical to the crew path.
+func updateCommsIfInstalled(cmd *cobra.Command, w interface{ Write([]byte) (int, error) }) error {
+	if _, err := commsctl.ResolveBinary(); err != nil {
+		return nil
+	}
+
+	ui.Printf(w, "\n%s\n", ui.SectionTitle("Comms Update"))
+	ui.Printf(w, "%s\n\n", ui.Muted("Checking the latest comms release..."))
+
+	httpClient := &http.Client{Timeout: 5 * time.Minute}
+	latestVersion, err := commsctl.ResolveLatestCommsVersion(cmd.Context(), httpClient)
+	if err != nil {
+		ui.Printf(w, "%s %v\n", ui.Muted("Could not resolve latest comms version:"), err)
+		return nil
+	}
+
+	inst, err := buildCommsInstallerForUpdate(latestVersion)
+	if err != nil {
+		return fmt.Errorf("comms: build installer: %w", err)
+	}
+
+	currentVersion, err := inst.InstalledVersion()
+	if err != nil {
+		currentVersion = "unknown"
+	}
+
+	ui.Printf(w, "%s %s\n", ui.Highlight("Current:"), currentVersion)
+	ui.Printf(w, "%s %s\n\n", ui.Highlight("Latest:"), latestVersion)
+
+	if err := inst.Upgrade(cmd.Context()); err != nil {
+		if errors.Is(err, commsctl.ErrAlreadyAtVersion) {
+			ui.Printf(w, "%s\n", ui.Emphasis("Comms is already up to date."))
+			return nil
+		}
+		return err
+	}
+	_ = addon.NewRegistry("").Record(addon.KindComms, true, inst.BinPath(), inst.Version)
+
+	ui.Printf(w, "%s\n", ui.Emphasis("Comms updated successfully."))
+	return nil
+}
+
+// buildCommsInstallerForUpdate builds a production comms Installer for the
+// update flow. Mirrors buildCrewInstallerForUpdate; lives here so the
+// constructor doesn't have to leak from internal/cli/comms.go for one
+// extra caller.
+func buildCommsInstallerForUpdate(version string) (*commsctl.Installer, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, fmt.Errorf("comms: home dir: %w", err)
+	}
+	return &commsctl.Installer{
+		Version:     version,
+		Platform:    commsctl.Platform{OS: runtime.GOOS, Arch: runtime.GOARCH},
+		BinDir:      filepath.Join(home, ".local", "bin"),
+		StateDir:    filepath.Join(home, ".shipyard", "comms"),
+		HTTPClient:  &http.Client{Timeout: 5 * time.Minute},
+		ReleaseBase: commsctl.DefaultReleaseBase,
+		Now:         time.Now,
+	}, nil
 }
 
 // buildCrewInstallerForUpdate builds a production crew Installer for the
