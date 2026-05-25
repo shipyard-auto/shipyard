@@ -115,9 +115,15 @@ detect_platform() {
 }
 
 download_url() {
+  # Normalise VERSION so callers can pass either form. Releases are tagged
+  # v<X.Y.Z>; the URL path needs the tag, but the archive filename uses the
+  # bare version. Without this normalisation, callers that set
+  # VERSION=1.3.23 (e.g. the shipyard-release.yml smoke step) build a URL
+  # under /1.3.23/ which returns 404, while VERSION=v1.3.23 worked.
   version_no_v="${VERSION#v}"
+  tag="v$version_no_v"
   archive="shipyard_${version_no_v}_${PLATFORM_OS}_${PLATFORM_ARCH}.tar.gz"
-  printf 'https://github.com/%s/%s/releases/download/%s/%s' "$OWNER" "$REPO" "$VERSION" "$archive"
+  printf 'https://github.com/%s/%s/releases/download/%s/%s' "$OWNER" "$REPO" "$tag" "$archive"
 }
 
 run_step() {
