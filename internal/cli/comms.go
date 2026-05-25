@@ -34,10 +34,85 @@ In v1 comms is stateless: each invocation reads config from
 		},
 	}
 	cmd.AddCommand(newCommsInstallCmd())
+	cmd.AddCommand(newCommsUpdateCmd())
 	cmd.AddCommand(newCommsUninstallCmd())
 	cmd.AddCommand(newCommsStatusCmd())
 	cmd.AddCommand(newCommsChannelCmd())
 	cmd.AddCommand(newCommsSendCmd())
+	return cmd
+}
+
+func newCommsUpdateCmd() *cobra.Command {
+	return newCommsUpdateCmdWith(nil)
+}
+
+// newCommsUpdateCmdWith builds the update command. When installer is
+// non-nil it is used directly (tests); otherwise one is built fresh per
+// invocation, with the target version resolved from the GitHub API
+// unless --version pins it.
+func newCommsUpdateCmdWith(installer *commsctl.Installer) *cobra.Command {
+	var version string
+
+	cmd := &cobra.Command{
+		Use:   "update",
+		Short: "Update shipyard-comms to the latest release",
+		Long: `Downloads the newest published comms release (or the version pinned via
+--version) and reinstalls in place. State under ~/.shipyard/comms/ is
+preserved — only the binary is replaced. When the installed version
+already matches the target, the command reports "already up to date"
+and exits 0.
+
+This is functionally equivalent to running:
+    shipyard comms install --force [--version X]
+
+The 'update' wrapper is the recommended path because it uses the
+installer's Upgrade flow (clean uninstall + install) and resolves the
+latest version automatically when --version is omitted.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			inst := installer
+			if inst == nil {
+				target := version
+				if target == "" {
+					ctx := cmd.Context()
+					httpClient := &http.Client{Timeout: 5 * time.Minute}
+					resolved, err := commsctl.ResolveLatestCommsVersion(ctx, httpClient)
+					if err != nil {
+						return fmt.Errorf("comms: resolve latest version: %w", err)
+					}
+					target = resolved
+				}
+				var err error
+				inst, err = buildCommsInstaller(target)
+				if err != nil {
+					return err
+				}
+			}
+
+			w := cmd.OutOrStdout()
+			ui.Printf(w, "%s\n", ui.SectionTitle("SHIPYARD COMMS"))
+
+			currentVersion, err := inst.InstalledVersion()
+			if err != nil {
+				currentVersion = "unknown"
+			}
+			ui.Printf(w, "%s %s\n", ui.Highlight("Current:"), currentVersion)
+			ui.Printf(w, "%s %s\n\n", ui.Highlight("Target:"), inst.Version)
+
+			if err := inst.Upgrade(cmd.Context()); err != nil {
+				if errors.Is(err, commsctl.ErrAlreadyAtVersion) {
+					ui.Printf(w, "%s\n", ui.Emphasis("Comms is already up to date."))
+					return nil
+				}
+				return err
+			}
+			_ = addon.NewRegistry("").Record(addon.KindComms, true, inst.BinPath(), inst.Version)
+
+			ui.Printf(w, "%s\n", ui.Emphasis("shipyard-comms updated successfully."))
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&version, "version", "", "Pin to a specific version instead of resolving the latest")
 	return cmd
 }
 

@@ -166,6 +166,7 @@ func TestCommsCmd_RegistersSubcommands(t *testing.T) {
 	cmd := newCommsCmd()
 	want := map[string]bool{
 		"install":   true,
+		"update":    true,
 		"uninstall": true,
 		"status":    true,
 		"channel":   true,
@@ -176,5 +177,49 @@ func TestCommsCmd_RegistersSubcommands(t *testing.T) {
 	}
 	if len(want) > 0 {
 		t.Errorf("missing subcommands: %v", want)
+	}
+}
+
+func TestCommsUpdateCommand_AlreadyAtVersion(t *testing.T) {
+	isolateHomeForTest(t)
+	binDir := t.TempDir()
+	stateDir := filepath.Join(t.TempDir(), "state")
+	writeFakeCommsBinary(t, binDir, "0.2.0")
+
+	inst := newCommsCLIInstaller("0.2.0", binDir, stateDir)
+	cmd := newCommsUpdateCmdWith(inst)
+	cmd.SetContext(context.Background())
+	buf := &bytes.Buffer{}
+	cmd.SetOut(buf)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(buf.String(), "already up to date") {
+		t.Errorf("expected 'already up to date' message, got: %q", buf.String())
+	}
+}
+
+func TestCommsUpdateCommand_UpgradeAttemptsNetwork(t *testing.T) {
+	// When installed version differs from target, Upgrade triggers
+	// Uninstall → Install. The stub HTTP client makes Install fail, but
+	// that's enough proof the upgrade path was entered (not short-
+	// circuited by ErrAlreadyAtVersion).
+	isolateHomeForTest(t)
+	binDir := t.TempDir()
+	stateDir := filepath.Join(t.TempDir(), "state")
+	writeFakeCommsBinary(t, binDir, "0.1.0")
+
+	inst := newCommsCLIInstaller("0.2.0", binDir, stateDir)
+	cmd := newCommsUpdateCmdWith(inst)
+	cmd.SetContext(context.Background())
+	cmd.SetOut(&bytes.Buffer{})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected stub network error, got nil")
+	}
+	if !strings.Contains(err.Error(), "no network") {
+		t.Errorf("expected stub network error to surface, got %v", err)
 	}
 }
