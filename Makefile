@@ -3,11 +3,18 @@ FAIRWAY_APP_NAME := shipyard-fairway
 FAIRWAY_NAME     := $(FAIRWAY_APP_NAME)
 CREW_APP_NAME    := shipyard-crew
 CREW_NAME        := $(CREW_APP_NAME)
+COMMS_APP_NAME   := shipyard-comms
+COMMS_NAME       := $(COMMS_APP_NAME)
 DIST_DIR         := dist
 
 SHIPYARD_VERSION ?= $(shell grep '^shipyard=' manifest | cut -d= -f2)
 FAIRWAY_VERSION  ?= $(shell grep '^fairway=' manifest | cut -d= -f2)
 CREW_VERSION     ?= $(shell grep '^crew=' manifest | cut -d= -f2)
+# COMMS_VERSION falls back to "dev" when the manifest does not yet
+# pin a comms version. This keeps local `make build-comms` and the
+# Makefile_test.sh smoke working before the first manifest bump
+# without producing tarballs with double-underscore filenames.
+COMMS_VERSION    ?= $(or $(shell grep '^comms=' manifest | cut -d= -f2),dev)
 
 COMMIT     ?= dev
 BUILD_DATE ?= $(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
@@ -27,9 +34,15 @@ CREW_LDFLAGS := \
   -X github.com/shipyard-auto/shipyard/addons/crew/internal/app.Commit=$(COMMIT) \
   -X github.com/shipyard-auto/shipyard/addons/crew/internal/app.BuildDate=$(BUILD_DATE)
 
+COMMS_LDFLAGS := \
+  -X github.com/shipyard-auto/shipyard/addons/comms/internal/app.Version=$(COMMS_VERSION) \
+  -X github.com/shipyard-auto/shipyard/addons/comms/internal/app.Commit=$(COMMIT) \
+  -X github.com/shipyard-auto/shipyard/addons/comms/internal/app.BuildDate=$(BUILD_DATE)
+
 .PHONY: build test fmt tidy clean dist package \
         build-fairway dist-fairway package-fairway checksums-fairway \
         build-crew dist-crew package-crew checksums-crew \
+        build-comms dist-comms package-comms checksums-comms \
         build-all dist-all package-all
 
 # ── core ─────────────────────────────────────────────────────────────────────
@@ -126,8 +139,38 @@ checksums-crew: package-crew
 		$(CREW_APP_NAME)_$(CREW_VERSION)_darwin_arm64.tar.gz \
 		> $(CREW_APP_NAME)_$(CREW_VERSION)_checksums.txt
 
+# ── comms ────────────────────────────────────────────────────────────────────
+
+build-comms:
+	mkdir -p $(DIST_DIR)
+	go build -ldflags "$(COMMS_LDFLAGS)" -o $(DIST_DIR)/$(COMMS_APP_NAME) ./addons/comms/cmd
+
+dist-comms:
+	mkdir -p $(DIST_DIR)/comms-linux-amd64
+	GOOS=linux  GOARCH=amd64 go build -ldflags "$(COMMS_LDFLAGS)" -o $(DIST_DIR)/comms-linux-amd64/$(COMMS_APP_NAME)  ./addons/comms/cmd
+	mkdir -p $(DIST_DIR)/comms-linux-arm64
+	GOOS=linux  GOARCH=arm64 go build -ldflags "$(COMMS_LDFLAGS)" -o $(DIST_DIR)/comms-linux-arm64/$(COMMS_APP_NAME)  ./addons/comms/cmd
+	mkdir -p $(DIST_DIR)/comms-darwin-amd64
+	GOOS=darwin GOARCH=amd64 go build -ldflags "$(COMMS_LDFLAGS)" -o $(DIST_DIR)/comms-darwin-amd64/$(COMMS_APP_NAME) ./addons/comms/cmd
+	mkdir -p $(DIST_DIR)/comms-darwin-arm64
+	GOOS=darwin GOARCH=arm64 go build -ldflags "$(COMMS_LDFLAGS)" -o $(DIST_DIR)/comms-darwin-arm64/$(COMMS_APP_NAME) ./addons/comms/cmd
+
+package-comms: dist-comms
+	tar -C $(DIST_DIR)/comms-linux-amd64  -czf $(DIST_DIR)/$(COMMS_APP_NAME)_$(COMMS_VERSION)_linux_amd64.tar.gz  $(COMMS_APP_NAME)
+	tar -C $(DIST_DIR)/comms-linux-arm64  -czf $(DIST_DIR)/$(COMMS_APP_NAME)_$(COMMS_VERSION)_linux_arm64.tar.gz  $(COMMS_APP_NAME)
+	tar -C $(DIST_DIR)/comms-darwin-amd64 -czf $(DIST_DIR)/$(COMMS_APP_NAME)_$(COMMS_VERSION)_darwin_amd64.tar.gz $(COMMS_APP_NAME)
+	tar -C $(DIST_DIR)/comms-darwin-arm64 -czf $(DIST_DIR)/$(COMMS_APP_NAME)_$(COMMS_VERSION)_darwin_arm64.tar.gz $(COMMS_APP_NAME)
+
+checksums-comms: package-comms
+	cd $(DIST_DIR) && shasum -a 256 \
+		$(COMMS_APP_NAME)_$(COMMS_VERSION)_linux_amd64.tar.gz \
+		$(COMMS_APP_NAME)_$(COMMS_VERSION)_linux_arm64.tar.gz \
+		$(COMMS_APP_NAME)_$(COMMS_VERSION)_darwin_amd64.tar.gz \
+		$(COMMS_APP_NAME)_$(COMMS_VERSION)_darwin_arm64.tar.gz \
+		> $(COMMS_APP_NAME)_$(COMMS_VERSION)_checksums.txt
+
 # ── combined ─────────────────────────────────────────────────────────────────
 
-build-all:   build build-fairway build-crew
-dist-all:    dist  dist-fairway  dist-crew
-package-all: package package-fairway checksums-fairway package-crew checksums-crew
+build-all:   build build-fairway build-crew build-comms
+dist-all:    dist  dist-fairway  dist-crew  dist-comms
+package-all: package package-fairway checksums-fairway package-crew checksums-crew package-comms checksums-comms

@@ -10,6 +10,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/shipyard-auto/shipyard/internal/commsctl"
 	"github.com/shipyard-auto/shipyard/internal/crewctl"
 	"github.com/shipyard-auto/shipyard/internal/fairwayctl"
 )
@@ -76,6 +77,15 @@ func (defaultDetector) Detect(kind Kind) (Info, error) {
 				return Info{Kind: kind, Installed: false, LastCheck: time.Now()}, nil
 			}
 			return Info{}, fmt.Errorf("addon: detect fairway: %w", err)
+		}
+		return Info{Kind: kind, Installed: true, BinaryPath: path, LastCheck: time.Now()}, nil
+	case KindComms:
+		path, err := commsctl.ResolveBinary()
+		if err != nil {
+			if errors.Is(err, commsctl.ErrNotInstalled) {
+				return Info{Kind: kind, Installed: false, LastCheck: time.Now()}, nil
+			}
+			return Info{}, fmt.Errorf("addon: detect comms: %w", err)
 		}
 		return Info{Kind: kind, Installed: true, BinaryPath: path, LastCheck: time.Now()}, nil
 	default:

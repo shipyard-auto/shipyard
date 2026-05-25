@@ -1,7 +1,8 @@
 // Package addon centralises detection of optional Shipyard addons
-// (currently crew and fairway). It is the single source of truth used by
-// Cobra PreRunE middleware and by interactive wizards that need to ask
-// "is this addon available right now?" without duplicating lookup logic.
+// (currently comms, crew and fairway). It is the single source of truth
+// used by Cobra PreRunE middleware and by interactive wizards that need
+// to ask "is this addon available right now?" without duplicating lookup
+// logic.
 package addon
 
 import "fmt"
@@ -15,6 +16,9 @@ const (
 
 	// KindFairway is the shipyard-fairway addon (HTTP gateway).
 	KindFairway Kind = "fairway"
+
+	// KindComms is the shipyard-comms addon (external messaging transport).
+	KindComms Kind = "comms"
 )
 
 // String returns the Kind name as used in CLI commands (e.g. "crew").
@@ -28,4 +32,5 @@ func (k Kind) BinaryName() string { return fmt.Sprintf("shipyard-%s", k) }
 func (k Kind) InstallCommand() string { return fmt.Sprintf("shipyard %s install", k) }
 
 // AllKinds returns every known addon kind in a stable order.
-func AllKinds() []Kind { return []Kind{KindCrew, KindFairway} }
+// Order is alphabetical so callers iterating get a deterministic list.
+func AllKinds() []Kind { return []Kind{KindComms, KindCrew, KindFairway} }

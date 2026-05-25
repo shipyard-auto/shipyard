@@ -31,6 +31,9 @@ var uninstallCrewAddon uninstallAddonFunc = defaultUninstallCrewAddon
 // uninstallFairwayAddon executa o uninstall do fairway. Variável para testes.
 var uninstallFairwayAddon uninstallAddonFunc = defaultUninstallFairwayAddon
 
+// uninstallCommsAddon executa o uninstall do comms. Variável para testes.
+var uninstallCommsAddon uninstallAddonFunc = defaultUninstallCommsAddon
+
 func newUninstallCmd() *cobra.Command {
 	var assumeYes bool
 	var keepAddons bool
@@ -39,8 +42,8 @@ func newUninstallCmd() *cobra.Command {
 		Use:   "uninstall",
 		Short: "Remove Shipyard completely from this machine",
 		Long: `Delete the Shipyard binary and the ~/.shipyard directory created during
-installation. Detected addons (crew, fairway) are uninstalled in cascade by
-default; pass --keep-addons to leave them in place.`,
+installation. Detected addons (comms, crew, fairway) are uninstalled in cascade
+by default; pass --keep-addons to leave them in place.`,
 		Example: strings.Join([]string{
 			"shipyard uninstall",
 			"shipyard uninstall --yes",
@@ -89,7 +92,7 @@ default; pass --keep-addons to leave them in place.`,
 	}
 
 	cmd.Flags().BoolVarP(&assumeYes, "yes", "y", false, "Run without interactive confirmation")
-	cmd.Flags().BoolVar(&keepAddons, "keep-addons", false, "Skip uninstalling detected addons (crew, fairway)")
+	cmd.Flags().BoolVar(&keepAddons, "keep-addons", false, "Skip uninstalling detected addons (comms, crew, fairway)")
 
 	return cmd
 }
@@ -136,6 +139,8 @@ func cascadeUninstallAddons(cmd *cobra.Command) {
 			fn = uninstallCrewAddon
 		case addon.KindFairway:
 			fn = uninstallFairwayAddon
+		case addon.KindComms:
+			fn = uninstallCommsAddon
 		default:
 			// Unknown kinds: log and skip. Registry may be from a future
 			// shipyard version; refusing here would block a legitimate
@@ -196,6 +201,19 @@ func defaultUninstallCrewAddon(ctx context.Context) error {
 // runs Uninstall on it.
 func defaultUninstallFairwayAddon(ctx context.Context) error {
 	inst, err := buildInstaller("")
+	if err != nil {
+		return err
+	}
+	return inst.Uninstall(ctx)
+}
+
+// defaultUninstallCommsAddon builds the production comms installer and
+// runs Uninstall on it. The Version field is irrelevant for uninstall,
+// so we pass an empty string. State directory under ~/.shipyard/comms/
+// is preserved (Purge=false) — `shipyard uninstall` removes the whole
+// ~/.shipyard/ afterwards anyway, so per-addon purge would be redundant.
+func defaultUninstallCommsAddon(ctx context.Context) error {
+	inst, err := buildCommsInstaller("")
 	if err != nil {
 		return err
 	}

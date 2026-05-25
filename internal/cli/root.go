@@ -35,6 +35,7 @@ func NewRootCmd() *cobra.Command {
 
 	cmd.AddCommand(newFairwayCmd())
 	cmd.AddCommand(crew.NewCrewCmd())
+	cmd.AddCommand(newCommsCmd())
 	cmd.AddCommand(newUninstallCmd())
 	cmd.AddCommand(newCronCmd())
 	cmd.AddCommand(newServiceCmd())
