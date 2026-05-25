@@ -171,14 +171,24 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Wait for release to be visible
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
+          # Use `gh release view` (authenticated via GH_TOKEN) instead of
+          # the public REST endpoint. The unauthenticated path
+          # api.github.com/.../releases/tags/* is fronted by a CDN whose
+          # propagation lag is significantly higher on macOS runners than
+          # on ubuntu. The previous curl loop timed out after 150s on
+          # macOS while ubuntu saw the release within seconds. Authenticated
+          # traffic bypasses the public cache and sees consistent state
+          # immediately after the release-creation step completes.
           tag="${{ needs.release.outputs.tag }}"
-          for i in $(seq 1 30); do
-            if curl -fsS "https://api.github.com/repos/${{ github.repository }}/releases/tags/$tag" >/dev/null 2>&1; then
+          for i in $(seq 1 60); do
+            if gh release view "$tag" --repo "${{ github.repository }}" >/dev/null 2>&1; then
               echo "Release $tag is live."
               exit 0
             fi
-            echo "Release $tag not yet visible (attempt $i/30)…"
+            echo "Release $tag not yet visible (attempt $i/60)…"
             sleep 5
           done
           echo "::error::Release $tag never appeared." >&2
