@@ -8,10 +8,9 @@ import (
 	"fmt"
 	"io"
 	"os"
-)
 
-// version is overridden via -ldflags at build time. Default for local builds.
-var version = "dev"
+	"github.com/shipyard-auto/shipyard/addons/comms/internal/app"
+)
 
 func main() {
 	if err := run(os.Args[1:], os.Stdout, os.Stderr); err != nil {
@@ -21,14 +20,15 @@ func main() {
 }
 
 // run is the test-friendly entrypoint. CM-02..CM-04 grow this; for now it
-// only honors --version and prints a header.
-func run(args []string, stdout, stderr io.Writer) error {
+// only honors --version and prints a header. Real subcommands (channel
+// add/list, send, normalize, status) arrive in épico 2.
+func run(args []string, stdout, _ io.Writer) error {
 	for _, a := range args {
 		if a == "--version" || a == "-v" {
-			fmt.Fprintln(stdout, version)
+			fmt.Fprintln(stdout, app.Version)
 			return nil
 		}
 	}
-	fmt.Fprintf(stdout, "shipyard-comms %s (stub)\n", version)
+	fmt.Fprintf(stdout, "%s (stub)\n", app.Info())
 	return nil
 }
