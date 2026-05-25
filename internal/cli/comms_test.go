@@ -164,7 +164,13 @@ func TestCommsUninstallCommand_purgeRemovesStateDir(t *testing.T) {
 
 func TestCommsCmd_RegistersSubcommands(t *testing.T) {
 	cmd := newCommsCmd()
-	want := map[string]bool{"install": true, "uninstall": true, "status": true}
+	want := map[string]bool{
+		"install":   true,
+		"uninstall": true,
+		"status":    true,
+		"channel":   true,
+		"send":      true,
+	}
 	for _, sub := range cmd.Commands() {
 		delete(want, sub.Name())
 	}

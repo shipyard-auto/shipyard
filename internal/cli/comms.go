@@ -36,6 +36,8 @@ In v1 comms is stateless: each invocation reads config from
 	cmd.AddCommand(newCommsInstallCmd())
 	cmd.AddCommand(newCommsUninstallCmd())
 	cmd.AddCommand(newCommsStatusCmd())
+	cmd.AddCommand(newCommsChannelCmd())
+	cmd.AddCommand(newCommsSendCmd())
 	return cmd
 }
 
