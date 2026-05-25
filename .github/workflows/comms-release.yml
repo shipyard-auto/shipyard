@@ -1,0 +1,178 @@
+name: Comms Release
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "addons/comms/**"
+      - "internal/commsctl/**"
+      - "internal/cli/comms*.go"
+      - "manifest"
+      - "Makefile"
+      - ".github/workflows/comms-release.yml"
+
+permissions:
+  contents: write
+  pull-requests: read
+
+concurrency:
+  group: comms-release-main
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      version: ${{ steps.version.outputs.version }}
+      skip: ${{ steps.detect.outputs.changed == 'false' || steps.version.outputs.skip }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.2"
+
+      - name: Detect comms version change
+        id: detect
+        shell: bash
+        run: |
+          curr=$(grep '^comms=' manifest | cut -d= -f2 || echo "")
+          prev=$(git show ${{ github.event.before }}:manifest 2>/dev/null | grep '^comms=' | cut -d= -f2 || echo "")
+
+          echo "curr=$curr"
+          echo "prev=$prev"
+
+          if [ -z "$curr" ]; then
+            echo "Manifest não tem comms= ainda — skipping release (plumbing-only PR)."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          elif [ "$curr" = "$prev" ]; then
+            echo "Versão comms não mudou ($curr) — skipping release."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Versão comms mudou: ${prev:-<absent>} → $curr"
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+          echo "version=$curr" >> "$GITHUB_OUTPUT"
+
+      - name: Compute comms release tag
+        if: steps.detect.outputs.changed == 'true'
+        id: version
+        shell: bash
+        run: |
+          version="${{ steps.detect.outputs.version }}"
+          if [ -z "$version" ]; then
+            echo "Versão não encontrada em manifest" >&2
+            exit 1
+          fi
+
+          tag="comms-v$version"
+          if git rev-parse "$tag" >/dev/null 2>&1; then
+            echo "Tag $tag já existe — skipping comms release."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Generate changelog
+        if: steps.detect.outputs.changed == 'true' && steps.version.outputs.skip != 'true'
+        id: changelog
+        uses: actions/github-script@v8
+        env:
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const sha = context.sha;
+            const response = await github.request(
+              "GET /repos/{owner}/{repo}/commits/{commit_sha}/pulls",
+              { owner, repo, commit_sha: sha, mediaType: { previews: ["groot"] } }
+            );
+            const pr = response.data[0];
+            const fallbackBody = [
+              `## Comms Release ${process.env.RELEASE_TAG}`,
+              "",
+              "Automated comms release from a direct push to `main`.",
+              "",
+              `- Commit: ${sha}`
+            ].join("\n");
+            if (!pr) {
+              core.setOutput("body", fallbackBody);
+              return;
+            }
+            const prBody = (pr.body || "").trim();
+            const summary = prBody.length > 0 ? prBody : "_No PR description provided._";
+            const body = [
+              `## Comms Release ${process.env.RELEASE_TAG}`,
+              "",
+              `Source PR: [#${pr.number} - ${pr.title}](${pr.html_url})`,
+              "",
+              "### Changelog",
+              summary,
+              "",
+              "### Metadata",
+              `- PR: #${pr.number}`,
+              `- Author: @${pr.user.login}`,
+              `- Merge Commit: ${sha}`,
+              `- Version lock: este comms é compatível apenas com shipyard v${process.env.RELEASE_TAG.replace(/^comms-v/, "")}`
+            ].join("\n");
+            core.setOutput("body", body);
+
+      - name: Run comms tests
+        if: steps.detect.outputs.changed == 'true' && steps.version.outputs.skip != 'true'
+        run: |
+          go test ./addons/comms/... \
+                  ./internal/commsctl/... \
+                  ./internal/cli/...
+
+      - name: Run comms makefile validation
+        if: steps.detect.outputs.changed == 'true' && steps.version.outputs.skip != 'true'
+        run: bash addons/comms/Makefile_test.sh
+
+      - name: Build comms artifacts
+        if: steps.detect.outputs.changed == 'true' && steps.version.outputs.skip != 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          COMMIT: ${{ github.sha }}
+          BUILD_DATE: ${{ github.event.head_commit.timestamp }}
+        run: make package-comms checksums-comms
+
+      - name: Create GitHub release
+        if: steps.detect.outputs.changed == 'true' && steps.version.outputs.skip != 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: Comms ${{ steps.version.outputs.version }}
+          body: ${{ steps.changelog.outputs.body }}
+          make_latest: false
+          files: |
+            dist/shipyard-comms_${{ steps.version.outputs.version }}_linux_amd64.tar.gz
+            dist/shipyard-comms_${{ steps.version.outputs.version }}_linux_arm64.tar.gz
+            dist/shipyard-comms_${{ steps.version.outputs.version }}_darwin_amd64.tar.gz
+            dist/shipyard-comms_${{ steps.version.outputs.version }}_darwin_arm64.tar.gz
+            dist/shipyard-comms_${{ steps.version.outputs.version }}_checksums.txt
+
+  smoke-test:
+    needs: release
+    if: needs.release.outputs.skip != 'true'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Validate published release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash addons/comms/ci/validate_release.sh "${{ needs.release.outputs.tag }}"
