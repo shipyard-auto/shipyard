@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"time"
 )
 
 const SchemaVersion = "1"
@@ -96,7 +97,27 @@ type Execution struct {
 type Conversation struct {
 	Mode ConversationMode `yaml:"mode"`
 	Key  string           `yaml:"key,omitempty"`
+	// TTL bounds session *inactivity*, not session age: the clock restarts
+	// on every run that touches the key, so a conversation used daily under
+	// `ttl: 24h` never expires. Pick a value shorter than the shortest
+	// natural idle gap (8h-12h for a human-facing chat, so the overnight
+	// pause always resets it). Zero (absent) keeps sessions forever.
+	TTL time.Duration `yaml:"ttl,omitempty"`
+	// KeyFallback is the key used when Key renders to nothing because the
+	// trigger payload lacks the referenced fields — a terminal run of an
+	// agent otherwise keyed by chat id, say. Empty (absent) keeps the
+	// stricter behaviour of failing the run.
+	KeyFallback string `yaml:"key_fallback,omitempty"`
+	// LockWait bounds how long a run waits for another run on the same key
+	// to finish before giving up. The lock is held for the whole
+	// load-run-save cycle, so this must exceed a normal agent turn. Zero
+	// (absent) means DefaultLockWait.
+	LockWait time.Duration `yaml:"lock_wait,omitempty"`
 }
+
+// DefaultLockWait is the per-key lock timeout applied when
+// Conversation.LockWait is unset.
+const DefaultLockWait = 5 * time.Minute
 
 type Trigger struct {
 	Type     TriggerType `yaml:"type"`
@@ -292,9 +313,27 @@ func (c Conversation) Validate() error {
 		if c.Key != "" {
 			return errors.New(`mode "stateless" must not set key`)
 		}
+		if c.TTL != 0 {
+			return errors.New(`mode "stateless" must not set ttl`)
+		}
+		if c.KeyFallback != "" {
+			return errors.New(`mode "stateless" must not set key_fallback`)
+		}
+		if c.LockWait != 0 {
+			return errors.New(`mode "stateless" must not set lock_wait`)
+		}
 	case ConversationStateful:
 		if strings.TrimSpace(c.Key) == "" {
 			return errors.New(`mode "stateful" requires key`)
+		}
+		if c.TTL < 0 {
+			return fmt.Errorf("ttl %s: must be positive", c.TTL)
+		}
+		if c.LockWait < 0 {
+			return fmt.Errorf("lock_wait %s: must be positive", c.LockWait)
+		}
+		if c.KeyFallback != "" && strings.TrimSpace(c.KeyFallback) == "" {
+			return errors.New("key_fallback must not be blank")
 		}
 	default:
 		return fmt.Errorf(`invalid mode %q: must be "stateless" or "stateful"`, c.Mode)

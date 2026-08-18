@@ -34,10 +34,17 @@ type Message struct {
 //
 //	key that uniquely identifies a session. Always "" in stateless mode.
 //
+// Lock:    serialises runs sharing a key, returning a release func. The
+//
+//	caller holds it across load -> run -> save so two concurrent runs
+//	cannot resume the same session and fork it. Stateless returns a
+//	no-op.
+//
 // Load:    given a key, returns the stored history (or the zero value).
 // Save:    persists the updated history for the given key.
 type Store interface {
 	Resolve(agent *crew.Agent, input map[string]any) (string, error)
+	Lock(ctx context.Context, agent *crew.Agent, key string) (release func(), err error)
 	Load(ctx context.Context, agent *crew.Agent, key string) (History, error)
 	Save(ctx context.Context, agent *crew.Agent, key string, history History) error
 }

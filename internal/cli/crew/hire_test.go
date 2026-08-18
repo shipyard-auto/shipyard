@@ -355,3 +355,22 @@ func TestNewHireCmd_GuardTriggersWhenBinaryMissing(t *testing.T) {
 		t.Fatalf("want ErrAddonNotInstalled, got %v", err)
 	}
 }
+
+// The scaffold's conversation guidance embeds crew placeholder syntax, which
+// text/template would otherwise try to execute at hire time.
+func TestHire_ScaffoldKeepsPlaceholderSyntaxLiteral(t *testing.T) {
+	home := hireSetup(t)
+	if err := runHire(io.Discard, "demo", hireFlags{backend: "cli", mode: "on-demand"}); err != nil {
+		t.Fatalf("runHire: %v", err)
+	}
+	raw, err := os.ReadFile(filepath.Join(home, "crew", "demo", "agent.yaml"))
+	if err != nil {
+		t.Fatalf("read agent.yaml: %v", err)
+	}
+	if !strings.Contains(string(raw), `key: "{{input.message.chat.id}}"`) {
+		t.Fatalf("scaffold lost the literal key example:\n%s", raw)
+	}
+	if !strings.Contains(string(raw), "ttl measures INACTIVITY") {
+		t.Fatalf("scaffold lost the ttl semantics note:\n%s", raw)
+	}
+}

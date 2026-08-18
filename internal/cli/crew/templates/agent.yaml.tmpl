@@ -17,6 +17,25 @@ execution:
 conversation:
   mode: stateless
 
+# Stateful agents keep one session per conversation key, so a chat continues
+# where it left off:
+#
+#   conversation:
+#     mode: stateful
+#     key: "{{"{{input.message.chat.id}}"}}"   # one session per Telegram chat
+#     key_fallback: terminal             # key used when the payload has no
+#                                        # such field (a plain terminal run)
+#     ttl: 8h                            # discard a session left idle this long
+#     lock_wait: 5m                      # how long a second run waits for the
+#                                        # first to finish on the same key
+#
+# ttl measures INACTIVITY, not the age of the session: every run restarts the
+# clock. `ttl: 24h` on an agent someone messages daily therefore never expires
+# — the session just keeps growing. To get "a fresh session each day", pick a
+# window shorter than the shortest natural idle gap (8h-12h for a human-facing
+# chat, so the overnight pause always resets it) rather than the length of the
+# day itself.
+
 triggers: []
 
 # Tools this agent can call. Two styles are supported:

@@ -502,6 +502,30 @@ shipyard crew logs my-agent
 shipyard crew logs my-agent --tail
 ```
 
+#### `shipyard crew session`
+
+Inspect and reset the stored conversations of a `conversation.mode: stateful`
+agent. State lives in `~/.shipyard/crew/<agent>/sessions.json` (cli backend) or
+`~/.shipyard/crew/<agent>/sessions/` (anthropic_api backend).
+
+```bash
+shipyard crew session list my-agent
+shipyard crew session list my-agent --json
+shipyard crew session clear my-agent 987654321   # one conversation key
+shipyard crew session clear my-agent --yes       # every key
+```
+
+`list` prints the key, the external session id, how long since the last run
+touched it, and the time left before `conversation.ttl` discards it. For
+`anthropic_api` agents the transcripts are named by a hash of the key, so rows
+report the hash instead of the plaintext key; `clear <key>` still works, since
+the hash is derived from the key.
+
+`clear` clears Shipyard's side of the link only — the transcript the external
+CLI keeps for that session (under `~/.claude`) is left in place and simply stops
+being referenced. A key held by a run in flight is skipped and reported rather
+than yanked mid-run (exit code 2).
+
 #### `shipyard crew tool`
 
 Manage the reusable tool library available to crew agents. Tools live in `~/.shipyard/crew/tools/<name>.yaml`.
@@ -514,6 +538,42 @@ shipyard crew tool rm my-tool
 ```
 
 `--protocol` is `exec` (shell command) or `http` (HTTP request).
+
+---
+
+## Conversation lifecycle (stateful agents)
+
+A stateful agent keeps one session per conversation key, so a chat resumes
+where it left off. The key is a template rendered against the trigger payload;
+`internal/crew/template` supports dotted paths into the decoded JSON body
+(`{{input.message.chat.id}}`), and JSON numbers render without exponent
+notation so large chat ids survive as keys.
+
+```yaml
+conversation:
+  mode: stateful
+  key: "{{input.message.chat.id}}"
+  key_fallback: terminal   # optional; absent = missing fields fail the run
+  ttl: 8h                  # optional; absent = sessions never expire
+  lock_wait: 5m            # optional; default 5m
+```
+
+- **`ttl` measures inactivity, not session age.** Every run restarts the clock,
+  so `ttl: 24h` on an agent used daily never expires. For "a fresh session each
+  day", pick a window shorter than the shortest natural idle gap (8h–12h for a
+  human-facing chat, so the overnight pause resets it).
+- **`key_fallback`** only covers payloads that lack the referenced fields (a
+  terminal run of a chat-keyed agent). A malformed template still fails the run:
+  `template.ErrMissingValue` is what separates the two.
+- **Per-key serialization.** Each run holds an exclusive flock on
+  `<agent dir>/locks/<hash16(key)>.lock` across load → run → save, so two
+  concurrent runs cannot resume the same session and fork it. The lock is taken
+  *before* the concurrency-pool slot, otherwise waiters could starve the pool
+  they need the holder to free. A waiter that exceeds `lock_wait` fails with a
+  "busy" error instead of forking.
+- **`sessions.json` format.** Rows are `{session_id, updated_at}`. The legacy
+  shape (key → bare id string) is still read: such rows inherit the file mtime
+  as their last-use stamp and are rewritten in the new shape on the next save.
 
 ---
 

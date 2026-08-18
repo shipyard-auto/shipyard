@@ -29,6 +29,7 @@ running daemon via "shipyard crew apply".`,
 	cmd.AddCommand(newFireCmd())
 	cmd.AddCommand(newApplyCmd())
 	cmd.AddCommand(newListCmd())
+	cmd.AddCommand(newSessionCmd())
 	cmd.AddCommand(runCmd)
 	cmd.AddCommand(newLogsCmd())
 	cmd.AddCommand(newToolCmd())

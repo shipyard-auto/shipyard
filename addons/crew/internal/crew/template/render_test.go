@@ -1,6 +1,7 @@
 package template
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -247,4 +248,104 @@ func ExampleRender() {
 	out, _ := Render("hello {{input.who}}", Context{Input: map[string]any{"who": "world"}})
 	fmt.Println(out)
 	// Output: hello world
+}
+
+func TestRenderDottedPath(t *testing.T) {
+	// Shape of a Telegram Update as decoded by encoding/json: nested
+	// objects, numbers as float64.
+	update := map[string]any{
+		"message": map[string]any{
+			"chat": map[string]any{"id": float64(987654321), "type": "private"},
+			"text": "oi",
+		},
+	}
+
+	cases := []struct {
+		name    string
+		tmpl    string
+		ctx     Context
+		want    string
+		wantErr string
+	}{
+		{
+			name: "nested id renders without exponent",
+			tmpl: "{{input.message.chat.id}}",
+			ctx:  Context{Input: update},
+			want: "987654321",
+		},
+		{
+			name: "nested string",
+			tmpl: "chat-{{input.message.chat.type}}",
+			ctx:  Context{Input: update},
+			want: "chat-private",
+		},
+		{
+			name:    "missing leaf",
+			tmpl:    "{{input.message.chat.title}}",
+			ctx:     Context{Input: update},
+			wantErr: "missing input.message.chat.title",
+		},
+		{
+			name:    "missing branch",
+			tmpl:    "{{input.callback_query.from.id}}",
+			ctx:     Context{Input: update},
+			wantErr: "missing input.callback_query",
+		},
+		{
+			name:    "scalar mid-path",
+			tmpl:    "{{input.message.text.id}}",
+			ctx:     Context{Input: update},
+			wantErr: "is not an object",
+		},
+		{
+			name: "yaml-style nested map",
+			tmpl: "{{input.a.b}}",
+			ctx:  Context{Input: map[string]any{"a": map[any]any{"b": "v"}}},
+			want: "v",
+		},
+		{
+			name: "large integer stays literal",
+			tmpl: "{{input.n}}",
+			ctx:  Context{Input: map[string]any{"n": float64(1e21)}},
+			want: "1000000000000000000000",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := Render(tc.tmpl, tc.ctx)
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("error = %v, want contains %q", err, tc.wantErr)
+				}
+				if !errors.Is(err, ErrMissingValue) {
+					t.Fatalf("error %v should wrap ErrMissingValue", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// Callers degrade gracefully on absent data but must still fail loudly on a
+// malformed template, so the two cases carry different error identities.
+func TestRenderMissingValueSentinel(t *testing.T) {
+	if _, err := Render("{{input.nope}}", Context{Input: map[string]any{}}); !errors.Is(err, ErrMissingValue) {
+		t.Fatalf("missing input should wrap ErrMissingValue, got %v", err)
+	}
+	if _, err := Render("{{env.NOPE_XYZ}}", Context{Env: map[string]string{}}); !errors.Is(err, ErrMissingValue) {
+		t.Fatalf("missing env should wrap ErrMissingValue, got %v", err)
+	}
+	if _, err := Render("{{agent.nope}}", Context{Agent: map[string]string{}}); !errors.Is(err, ErrMissingValue) {
+		t.Fatalf("missing agent should wrap ErrMissingValue, got %v", err)
+	}
+	if _, err := Render("{{ nonsense }}", Context{}); errors.Is(err, ErrMissingValue) {
+		t.Fatalf("malformed template must not wrap ErrMissingValue")
+	}
 }

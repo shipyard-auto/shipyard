@@ -1,9 +1,9 @@
 // Package runner is the orchestrator that binds every crew subsystem into a
 // single execution flow: trigger input in, agent output out.
 //
-// Run acquires a concurrency slot, resolves the conversation key, loads
-// history, reads the prompt, invokes the backend (wiring a per-agent tool
-// dispatcher) and persists the updated history. It is the single component
+// Run resolves the conversation key, takes the per-key lock, acquires a
+// concurrency slot, loads history, reads the prompt, invokes the backend
+// (wiring a per-agent tool dispatcher) and persists the updated history. It is the single component
 // that sees every other addon package; callers (triggers) treat it as a
 // black box.
 package runner
@@ -90,17 +90,26 @@ func (r *Runner) Run(ctx context.Context, in Input) (Output, error) {
 }
 
 func (r *Runner) runInner(ctx context.Context, in Input, traceID string) (Output, error) {
+	key, err := r.Store.Resolve(r.Agent, in.Data)
+	if err != nil {
+		return Output{}, fmt.Errorf("resolve key: %w", err)
+	}
+
+	// Lock before the pool slot, not after. A run that held a slot while
+	// waiting on the lock could starve the pool: with capacity N, N waiters
+	// on one key would leave no slot for the holder they are waiting for.
+	release, err := r.Store.Lock(ctx, r.Agent, key)
+	if err != nil {
+		return Output{}, fmt.Errorf("lock conversation: %w", err)
+	}
+	defer release()
+
 	poolName := r.Agent.Execution.Pool
 	slot, err := r.Pool.Acquire(ctx, poolName)
 	if err != nil {
 		return Output{}, fmt.Errorf("acquire pool %q: %w", poolName, err)
 	}
 	defer slot.Release()
-
-	key, err := r.Store.Resolve(r.Agent, in.Data)
-	if err != nil {
-		return Output{}, fmt.Errorf("resolve key: %w", err)
-	}
 
 	history, err := r.Store.Load(ctx, r.Agent, key)
 	if err != nil {
