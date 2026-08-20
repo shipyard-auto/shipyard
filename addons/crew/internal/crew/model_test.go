@@ -3,6 +3,7 @@ package crew
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func validAgent() Agent {
@@ -168,6 +169,15 @@ func TestConversationValidate(t *testing.T) {
 		{"stateful no key", Conversation{Mode: ConversationStateful}, "requires key"},
 		{"stateful with key", Conversation{Mode: ConversationStateful, Key: "x"}, ""},
 		{"bad mode", Conversation{Mode: "foo"}, "invalid mode"},
+		{"stateful with ttl", Conversation{Mode: ConversationStateful, Key: "x", TTL: 8 * time.Hour}, ""},
+		{"stateful with negative ttl", Conversation{Mode: ConversationStateful, Key: "x", TTL: -time.Hour}, "must be positive"},
+		{"stateful with key_fallback", Conversation{Mode: ConversationStateful, Key: "x", KeyFallback: "terminal"}, ""},
+		{"stateful with blank key_fallback", Conversation{Mode: ConversationStateful, Key: "x", KeyFallback: "  "}, "must not be blank"},
+		{"stateful with lock_wait", Conversation{Mode: ConversationStateful, Key: "x", LockWait: time.Minute}, ""},
+		{"stateful with negative lock_wait", Conversation{Mode: ConversationStateful, Key: "x", LockWait: -time.Minute}, "must be positive"},
+		{"stateless with ttl", Conversation{Mode: ConversationStateless, TTL: time.Hour}, "must not set ttl"},
+		{"stateless with key_fallback", Conversation{Mode: ConversationStateless, KeyFallback: "terminal"}, "must not set key_fallback"},
+		{"stateless with lock_wait", Conversation{Mode: ConversationStateless, LockWait: time.Minute}, "must not set lock_wait"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -28,6 +29,10 @@ type fakeStore struct {
 	loadErr    error
 	saveErr    error
 
+	lockErr     error
+	lockCalls   int
+	unlockCalls int
+
 	resolveCalls int
 	loadCalls    int
 	saveCalls    int
@@ -38,6 +43,13 @@ type fakeStore struct {
 func (f *fakeStore) Resolve(a *crew.Agent, in map[string]any) (string, error) {
 	f.resolveCalls++
 	return f.resolveKey, f.resolveErr
+}
+func (f *fakeStore) Lock(ctx context.Context, a *crew.Agent, k string) (func(), error) {
+	f.lockCalls++
+	if f.lockErr != nil {
+		return nil, f.lockErr
+	}
+	return func() { f.unlockCalls++ }, nil
 }
 func (f *fakeStore) Load(ctx context.Context, a *crew.Agent, k string) (conversation.History, error) {
 	f.loadCalls++
@@ -54,12 +66,14 @@ type fakeBackend struct {
 	out backend.RunOutput
 	err error
 
+	calls    int
 	got      backend.RunInput
 	gotDisp  backend.ToolDispatcher
 	callHook func(ctx context.Context, disp backend.ToolDispatcher)
 }
 
 func (f *fakeBackend) Run(ctx context.Context, in backend.RunInput, d backend.ToolDispatcher) (backend.RunOutput, error) {
+	f.calls++
 	f.got = in
 	f.gotDisp = d
 	if f.callHook != nil {
@@ -604,5 +618,193 @@ func TestOutputTraceIDSetOnError(t *testing.T) {
 	}
 	if out.TraceID != "abc" {
 		t.Fatalf("TraceID not propagated on error: %q", out.TraceID)
+	}
+}
+
+func TestRunLocksAndReleasesConversation(t *testing.T) {
+	store := &fakeStore{resolveKey: "chat-1"}
+	r := &Runner{
+		Agent:      testAgent(t, ""),
+		Pool:       testPool(2, config.QueueWait),
+		Store:      store,
+		Backend:    &fakeBackend{out: backend.RunOutput{Text: "ok"}},
+		Dispatcher: tools.NewDispatcher(),
+	}
+
+	if _, err := r.Run(context.Background(), Input{Source: "manual"}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if store.lockCalls != 1 {
+		t.Fatalf("lockCalls=%d, want 1", store.lockCalls)
+	}
+	if store.unlockCalls != 1 {
+		t.Fatalf("unlockCalls=%d, want 1 (lock must be released after save)", store.unlockCalls)
+	}
+}
+
+func TestRunLockErrorAbortsBeforeLoad(t *testing.T) {
+	store := &fakeStore{resolveKey: "chat-1", lockErr: errors.New("busy")}
+	be := &fakeBackend{out: backend.RunOutput{Text: "ok"}}
+	r := &Runner{
+		Agent:      testAgent(t, ""),
+		Pool:       testPool(2, config.QueueWait),
+		Store:      store,
+		Backend:    be,
+		Dispatcher: tools.NewDispatcher(),
+	}
+
+	_, err := r.Run(context.Background(), Input{Source: "manual"})
+	if err == nil || !strings.Contains(err.Error(), "lock conversation") {
+		t.Fatalf("err=%v, want lock conversation error", err)
+	}
+	if store.loadCalls != 0 || store.saveCalls != 0 {
+		t.Fatalf("load=%d save=%d, want 0/0 when the lock is unavailable", store.loadCalls, store.saveCalls)
+	}
+	if be.calls != 0 {
+		t.Fatalf("backend ran %d times despite the lock failure", be.calls)
+	}
+}
+
+// The lock is taken before the pool slot: a run that held a slot while
+// waiting on a key could starve the pool it needs the holder to free.
+func TestRunLocksBeforeAcquiringPoolSlot(t *testing.T) {
+	store := &fakeStore{resolveKey: "chat-1", lockErr: errors.New("busy")}
+	r := &Runner{
+		Agent:      testAgent(t, ""),
+		Pool:       testPool(1, config.QueueWait),
+		Store:      store,
+		Backend:    &fakeBackend{out: backend.RunOutput{Text: "ok"}},
+		Dispatcher: tools.NewDispatcher(),
+	}
+
+	// Saturate the single-slot pool. If the runner asked for a slot before
+	// the lock, this Run would fail with a pool error instead of the lock
+	// error the fake store returns.
+	slot, err := r.Pool.Acquire(context.Background(), "cli")
+	if err != nil {
+		t.Fatalf("prime pool: %v", err)
+	}
+	defer slot.Release()
+
+	_, err = r.Run(context.Background(), Input{Source: "manual"})
+	if err == nil || !strings.Contains(err.Error(), "lock conversation") {
+		t.Fatalf("err=%v, want the lock error to surface before the pool wait", err)
+	}
+}
+
+// concurrencyProbe records the peak number of overlapping backend calls, so a
+// test can tell "serialized" from "ran side by side".
+type concurrencyProbe struct {
+	hold time.Duration
+
+	mu      sync.Mutex
+	active  int
+	peak    int
+	calls   int
+	histSet []conversation.History
+}
+
+func (p *concurrencyProbe) Run(ctx context.Context, in backend.RunInput, d backend.ToolDispatcher) (backend.RunOutput, error) {
+	p.mu.Lock()
+	p.active++
+	p.calls++
+	if p.active > p.peak {
+		p.peak = p.active
+	}
+	p.histSet = append(p.histSet, in.History)
+	p.mu.Unlock()
+
+	time.Sleep(p.hold)
+
+	p.mu.Lock()
+	p.active--
+	p.mu.Unlock()
+	return backend.RunOutput{Text: "ok", History: conversation.History{SessionID: "sess-1"}}, nil
+}
+
+func statefulRunner(t *testing.T, dir string, pool *pool.Manager, be backend.Backend) *Runner {
+	t.Helper()
+	a := testAgent(t, "")
+	a.Dir = dir
+	a.Conversation = crew.Conversation{
+		Mode:     crew.ConversationStateful,
+		Key:      "{{input.chat}}",
+		LockWait: 10 * time.Second,
+	}
+	return &Runner{
+		Agent:      a,
+		Pool:       pool,
+		Store:      conversation.NewStateful(nil),
+		Backend:    be,
+		Dispatcher: tools.NewDispatcher(),
+	}
+}
+
+// End-to-end with the real store: two runs on the same conversation key must
+// not overlap, otherwise both would resume the same external session and fork
+// it. The pool has room for both, so the lock is the only thing serializing.
+func TestRunSerialisesConcurrentRunsOnSameKey(t *testing.T) {
+	dir := t.TempDir()
+	probe := &concurrencyProbe{hold: 150 * time.Millisecond}
+	p := testPool(2, config.QueueWait)
+
+	var wg sync.WaitGroup
+	errs := make(chan error, 2)
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			r := statefulRunner(t, dir, p, probe)
+			_, err := r.Run(context.Background(), Input{Data: map[string]any{"chat": "42"}, Source: "manual"})
+			errs <- err
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+	}
+
+	probe.mu.Lock()
+	defer probe.mu.Unlock()
+	if probe.calls != 2 {
+		t.Fatalf("backend calls = %d, want 2", probe.calls)
+	}
+	if probe.peak != 1 {
+		t.Fatalf("peak concurrency = %d, want 1 (same key must serialize)", probe.peak)
+	}
+	// The second run in line resumes what the first saved, rather than
+	// starting a parallel session from empty history.
+	if probe.histSet[1].SessionID != "sess-1" {
+		t.Fatalf("second run started from %#v, want the session saved by the first", probe.histSet[1])
+	}
+}
+
+// Different keys are independent conversations and must not queue behind each
+// other.
+func TestRunDifferentKeysAreNotSerialised(t *testing.T) {
+	dir := t.TempDir()
+	probe := &concurrencyProbe{hold: 150 * time.Millisecond}
+	p := testPool(2, config.QueueWait)
+
+	var wg sync.WaitGroup
+	for _, chat := range []string{"1", "2"} {
+		wg.Add(1)
+		go func(chat string) {
+			defer wg.Done()
+			r := statefulRunner(t, dir, p, probe)
+			if _, err := r.Run(context.Background(), Input{Data: map[string]any{"chat": chat}, Source: "manual"}); err != nil {
+				t.Errorf("Run(%s): %v", chat, err)
+			}
+		}(chat)
+	}
+	wg.Wait()
+
+	probe.mu.Lock()
+	defer probe.mu.Unlock()
+	if probe.peak != 2 {
+		t.Fatalf("peak concurrency = %d, want 2 (distinct keys must not block each other)", probe.peak)
 	}
 }

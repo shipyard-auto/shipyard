@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestLoad_Good(t *testing.T) {
@@ -322,5 +323,67 @@ foo: bar
 	_, err := Load(dir)
 	if err == nil || !strings.Contains(err.Error(), "parse agent.yaml") {
 		t.Fatalf("want parse error from unknown field, got %v", err)
+	}
+}
+
+// The conversation lifecycle fields are written as duration strings in
+// agent.yaml; this pins that they survive the round trip into time.Duration.
+func TestLoad_ConversationLifecycleFields(t *testing.T) {
+	_, agentDir := buildAgentTree(t, "tg")
+	writeTestFile(t, filepath.Join(agentDir, "agent.yaml"), `schema_version: "1"
+name: tg
+description: telegram facing agent
+backend:
+  type: cli
+  command: ["claude", "--print"]
+execution:
+  mode: on-demand
+  pool: cli
+conversation:
+  mode: stateful
+  key: "{{input.message.chat.id}}"
+  key_fallback: terminal
+  ttl: 8h
+  lock_wait: 90s
+triggers: []
+tools: []
+`)
+	writeTestFile(t, filepath.Join(agentDir, "prompt.md"), "hi")
+
+	a, err := Load(agentDir)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if a.Conversation.TTL != 8*time.Hour {
+		t.Fatalf("ttl = %s, want 8h", a.Conversation.TTL)
+	}
+	if a.Conversation.LockWait != 90*time.Second {
+		t.Fatalf("lock_wait = %s, want 90s", a.Conversation.LockWait)
+	}
+	if a.Conversation.KeyFallback != "terminal" {
+		t.Fatalf("key_fallback = %q", a.Conversation.KeyFallback)
+	}
+}
+
+func TestLoad_RejectsTTLOnStatelessAgent(t *testing.T) {
+	_, agentDir := buildAgentTree(t, "plain")
+	writeTestFile(t, filepath.Join(agentDir, "agent.yaml"), `schema_version: "1"
+name: plain
+backend:
+  type: cli
+  command: ["claude"]
+execution:
+  mode: on-demand
+  pool: cli
+conversation:
+  mode: stateless
+  ttl: 8h
+triggers: []
+tools: []
+`)
+	writeTestFile(t, filepath.Join(agentDir, "prompt.md"), "hi")
+
+	if _, err := Load(agentDir); err == nil || !strings.Contains(err.Error(), "must not set ttl") {
+		t.Fatalf("want ttl rejection, got %v", err)
 	}
 }
