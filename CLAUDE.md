@@ -19,9 +19,16 @@ The binary is named `shipyard`. Install it once per machine and manage cron jobs
 | `internal/ui/` | Terminal rendering and TUI wizards |
 | `internal/fairwayctl/` | Fairway HTTP gateway control logic |
 | `internal/crewctl/` | Crew addon control logic |
-| `addons/fairway/` | Fairway HTTP gateway addon (separate Go module) |
-| `addons/crew/` | Crew LLM agent addon (separate Go module) |
-| `manifest` | Release source of truth (`shipyard=`, `fairway=`, `crew=` lines) |
+| `addons/fairway/` | Fairway HTTP gateway addon (own binary) |
+| `addons/crew/` | Crew LLM agent addon (own binary) |
+| `addons/comms/` | Comms messaging addon, stateless (own binary) |
+| `addons/comms-whatsapp/` | WhatsApp linked-device daemon + local archive (own binary) |
+| `manifest` | Release source of truth (`shipyard=`, `fairway=`, `crew=`, `comms=`, `comms-whatsapp=` lines) |
+
+The repository is a **single Go module** (`go.mod` at the root). Each addon
+is a separate binary inside it; the linker only pulls what a binary imports,
+so heavy addon dependencies (whatsmeow, SQLite) never reach `shipyard`
+itself. Addons still must not import each other's `internal/` packages.
 
 ## Local State
 
@@ -37,6 +44,8 @@ Shipyard stores all state under `~/.shipyard/`:
 | `~/.shipyard/fairway/` | Fairway addon state |
 | `~/.shipyard/crew/` | Crew addon state and agent definitions |
 | `~/.shipyard/crew/tools/` | Reusable tool definitions for crew agents |
+| `~/.shipyard/comms/` | Comms channels and per-channel secrets |
+| `~/.shipyard/comms/whatsapp/` | WhatsApp session keys, archive (SQLite, TTL-bound), daemon status |
 
 ## Build and Test
 
