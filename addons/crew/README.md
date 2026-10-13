@@ -199,6 +199,7 @@ All agents declare `schema_version: "1"` at the top. Unknown fields are rejected
 | `tools[].headers` | map[string]string | no | `{}` | HTTP headers; values support templates |
 | `tools[].body` | string | no | `""` | HTTP body; supports templates |
 | `mcp_servers[].ref` | string | no | — | Key from `~/.claude.json` `mcpServers` to expose verbatim on this agent's MCP config |
+| `builtin_tools` | []string | no | absent (all) | `cli` only. Built-in tools of the host CLI the agent keeps (`Bash`, `Read`, …). `[]` removes them all. See [Built-in tools](#built-in-tools-backend-cli). |
 
 Validation rules enforced by the loader:
 
@@ -316,6 +317,20 @@ The synthesised config always has the same shape:
 ```
 
 Each tool's `input_schema` / `output_schema` is translated to a JSON-Schema `inputSchema` / `outputSchema` on the MCP descriptor; the envelope's `data` field becomes `CallToolResult.structuredContent`, `ok=false` becomes `isError: true`. Agents that declare no tools and no `mcp_servers` pay nothing — the CLI is invoked exactly as before.
+
+### Built-in tools (backend `cli`)
+
+The `cli` backend always runs with `--permission-mode bypassPermissions` (there is no TTY to approve tool calls), and `--strict-mcp-config` only narrows the MCP servers. So by default an agent also gets every built-in tool of the host CLI — `Bash`, `Edit`, `Write`, `WebFetch` — on top of what it declares. A rule enforced inside a tool is only advisory while the agent can shell out around it.
+
+`builtin_tools` closes that gap:
+
+```yaml
+builtin_tools: []            # no built-in tools: only tools + mcp_servers remain
+# builtin_tools: [Read, Grep] # keep just these
+# (field absent)              # every built-in tool — the historical default
+```
+
+When the field is present the backend passes `--tools=<comma list>` (the value rides in the same argv element, since `--tools` is variadic and would swallow a positional prompt) and `--strict-mcp-config`, even when no `--mcp-config` is generated, so the user's own `~/.claude.json` servers stay out too. Names must match `^[A-Z][A-Za-z]{0,62}$`; pattern forms like `Bash(git *)` are rejected. The `anthropic_api` backend ignores the field — it never exposed built-in tools.
 
 ## Template engine
 

@@ -387,3 +387,62 @@ tools: []
 		t.Fatalf("want ttl rejection, got %v", err)
 	}
 }
+
+func TestLoad_BuiltinTools(t *testing.T) {
+	const head = `schema_version: "1"
+name: gatekeeper
+description: ""
+backend:
+  type: cli
+  command: ["claude","--print"]
+execution:
+  mode: on-demand
+  pool: cli
+conversation:
+  mode: stateless
+triggers: []
+tools: []
+`
+	cases := []struct {
+		name string
+		yaml string
+		want *[]string
+	}{
+		{"absent keeps every built-in", "", nil},
+		{"empty list removes them all", "builtin_tools: []\n", &[]string{}},
+		{"named subset", "builtin_tools: [Read, Grep]\n", &[]string{"Read", "Grep"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, agentDir := buildAgentTree(t, "gatekeeper")
+			writeTestFile(t, filepath.Join(agentDir, "agent.yaml"), head+tc.yaml)
+			writeTestFile(t, filepath.Join(agentDir, "prompt.md"), "p")
+
+			a, err := Load(agentDir)
+			if err != nil {
+				t.Fatalf("load: %v", err)
+			}
+			assertBuiltinTools(t, "load", a.BuiltinTools, tc.want)
+
+			// Roundtrip: absent and empty must stay distinct after Write.
+			if err := Write(a); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+			b, err := Load(agentDir)
+			if err != nil {
+				t.Fatalf("reload: %v", err)
+			}
+			assertBuiltinTools(t, "roundtrip", b.BuiltinTools, tc.want)
+		})
+	}
+}
+
+func assertBuiltinTools(t *testing.T, stage string, got, want *[]string) {
+	t.Helper()
+	if (got == nil) != (want == nil) {
+		t.Fatalf("%s: builtin_tools nil=%v, want nil=%v", stage, got == nil, want == nil)
+	}
+	if want != nil && strings.Join(*got, ",") != strings.Join(*want, ",") {
+		t.Fatalf("%s: builtin_tools=%v, want %v", stage, *got, *want)
+	}
+}

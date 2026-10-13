@@ -73,3 +73,11 @@ tools: []
 # on top of the root map (matches Claude Code's per-project scoping).
 # Leave commented to use root-only.
 # project_scope: /absolute/path/to/project
+
+# Built-in tools of the host CLI (backend: cli only). Left commented, the
+# agent keeps every one of them — Bash, Edit, Write, WebFetch — on top of
+# the tools declared above, so a rule enforced inside a tool can be routed
+# around through the shell. Set an empty list for agents that act on your
+# behalf (messages, orders); they then reach only what tools and
+# mcp_servers expose.
+# builtin_tools: []            # or e.g. [Read, Grep]

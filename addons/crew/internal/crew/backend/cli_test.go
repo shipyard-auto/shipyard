@@ -466,6 +466,85 @@ func TestCLI_NoMCPFlagsWhenAgentHasNoToolsOrMCP(t *testing.T) {
 	}
 }
 
+func TestCLI_BuiltinToolsFlag(t *testing.T) {
+	cases := []struct {
+		name       string
+		builtin    *[]string
+		wantTools  string // "" = flag must be absent
+		wantStrict bool
+	}{
+		{"absent", nil, "", false},
+		{"empty", &[]string{}, "--tools=", true},
+		{"subset", &[]string{"Read", "Grep"}, "--tools=Read,Grep", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			agent, argsFile := captureArgvAgent(t, []string{"base"}, "")
+			agent.BuiltinTools = tc.builtin
+
+			b := NewCLIBackend().WithUserHomeDir(func() (string, error) { return t.TempDir(), nil })
+			if _, err := b.Run(context.Background(), RunInput{User: "ping", Agent: agent}, nil); err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+
+			got := readArgvLines(t, argsFile)
+			var tools string
+			strict := false
+			for _, a := range got {
+				if strings.HasPrefix(a, "--tools") {
+					tools = a
+				}
+				if a == "--strict-mcp-config" {
+					strict = true
+				}
+			}
+			if tools != tc.wantTools {
+				t.Fatalf("tools arg=%q, want %q (argv %v)", tools, tc.wantTools, got)
+			}
+			if strict != tc.wantStrict {
+				t.Fatalf("--strict-mcp-config present=%v, want %v (argv %v)", strict, tc.wantStrict, got)
+			}
+			// The bridge config only exists when tools/mcp_servers are declared.
+			for _, a := range got {
+				if a == "--mcp-config" {
+					t.Fatalf("unexpected --mcp-config without tools: %v", got)
+				}
+			}
+		})
+	}
+}
+
+func TestCLI_BuiltinToolsWithBridgeKeepsSingleStrictFlag(t *testing.T) {
+	agent, argsFile := captureArgvAgent(t, []string{"base"}, "")
+	agent.Tools = []crew.Tool{
+		{Name: "echo", Protocol: crew.ToolExec, Command: []string{"/bin/true"}},
+	}
+	agent.BuiltinTools = &[]string{}
+
+	b := NewCLIBackend().
+		WithSelfPath("/fake/shipyard-crew").
+		WithUserHomeDir(func() (string, error) { return t.TempDir(), nil })
+	if _, err := b.Run(context.Background(), RunInput{User: "ping", Agent: agent}, nil); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	got := readArgvLines(t, argsFile)
+	strict, tools, mcp := 0, 0, 0
+	for _, a := range got {
+		switch {
+		case a == "--strict-mcp-config":
+			strict++
+		case a == "--tools=":
+			tools++
+		case a == "--mcp-config":
+			mcp++
+		}
+	}
+	if strict != 1 || tools != 1 || mcp != 1 {
+		t.Fatalf("want one each of --strict-mcp-config/--tools=/--mcp-config, got %d/%d/%d: %v", strict, tools, mcp, got)
+	}
+}
+
 func TestCLI_PromptPrecedesResumeFlag(t *testing.T) {
 	agent, argsFile := captureArgvAgent(t, []string{"base"}, "")
 

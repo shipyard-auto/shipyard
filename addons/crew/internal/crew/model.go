@@ -22,6 +22,10 @@ var (
 	// dots, underscores and hyphens — the character set Claude Code itself
 	// allows when registering a server via `claude mcp add`.
 	MCPRefRe = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.\-]{0,62}$`)
+	// BuiltinToolRe matches a Claude Code built-in tool name (Bash, Read,
+	// WebFetch, …). Pattern-scoped forms like "Bash(git *)" are deliberately
+	// rejected: --tools selects whole tools, it does not filter their input.
+	BuiltinToolRe = regexp.MustCompile(`^[A-Z][A-Za-z]{0,62}$`)
 )
 
 type BackendType string
@@ -74,8 +78,15 @@ type Agent struct {
 	// servers take precedence over root mcpServers when both define the
 	// same key. Empty (default) preserves root-only behavior.
 	ProjectScope string `yaml:"project_scope,omitempty"`
-	PromptPath   string `yaml:"-"`
-	Dir          string `yaml:"-"`
+	// BuiltinTools restricts the host CLI's own tools (Bash, Edit, WebFetch,
+	// …) for backend=cli. nil (field absent) keeps every built-in tool, the
+	// historical behaviour; an empty list removes them all, so the agent can
+	// only reach what tools and mcp_servers declare. A pointer keeps those
+	// two cases apart. Ignored by backend=anthropic_api, which never had
+	// built-in tools.
+	BuiltinTools *[]string `yaml:"builtin_tools,omitempty"`
+	PromptPath   string    `yaml:"-"`
+	Dir          string    `yaml:"-"`
 }
 
 type Backend struct {
@@ -230,6 +241,18 @@ func (a Agent) Validate() error {
 			return fmt.Errorf("agent.mcp_servers[%d]: ref %q collides with tools[].name", i, m.Ref)
 		}
 		seenRef[m.Ref] = struct{}{}
+	}
+	if a.BuiltinTools != nil {
+		seenBuiltin := map[string]struct{}{}
+		for i, t := range *a.BuiltinTools {
+			if !BuiltinToolRe.MatchString(t) {
+				return fmt.Errorf("agent.builtin_tools[%d]: %q must match %s", i, t, BuiltinToolRe)
+			}
+			if _, dup := seenBuiltin[t]; dup {
+				return fmt.Errorf("agent.builtin_tools: duplicate %q at index %d", t, i)
+			}
+			seenBuiltin[t] = struct{}{}
+		}
 	}
 	return nil
 }
