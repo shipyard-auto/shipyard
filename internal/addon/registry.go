@@ -88,6 +88,15 @@ func (defaultDetector) Detect(kind Kind) (Info, error) {
 			return Info{}, fmt.Errorf("addon: detect comms: %w", err)
 		}
 		return Info{Kind: kind, Installed: true, BinaryPath: path, LastCheck: time.Now()}, nil
+	case KindCommsWhatsApp:
+		path, err := commsctl.WhatsApp.ResolveBinary()
+		if err != nil {
+			if errors.Is(err, commsctl.ErrNotInstalled) {
+				return Info{Kind: kind, Installed: false, LastCheck: time.Now()}, nil
+			}
+			return Info{}, fmt.Errorf("addon: detect comms-whatsapp: %w", err)
+		}
+		return Info{Kind: kind, Installed: true, BinaryPath: path, LastCheck: time.Now()}, nil
 	default:
 		return Info{}, fmt.Errorf("%w: %q", ErrUnknownKind, kind)
 	}

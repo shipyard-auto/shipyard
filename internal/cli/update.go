@@ -69,7 +69,10 @@ installed, the new binary is invoked to reconcile them in the same run.`,
 				if err := updateCrewIfInstalled(cmd, w); err != nil {
 					return err
 				}
-				return updateCommsIfInstalled(cmd, w)
+				if err := updateCommsIfInstalled(cmd, w); err != nil {
+					return err
+				}
+				return updateCommsWhatsAppIfInstalled(cmd, w)
 			}
 
 			ui.Printf(w, "%s\n", ui.SectionTitle("Shipyard Update"))
@@ -244,6 +247,37 @@ func updateCommsIfInstalled(cmd *cobra.Command, w interface{ Write([]byte) (int,
 	_ = addon.NewRegistry("").Record(addon.KindComms, true, inst.BinPath(), inst.Version)
 
 	ui.Printf(w, "%s\n", ui.Emphasis("Comms updated successfully."))
+	return nil
+}
+
+// updateCommsWhatsAppIfInstalled reconciles the WhatsApp provider binary
+// like the other addons. The daemon keeps running the old binary until its
+// service restarts, so the user is told to restart it.
+func updateCommsWhatsAppIfInstalled(cmd *cobra.Command, w interface{ Write([]byte) (int, error) }) error {
+	if _, err := commsctl.WhatsApp.ResolveBinary(); err != nil {
+		return nil
+	}
+	ui.Printf(w, "\n%s\n", ui.SectionTitle("Comms WhatsApp Update"))
+	inst, err := buildWhatsAppInstaller(cmd.Context(), "")
+	if err != nil {
+		ui.Printf(w, "%s %v\n", ui.Muted("Could not resolve latest comms-whatsapp version:"), err)
+		return nil
+	}
+	current, err := inst.InstalledVersion()
+	if err != nil {
+		current = "unknown"
+	}
+	ui.Printf(w, "%s %s\n", ui.Highlight("Current:"), current)
+	ui.Printf(w, "%s %s\n\n", ui.Highlight("Latest:"), inst.Version)
+	if err := inst.Upgrade(cmd.Context()); err != nil {
+		if errors.Is(err, commsctl.ErrAlreadyAtVersion) {
+			ui.Printf(w, "%s\n", ui.Emphasis("Comms WhatsApp is already up to date."))
+			return nil
+		}
+		return err
+	}
+	_ = addon.NewRegistry("").Record(addon.KindCommsWhatsApp, true, inst.BinPath(), inst.Version)
+	ui.Printf(w, "%s\n", ui.Emphasis("Comms WhatsApp updated. Restart its service so the daemon runs the new binary."))
 	return nil
 }
 

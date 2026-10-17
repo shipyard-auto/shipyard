@@ -19,10 +19,16 @@ import (
 // exec.CommandContext in production.
 type commsPassthroughDeps struct {
 	ResolveBinary func() (string, error)
-	MakeCommand   func(ctx context.Context, name string, args ...string) *exec.Cmd
-	Stdin         io.Reader
-	Stdout        io.Writer
-	Stderr        io.Writer
+	// Binary names the addon in error messages; empty means shipyard-comms.
+	Binary string
+	// InstallHint is the command suggested when the binary is missing.
+	InstallHint string
+	// Env is appended to the inherited environment of the addon process.
+	Env         []string
+	MakeCommand func(ctx context.Context, name string, args ...string) *exec.Cmd
+	Stdin       io.Reader
+	Stdout      io.Writer
+	Stderr      io.Writer
 }
 
 func (d commsPassthroughDeps) withDefaults() commsPassthroughDeps {
@@ -51,18 +57,29 @@ func (d commsPassthroughDeps) withDefaults() commsPassthroughDeps {
 func runCommsPassthrough(ctx context.Context, deps commsPassthroughDeps, args []string) error {
 	deps = deps.withDefaults()
 
+	name, hint := deps.Binary, deps.InstallHint
+	if name == "" {
+		name, hint = commsctl.BinaryName, "shipyard comms install"
+	}
 	bin, err := deps.ResolveBinary()
 	if err != nil {
 		if errors.Is(err, commsctl.ErrNotInstalled) {
-			return fmt.Errorf("shipyard-comms is not installed — run 'shipyard comms install' first")
+			return fmt.Errorf("%s is not installed — run '%s' first", name, hint)
 		}
-		return fmt.Errorf("resolve shipyard-comms: %w", err)
+		return fmt.Errorf("resolve %s: %w", name, err)
 	}
 
 	cmd := deps.MakeCommand(ctx, bin, args...)
 	cmd.Stdin = deps.Stdin
 	cmd.Stdout = deps.Stdout
 	cmd.Stderr = deps.Stderr
+	if len(deps.Env) > 0 {
+		base := cmd.Env
+		if base == nil {
+			base = os.Environ()
+		}
+		cmd.Env = append(base, deps.Env...)
+	}
 
 	if err := cmd.Run(); err != nil {
 		// Exit error: re-surface as a cobra error but DO NOT wrap a
@@ -72,7 +89,7 @@ func runCommsPassthrough(ctx context.Context, deps commsPassthroughDeps, args []
 		if errors.As(err, &ee) {
 			return ee
 		}
-		return fmt.Errorf("invoke shipyard-comms: %w", err)
+		return fmt.Errorf("invoke %s: %w", name, err)
 	}
 	return nil
 }

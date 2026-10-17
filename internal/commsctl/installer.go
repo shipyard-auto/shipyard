@@ -21,7 +21,10 @@ import (
 
 // commsReleasesAPI is the GitHub releases listing endpoint used to discover
 // the latest published comms release.
-const commsReleasesAPI = "https://api.github.com/repos/shipyard-auto/shipyard/releases?per_page=30"
+//
+// 100 per page: five products publish releases from this repository, so a
+// 30-release window could drop a product's latest stable tag.
+const commsReleasesAPI = "https://api.github.com/repos/shipyard-auto/shipyard/releases?per_page=100"
 
 // installedVersionTimeout caps how long the installer waits for the
 // installed binary to respond to `--version`. Mirrors the value used by
@@ -66,14 +69,24 @@ type Installer struct {
 	HTTPClient  HTTPClient
 	ReleaseBase string
 	Now         func() time.Time
+	// Product selects the binary of the comms family to manage. The zero
+	// value means Comms.
+	Product Product
 
 	// rename is os.Rename by default; overridable in tests.
 	rename func(old, new string) error
 }
 
-// BinPath returns the full path to the installed comms binary.
+func (i *Installer) product() Product {
+	if i.Product.Binary == "" {
+		return Comms
+	}
+	return i.Product
+}
+
+// BinPath returns the full path to the installed binary.
 func (i *Installer) BinPath() string {
-	return filepath.Join(i.BinDir, BinaryName)
+	return filepath.Join(i.BinDir, i.product().Binary)
 }
 
 // renameFn returns the rename function, defaulting to os.Rename.
@@ -115,7 +128,7 @@ func (i *Installer) InstalledVersion() (string, error) {
 		}
 		return "", fmt.Errorf("comms: exec --version: %w", err)
 	}
-	return parseVersionOutput(string(out)), nil
+	return parseVersionOutput(string(out), i.product().Binary), nil
 }
 
 // parseVersionOutput extracts the version token from `shipyard-comms
@@ -123,9 +136,9 @@ func (i *Installer) InstalledVersion() (string, error) {
 // when --version is passed (matching its run() handler), so the trimmed
 // input is the version. We keep the "shipyard-comms <version> …" prefix
 // stripper as well in case a future caller pipes the default header.
-func parseVersionOutput(raw string) string {
+func parseVersionOutput(raw, binary string) string {
 	trimmed := strings.TrimSpace(raw)
-	if strings.HasPrefix(trimmed, "shipyard-comms ") {
+	if strings.HasPrefix(trimmed, binary+" ") {
 		parts := strings.Fields(trimmed)
 		if len(parts) >= 2 {
 			return parts[1]
@@ -154,10 +167,11 @@ func (i *Installer) Install(ctx context.Context) error {
 		}
 	}
 
-	artifact := ArtifactName(i.Version, i.Platform)
-	tag := ReleaseTag(i.Version)
+	p := i.product()
+	artifact := p.ArtifactName(i.Version, i.Platform)
+	tag := p.ReleaseTag(i.Version)
 	artifactURL := fmt.Sprintf("%s/%s/%s", i.ReleaseBase, tag, artifact)
-	checksumName := ChecksumManifestName(i.Version)
+	checksumName := p.ChecksumManifestName(i.Version)
 	checksumURL := fmt.Sprintf("%s/%s/%s", i.ReleaseBase, tag, checksumName)
 
 	tmpArtifact, err := i.Download(ctx, artifactURL)
@@ -185,7 +199,7 @@ func (i *Installer) Install(ctx context.Context) error {
 		return fmt.Errorf("comms: create bin dir: %w", err)
 	}
 
-	tmpBin, err := os.CreateTemp(i.BinDir, ".shipyard-comms-*")
+	tmpBin, err := os.CreateTemp(i.BinDir, "."+p.Binary+"-*")
 	if err != nil {
 		return fmt.Errorf("comms: create temp: %w", err)
 	}
@@ -193,7 +207,7 @@ func (i *Installer) Install(ctx context.Context) error {
 	tmpBin.Close()
 	defer os.Remove(tmpBinPath)
 
-	if err := ExtractBinary(tmpArtifact, tmpBinPath); err != nil {
+	if err := ExtractNamedBinary(tmpArtifact, tmpBinPath, p.Binary); err != nil {
 		return fmt.Errorf("comms: extract: %w", err)
 	}
 
@@ -225,7 +239,7 @@ func (i *Installer) uninstall(_ context.Context, purge bool) error {
 	}
 
 	if purge && i.StateDir != "" {
-		if err := os.RemoveAll(i.StateDir); err != nil && firstErr == nil {
+		if err := purgeStateDir(i.StateDir, i.product()); err != nil && firstErr == nil {
 			firstErr = fmt.Errorf("comms: purge state dir: %w", err)
 		}
 	}
@@ -307,9 +321,51 @@ func VerifyChecksum(path, expected string) error {
 	return nil
 }
 
+// purgeStateDir removes a product's state. For comms itself the providers'
+// subdirectories are kept: they belong to other binaries (the WhatsApp
+// session keys and archive must not vanish because comms was purged).
+func purgeStateDir(dir string, p Product) error {
+	if p.Binary != Comms.Binary {
+		return os.RemoveAll(dir)
+	}
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	keep := map[string]bool{}
+	for _, prov := range providerProducts {
+		keep[prov.StateSubdir] = true
+	}
+	var firstErr error
+	kept := false
+	for _, e := range entries {
+		if keep[e.Name()] {
+			kept = true
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(dir, e.Name())); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	if !kept && firstErr == nil {
+		// Nothing of a provider's left: remove the directory itself.
+		firstErr = os.Remove(dir)
+	}
+	return firstErr
+}
+
 // ExtractBinary extracts the file named "shipyard-comms" from a .tar.gz
 // archive and writes it to dest (overwriting).
 func ExtractBinary(tarGzPath, dest string) error {
+	return ExtractNamedBinary(tarGzPath, dest, BinaryName)
+}
+
+// ExtractNamedBinary extracts the regular file called name from a .tar.gz
+// archive and writes it to dest (overwriting).
+func ExtractNamedBinary(tarGzPath, dest, name string) error {
 	f, err := os.Open(tarGzPath)
 	if err != nil {
 		return err
@@ -334,7 +390,7 @@ func ExtractBinary(tarGzPath, dest string) error {
 		if hdr.Typeflag != tar.TypeReg {
 			continue
 		}
-		if filepath.Base(hdr.Name) != BinaryName {
+		if filepath.Base(hdr.Name) != name {
 			continue
 		}
 
@@ -349,7 +405,7 @@ func ExtractBinary(tarGzPath, dest string) error {
 		}
 		return out.Close()
 	}
-	return errors.New("shipyard-comms binary not found in archive")
+	return fmt.Errorf("%s binary not found in archive", name)
 }
 
 // extractSHA finds the SHA-256 hex string for artifactName in a checksum
@@ -384,6 +440,12 @@ type releaseListItem struct {
 // by `shipyard update` flows that want to follow `latest` without a
 // hard-coded version.
 func ResolveLatestCommsVersion(ctx context.Context, client HTTPClient) (string, error) {
+	return ResolveLatestVersion(ctx, client, Comms)
+}
+
+// ResolveLatestVersion returns the newest stable release version of p.
+// Prefixes are disjoint ("comms-v" never matches "comms-whatsapp-v1.0").
+func ResolveLatestVersion(ctx context.Context, client HTTPClient, p Product) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, commsReleasesAPI, nil)
 	if err != nil {
 		return "", fmt.Errorf("comms: create version request: %w", err)
@@ -409,13 +471,13 @@ func ResolveLatestCommsVersion(ctx context.Context, client HTTPClient) (string, 
 		if r.Draft || r.Prerelease {
 			continue
 		}
-		if strings.HasPrefix(r.TagName, "comms-v") {
-			version := strings.TrimPrefix(r.TagName, "comms-v")
+		if strings.HasPrefix(r.TagName, p.TagPrefix) {
+			version := strings.TrimPrefix(r.TagName, p.TagPrefix)
 			if version != "" {
 				return version, nil
 			}
 		}
 	}
 
-	return "", errors.New("comms: no stable release found")
+	return "", fmt.Errorf("comms: no stable %s release found", p.Binary)
 }

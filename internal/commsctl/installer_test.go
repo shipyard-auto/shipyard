@@ -325,7 +325,7 @@ func TestInstalledVersion_ParsesPlainOutput(t *testing.T) {
 
 func TestInstalledVersion_ParsesPrefixedOutput(t *testing.T) {
 	// Confirm parseVersionOutput tolerates the default header format too.
-	got := parseVersionOutput("shipyard-comms 0.5.2 (abc, built 2026-05-24)\n")
+	got := parseVersionOutput("shipyard-comms 0.5.2 (abc, built 2026-05-24)\n", "shipyard-comms")
 	if got != "0.5.2" {
 		t.Errorf("got %q, want 0.5.2", got)
 	}

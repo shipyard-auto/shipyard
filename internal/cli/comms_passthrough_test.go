@@ -60,6 +60,12 @@ func TestHelperProcess(t *testing.T) {
 		// Copy stdin → stdout, exit 0.
 		_, _ = io.Copy(os.Stdout, os.Stdin)
 		os.Exit(0)
+	case "echo-env":
+		_, _ = io.WriteString(os.Stdout, os.Getenv("SHIPYARD_PROG")+"|"+strings.Join(forwarded, ","))
+		os.Exit(0)
+	case "refuse":
+		_, _ = io.WriteString(os.Stderr, "refused (no_history): …\n")
+		os.Exit(3)
 	case "fail":
 		_, _ = io.WriteString(os.Stderr, "comms: simulated failure\n")
 		os.Exit(7)
