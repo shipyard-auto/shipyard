@@ -76,15 +76,16 @@ and counts.
 
 ## Sending
 
-Only the running daemon sends. It owns the session, so `send` (and the
-crew tool) are thin clients of its control socket (`run/wa.sock`, 0600,
-JSON-RPC). Every message passes the same checks, in this order, whoever
+Only the running daemon sends. It owns the session, so `send`, the crew
+tool and `shipyard comms send --channel <whatsapp>` are thin clients of its
+control socket (`run/wa.sock`, 0600, JSON-RPC). The `chat` may be a JID, a
+name or a phone number; the daemon resolves it. Every message passes the same checks, in this order, whoever
 asks — a CLI user, a crew tool, or an agent with a shell:
 
 | Check | Refusal code |
 |---|---|
 | idempotency key already used → return the first result, send nothing | — |
-| empty / invalid UTF-8 / not a user or group JID | `invalid` |
+| empty / invalid UTF-8 / ambiguous chat name / not a user or group JID | `invalid` |
 | longer than `max_chars` (default 4096) | `too_long` |
 | chat not in the catalog | `unknown_chat` |
 | `pause` in effect | `paused` |

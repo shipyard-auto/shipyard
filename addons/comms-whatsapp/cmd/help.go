@@ -253,13 +253,15 @@ and outputs.`,
 type topicDoc struct{ name, summary, body string }
 
 var topics = []topicDoc{
-	{"sending", "the send policy, refusal codes and how to send safely", `Only the running daemon sends. send and the wa_send tool are thin clients of
-its control socket (run/wa.sock); one place applies every check, whoever asks
-— a person, a crew tool, or an agent with a shell. Checks, in order (the first
-failure wins):
+	{"sending", "the send policy, refusal codes and how to send safely", `Only the running daemon sends. send, the wa_send tool and 'shipyard comms send
+--channel <whatsapp>' are thin clients of its control socket (run/wa.sock);
+one place applies every check, whoever asks — a person, a crew tool, or an
+agent with a shell. The chat may be a JID, a name or a phone number; the
+daemon resolves it against the catalog. Checks, in order (the first failure
+wins):
 
   1. idempotency key already used → return that send, send nothing    —
-  2. empty text, invalid UTF-8, not a user/group JID                   invalid
+  2. empty text, invalid UTF-8, ambiguous name, not a user/group JID   invalid
   3. longer than max_chars                                             too_long
   4. chat not in the catalog                                           unknown_chat
   5. sending paused                                                    paused

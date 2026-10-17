@@ -21,7 +21,9 @@ import (
 
 // SendRequest is one outgoing text message.
 type SendRequest struct {
-	Chat string `json:"chat"` // JID from the catalog
+	// Chat is a catalog JID, chat name (case/accent-insensitive) or phone
+	// number; resolved by the daemon so every client addresses chats alike.
+	Chat string `json:"chat"`
 	Text string `json:"text"`
 	// IdempotencyKey, when set, makes retries safe: a second request with
 	// the same key returns the first result instead of sending again.
@@ -130,16 +132,30 @@ func (o *Outbox) Send(ctx context.Context, req SendRequest) (SendResult, error) 
 }
 
 func (o *Outbox) send(ctx context.Context, req SendRequest) (SendResult, error) {
+	chat, err := ResolveChat(ctx, o.Archive, req.Chat)
+	var amb *archive.AmbiguousError
+	switch {
+	case errors.As(err, &amb):
+		return SendResult{}, refuse(CodeInvalid, "%v", amb)
+	case errors.Is(err, archive.ErrNotFound):
+		return SendResult{}, refuse(CodeUnknownChat, "%q is not in the catalog (see 'chats --search')", req.Chat)
+	case err != nil:
+		return SendResult{}, err
+	}
+	jid, err := types.ParseJID(chat.JID)
+	if err != nil || jid.User == "" || (jid.Server != types.DefaultUserServer && jid.Server != types.GroupServer) {
+		return SendResult{}, refuse(CodeInvalid, "chat %q is not a user or group JID", chat.JID)
+	}
+
 	if req.IdempotencyKey != "" {
 		prev, ok, err := o.Archive.SentByKey(ctx, req.IdempotencyKey)
 		if err != nil {
 			return SendResult{}, err
 		}
 		if ok {
-			if prev.ChatJID != req.Chat {
+			if prev.ChatJID != chat.JID {
 				return SendResult{}, refuse(CodeInvalid, "idempotency key %q was already used for another chat", req.IdempotencyKey)
 			}
-			chat, _ := o.Archive.GetChat(ctx, prev.ChatJID)
 			return SendResult{MsgID: prev.MsgID, Chat: prev.ChatJID, ChatName: chat.Name, SentAt: prev.Timestamp, Duplicate: true}, nil
 		}
 	}
@@ -156,18 +172,6 @@ func (o *Outbox) send(ctx context.Context, req SendRequest) (SendResult, error) 
 		return SendResult{}, refuse(CodeInvalid, "text is not valid UTF-8")
 	case utf8.RuneCountInString(text) > cfg.MaxChars:
 		return SendResult{}, refuse(CodeTooLong, "text has %d characters; the limit is %d", utf8.RuneCountInString(text), cfg.MaxChars)
-	}
-
-	jid, err := types.ParseJID(req.Chat)
-	if err != nil || jid.User == "" || (jid.Server != types.DefaultUserServer && jid.Server != types.GroupServer) {
-		return SendResult{}, refuse(CodeInvalid, "chat %q is not a user or group JID", req.Chat)
-	}
-	chat, err := o.Archive.GetChat(ctx, jid.String())
-	if errors.Is(err, archive.ErrNotFound) {
-		return SendResult{}, refuse(CodeUnknownChat, "%s is not in the catalog", jid)
-	}
-	if err != nil {
-		return SendResult{}, err
 	}
 	result := SendResult{Chat: chat.JID, ChatName: chat.Name}
 
