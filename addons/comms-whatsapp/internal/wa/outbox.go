@@ -47,21 +47,25 @@ type SendResult struct {
 type SendCode string
 
 const (
-	CodeInvalid      SendCode = "invalid"
-	CodeUnknownChat  SendCode = "unknown_chat"
-	CodePaused       SendCode = "paused"
-	CodeNotAllowed   SendCode = "not_allowed"
-	CodeNoHistory    SendCode = "no_history"
-	CodeRateLimited  SendCode = "rate_limited"
-	CodeTooLong      SendCode = "too_long"
-	CodeNotConnected SendCode = "not_connected"
-	CodeSendFailed   SendCode = "send_failed"
+	CodeInvalid     SendCode = "invalid"
+	CodeUnknownChat SendCode = "unknown_chat"
+	CodePaused      SendCode = "paused"
+	CodeNotAllowed  SendCode = "not_allowed"
+	// CodeGroupsDisabled: the chat is a group and allow_groups is off.
+	CodeGroupsDisabled SendCode = "groups_disabled"
+	CodeNoHistory      SendCode = "no_history"
+	CodeRateLimited    SendCode = "rate_limited"
+	CodeTooLong        SendCode = "too_long"
+	CodeNotConnected   SendCode = "not_connected"
+	CodeSendFailed     SendCode = "send_failed"
 )
 
 // SendError is a refused or failed send.
 type SendError struct {
 	Code SendCode
 	Msg  string
+	// RetryAfter, for rate_limited, is how long until a slot opens.
+	RetryAfter time.Duration
 }
 
 func (e *SendError) Error() string { return fmt.Sprintf("%s: %s", e.Code, e.Msg) }
@@ -178,6 +182,10 @@ func (o *Outbox) send(ctx context.Context, req SendRequest) (SendResult, error) 
 	if cfg.Paused {
 		return result, refuse(CodePaused, "sending is paused ('resume' to lift)")
 	}
+	group := chat.Kind == archive.KindGroup
+	if group && !cfg.AllowGroups {
+		return result, refuse(CodeGroupsDisabled, "%s is a group and sending to groups is off ('config set allow-groups true' to enable)", chat.Name)
+	}
 	if !chat.SendAllowed {
 		return result, refuse(CodeNotAllowed, "%s is not on the send allowlist ('allow %s' to add it)", chat.Name, chat.JID)
 	}
@@ -186,16 +194,28 @@ func (o *Outbox) send(ctx context.Context, req SendRequest) (SendResult, error) 
 			"no conversation with %s has been seen yet; send or receive a message there from the phone first", chat.Name)
 	}
 	now := o.Now()
-	perChat, global := cfg.Rates()
-	if n, err := o.Archive.CountSent(ctx, chat.JID, now.Add(-perChat.Window)); err != nil {
-		return result, err
-	} else if n >= perChat.Count {
-		return result, refuse(CodeRateLimited, "%d messages to %s in the last %s (limit %s)", n, chat.Name, FormatDuration(perChat.Window), perChat)
+	limits := cfg.ParsedLimits()
+	scope := "per-chat"
+	if group {
+		scope = "per-group"
 	}
-	if n, err := o.Archive.CountSent(ctx, "", now.Add(-global.Window)); err != nil {
-		return result, err
-	} else if n >= global.Count {
-		return result, refuse(CodeRateLimited, "%d messages in the last %s across all chats (limit %s)", n, FormatDuration(global.Window), global)
+	for _, check := range []struct {
+		scope, chat, label string
+		rate               Rate
+	}{
+		{scope, chat.JID, "to " + chat.Name, limits.ForKind(group)},
+		{"global", "", "across all chats", limits.Global},
+	} {
+		u, err := usage(ctx, o.Archive, check.scope, check.chat, check.rate, now)
+		if err != nil {
+			return result, err
+		}
+		if u.Remaining == 0 {
+			se := refuse(CodeRateLimited, "%d messages %s in the last %s (limit: %s); next slot at %s",
+				u.Used, check.label, FormatDuration(check.rate.Window), check.rate.Human(), u.NextFreeAt.Local().Format("15:04:05"))
+			se.RetryAfter = time.Duration(u.RetryAfterSeconds) * time.Second
+			return result, se
+		}
 	}
 
 	if req.DryRun {

@@ -157,3 +157,63 @@ func TestServeWithoutPairingExits20WithoutCreatingSession(t *testing.T) {
 		t.Fatalf("locked err=%v", err)
 	}
 }
+
+func TestParseRateFormsAndHuman(t *testing.T) {
+	ok := map[string]Rate{
+		"6/10m":     {6, 10 * time.Minute},
+		"20/h":      {20, time.Hour},
+		"20/1h":     {20, time.Hour},
+		"60/hour":   {60, time.Hour},
+		"100/day":   {100, 24 * time.Hour},
+		" 5 / 2h ":  {5, 2 * time.Hour},
+		"3/minutes": {3, time.Minute},
+	}
+	for in, want := range ok {
+		if got, err := ParseRate(in); err != nil || got != want {
+			t.Errorf("ParseRate(%q)=%v,%v want %v", in, got, err, want)
+		}
+	}
+	for _, in := range []string{"", "6", "0/h", "-1/h", "6/30s", "6/2d", "x/h", "6/fortnight"} {
+		if _, err := ParseRate(in); err == nil {
+			t.Errorf("ParseRate(%q) want error", in)
+		}
+	}
+	human := map[Rate]string{
+		{6, 10 * time.Minute}: "6 per 10 minutes",
+		{20, time.Hour}:       "20 per hour",
+		{60, 2 * time.Hour}:   "60 per 2 hours",
+		{100, 24 * time.Hour}: "100 per day",
+		{1, time.Minute}:      "1 per minute",
+	}
+	for r, want := range human {
+		if got := r.Human(); got != want {
+			t.Errorf("%v.Human()=%q want %q", r, got, want)
+		}
+	}
+}
+
+func TestLimitDefaultsAndKeys(t *testing.T) {
+	c := DefaultConfig()
+	l := c.ParsedLimits()
+	if l.PerChat != (Rate{6, 10 * time.Minute}) || l.PerGroup != (Rate{20, time.Hour}) || l.Global != (Rate{60, time.Hour}) || c.AllowGroups {
+		t.Fatalf("defaults=%+v allow_groups=%v", l, c.AllowGroups)
+	}
+	if l.ForKind(true) != l.PerGroup || l.ForKind(false) != l.PerChat {
+		t.Fatal("ForKind")
+	}
+	mustDo(t, c.Set("limit-per-group", "30/h"))
+	mustDo(t, c.Set("allow-groups", "true"))
+	if c.Limits.PerGroup != "30/h" || !c.AllowGroups {
+		t.Fatalf("set: %+v", c)
+	}
+	if err := c.Set("limit-per-group", "lots"); err == nil {
+		t.Fatal("bad rate accepted")
+	}
+	// An older config.json without per_group/allow_groups gets the defaults.
+	path := filepath.Join(t.TempDir(), "config.json")
+	mustDo(t, os.WriteFile(path, []byte(`{"version":1,"device_name":"S","default_ttl":"14d","limits":{"per_chat":"6/10m","global":"30/1h"},"max_chars":4096,"humanize":true}`), 0o600))
+	old, err := LoadConfig(path)
+	if err != nil || old.Limits.PerGroup != DefaultLimitPerGroup || old.Limits.Global != "30/1h" || old.AllowGroups {
+		t.Fatalf("old file: %+v %v", old, err)
+	}
+}

@@ -85,15 +85,17 @@ every send, so changes apply without a restart.
 Keys:
   device-name     name shown under "Linked devices" (next pairing only)
   default-ttl     retention for watched chats without their own TTL (1h-90d)
-  limit-per-chat  max sends per chat, "<count>/<window>", e.g. 6/10m
-  limit-global    max sends across all chats, e.g. 30/1h
+  limit-per-chat  max sends to each contact, "<count>/<window>" (default 6/10m)
+  limit-per-group max sends to each group (default 20/1h)
+  limit-global    max sends across all chats (default 60/1h)
+  allow-groups    true/false: permit sending to allowlisted groups (default false)
   max-chars       longest accepted message (1-4096)
   humanize        true/false: show "typing…" before each send
   fairway-addr    host:port for inbound deliveries (default: from fairway)
   include-own     true/false: also deliver messages the account itself sent
 
 Pausing is not a key: use pause / resume.`,
-		examples: []string{"config", "config set default-ttl 7d", "config set limit-per-chat 3/10m"},
+		examples: []string{"config", "config set default-ttl 7d", "config set allow-groups true"},
 	},
 	{
 		name: "serve", group: "Daemon",
@@ -200,12 +202,14 @@ The daemon must be running; with it stopped, send fails (exit 1).`,
 	{
 		name: "allow", group: "Sending",
 		usage:   "allow <chat>",
-		summary: "add a contact to the send allowlist (groups are refused)",
-		details: `Lets Shipyard send to this contact. Groups can never be allowlisted: a bot
-posting in groups is the pattern most associated with bans. Allowing is not
-enough on its own: the chat also needs a prior conversation (see 'help
-sending').`,
-		examples: []string{`allow "Vini Eduqo"`},
+		summary: "add a chat to the send allowlist",
+		details: `Lets Shipyard send to this chat. Groups additionally need
+'config set allow-groups true' first — use it for groups you run (e.g. your
+own promotions group); posting into other people's groups is the pattern
+WhatsApp bans most. Allowing is not enough on its own: the chat also needs a
+prior conversation, and sends count against the limits (see 'help sending',
+'limits').`,
+		examples: []string{`allow "Vini Eduqo"`, `config set allow-groups true && allow "Minhas Promos"`},
 	},
 	{
 		name: "deny", group: "Sending",
@@ -213,6 +217,28 @@ sending').`,
 		summary:  "remove a chat from the send allowlist",
 		details:  `Removes the chat from the allowlist; later sends are refused with not_allowed.`,
 		examples: []string{`deny "Vini Eduqo"`},
+	},
+	{
+		name: "limits", group: "Sending",
+		usage:   "limits [chat] [--json] | limits set <per-chat|per-group|global> <count>/<window> | limits reset",
+		summary: "show send limits with live usage; change or reset them",
+		details: `Shows, in plain words, how many messages may be sent per contact, per group
+and overall, how many were sent in the current window, how many are left and
+when the next slot opens. With a chat, also answers "can I send there right
+now?" and lists what blocks it (paused, groups_disabled, not_allowed,
+no_history, rate_limited) with the fix for each.
+
+Limits are sliding windows over the send log (they survive restarts):
+
+  per-chat   each contact          default 6 per 10 minutes
+  per-group  each group            default 20 per hour
+  global     all chats together    default 60 per hour
+
+'limits set' takes <count>/<window>; windows accept 10m, 1h, 1d or a bare
+unit (20/h, 60/hour, 100/day), between 1 minute and 1 day. Changes apply to
+the next send without a restart. 'limits reset' restores the defaults.
+Agents can read the same data with the wa_limits tool.`,
+		examples: []string{"limits", `limits "Vini Eduqo"`, "limits set per-group 30/h", "limits reset", "limits --json"},
 	},
 	{
 		name: "pause", group: "Sending",
@@ -240,7 +266,7 @@ library ($SHIPYARD_HOME/crew/tools by default). Each runs '<this binary> tool
 	},
 	{
 		name: "tool", group: "Agents",
-		usage:   "tool <send|chats|history>",
+		usage:   "tool <send|chats|history|limits>",
 		summary: "run one crew exec tool (JSON on stdin, envelope on stdout)",
 		details: `Implements the crew exec tool contract directly: reads one JSON object from
 stdin and prints {"ok":true,"data":…} or {"ok":false,"error":…,"details":…}.
@@ -265,9 +291,10 @@ wins):
   3. longer than max_chars                                             too_long
   4. chat not in the catalog                                           unknown_chat
   5. sending paused                                                    paused
-  6. chat not on the allowlist (groups never are)                      not_allowed
+  6. chat is a group and allow-groups is off                           groups_disabled
+     chat not on the allowlist                                         not_allowed
   7. no conversation ever seen in the chat                             no_history
-  8. over limit-per-chat or limit-global                               rate_limited
+  8. over the chat's limit (per-chat / per-group) or the global one    rate_limited
   9. daemon not connected to WhatsApp                                  not_connected
   10. WhatsApp rejected the message                                    send_failed
 
@@ -278,8 +305,11 @@ person sends or receives one message there from the phone. This is deliberate:
 a fresh number opening conversations automatically looks like spam.
 
 Rate limits count the persistent send log, so restarts do not reset them.
-A refusal is final for that request: do not retry not_allowed, no_history or
-paused; rate_limited may be retried after the window. Never work around a
+'limits' (or the wa_limits tool) shows them with live usage. rate_limited
+refusals carry retry_after_seconds (error.data, details, or the CLI message).
+A refusal is final for that request: do not retry not_allowed,
+groups_disabled, no_history or paused; retry rate_limited only after
+retry_after_seconds. Never work around a
 refusal (another chat, another number, splitting the text).
 
 Safe sending from automation:
@@ -323,6 +353,10 @@ wa_send     in:  chat (name, phone or JID), text, idempotency_key?, dry_run?
             refusal: {"ok":false,"error":"…","details":{"code":"no_history"}}
 wa_chats    in:  search?, watched?
             out: chats[{jid,name,kind,watched,send_allowed}] (≤50), total, truncated
+wa_limits   in:  chat?
+            out: per_chat, per_group, global {limit, human, used, remaining,
+                 next_free_at, retry_after_seconds}, allow_groups, paused,
+                 chat {can_send_now, blockers[], usage, retry_after_seconds}
 wa_history  in:  chat, since? (default 24h), limit? (default 200, max 500)
             out: chat{jid,name}, messages[{id,sender_jid,sender_name,from_me,
                  ts,kind,text,reply_to,via_shipyard}]  (watched chats only)
@@ -382,7 +416,8 @@ Concepts
   catalog     every known chat: contacts, groups, the self chat
   watch       archive a chat's messages from now on; TTL deletes them later
   daemon      'serve' holds the connection; required for sending
-  allowlist   contacts Shipyard may message ('allow'); never groups
+  allowlist   chats Shipyard may message ('allow'); groups also need allow-groups
+  limits      per contact / per group / overall send caps ('limits')
   no_history  a chat needs a prior human conversation before the first send
 
 `, app.Info(), prog, prog)

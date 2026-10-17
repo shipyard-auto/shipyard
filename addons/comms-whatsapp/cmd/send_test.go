@@ -170,10 +170,16 @@ func TestSendFlowThroughDaemon(t *testing.T) {
 	}
 }
 
-func TestAllowRefusesGroups(t *testing.T) {
+func TestAllowGroupNeedsPolicy(t *testing.T) {
 	daemonFixture(t)
-	if _, _, err := cliIn(t, "", "allow", "Promo"); err == nil || !strings.Contains(err.Error(), "groups cannot") {
-		t.Fatalf("allow group: %v", err)
+	if _, _, err := cliIn(t, "", "allow", "Promo"); err == nil || !strings.Contains(err.Error(), "config set allow-groups true") {
+		t.Fatalf("allow group with policy off: %v", err)
+	}
+	if _, _, err := cliIn(t, "", "config", "set", "allow-groups", "true"); err != nil {
+		t.Fatal(err)
+	}
+	if out, _, err := cliIn(t, "", "allow", "Promo"); err != nil || !strings.Contains(out, "may now receive") {
+		t.Fatalf("allow group with policy on: %q %v", out, err)
 	}
 }
 
@@ -238,7 +244,7 @@ func TestToolsInstallWritesDefinitions(t *testing.T) {
 	setup(t)
 	dir := t.TempDir()
 	out, _, err := cliIn(t, "", "tools", "install", "--dir", dir)
-	if err != nil || strings.Count(out, "wrote") != 3 {
+	if err != nil || strings.Count(out, "wrote") != 4 {
 		t.Fatalf("install: %q %v", out, err)
 	}
 	raw, err := os.ReadFile(filepath.Join(dir, "wa_send.yaml"))
@@ -295,5 +301,70 @@ func TestRouteCommands(t *testing.T) {
 	}
 	if _, _, err := cliIn(t, "", "route", "bogus"); err == nil {
 		t.Fatal("bad subcommand accepted")
+	}
+}
+
+func TestLimitsCommandForPeople(t *testing.T) {
+	daemonFixture(t)
+	out, _, err := cliIn(t, "", "limits")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"6 per 10 minutes", "20 per hour", "60 per hour", "0 used, 60 left", "sending to groups is OFF", "limits set", "limits reset"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("limits missing %q:\n%s", want, out)
+		}
+	}
+	out, _, err = cliIn(t, "", "limits", "set", "per-group", "30/h")
+	if err != nil || !strings.Contains(out, "per-group limit is now 30 per hour") {
+		t.Fatalf("set: %q %v", out, err)
+	}
+	if _, _, err := cliIn(t, "", "limits", "set", "per-group", "muitos"); err == nil {
+		t.Fatal("bad rate accepted")
+	}
+	if _, _, err := cliIn(t, "", "limits", "set", "per-planet", "3/h"); err == nil {
+		t.Fatal("unknown limit accepted")
+	}
+	out, _, _ = cliIn(t, "", "limits", "reset")
+	if !strings.Contains(out, "restored") || !strings.Contains(out, "20 per hour") {
+		t.Fatalf("reset:\n%s", out)
+	}
+
+	// Per-chat view lists blockers in plain words.
+	out, _, _ = cliIn(t, "", "limits", "Vini Eduqo")
+	if !strings.Contains(out, "cannot send now") || !strings.Contains(out, "not_allowed") || !strings.Contains(out, "run 'allow <chat>'") {
+		t.Fatalf("chat limits:\n%s", out)
+	}
+	if _, _, err := cliIn(t, "", "allow", "Vini Eduqo"); err != nil {
+		t.Fatal(err)
+	}
+	if out, _, _ = cliIn(t, "", "limits", "Vini Eduqo"); !strings.Contains(out, "can send now") {
+		t.Fatalf("chat limits after allow:\n%s", out)
+	}
+
+	// A rate-limited send says when to try again.
+	if _, _, err := cliIn(t, "", "limits", "set", "per-chat", "1/10m"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := cliIn(t, "", "send", "Vini Eduqo", "--text", "1"); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = cliIn(t, "", "send", "Vini Eduqo", "--text", "2")
+	if exitCode(err) != ExitRefused || !strings.Contains(err.Error(), "rate_limited") || !strings.Contains(err.Error(), "try again in") {
+		t.Fatalf("rate-limited send: %v", err)
+	}
+	env := toolCall(t, "send", `{"chat":"Vini Eduqo","text":"3"}`)
+	if d, _ := env["details"].(map[string]any); d["code"] != "rate_limited" || d["retry_after_seconds"] == nil {
+		t.Fatalf("tool refusal=%v", env)
+	}
+	env = toolCall(t, "limits", `{"chat":"Vini Eduqo"}`)
+	data, _ := env["data"].(map[string]any)
+	chat, _ := data["chat"].(map[string]any)
+	if env["ok"] != true || chat["can_send_now"] != false || chat["retry_after_seconds"] == nil {
+		t.Fatalf("tool limits=%v", env)
+	}
+	out, _, _ = cliIn(t, "", "limits", "--json")
+	if !strings.Contains(out, `"per_group"`) || !strings.Contains(out, `"human": "60 per hour"`) {
+		t.Fatalf("json:\n%s", out)
 	}
 }

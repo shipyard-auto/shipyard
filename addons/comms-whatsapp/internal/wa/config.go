@@ -38,6 +38,10 @@ type Config struct {
 	// Paused blocks every send (archiving continues). Read on each send,
 	// so `pause` takes effect without restarting the daemon.
 	Paused bool `json:"paused"`
+	// AllowGroups permits sending to groups that are also allowlisted.
+	// Off by default: posting into groups is the riskiest pattern, so it
+	// must be an explicit choice (e.g. publishing to your own groups).
+	AllowGroups bool `json:"allow_groups"`
 
 	// Inbound delivery: received messages of routed chats are POSTed to
 	// fairway as comms Message envelopes, so agents can react to them.
@@ -76,8 +80,30 @@ func validRoutePath(p string) error {
 
 // SendLimits are rate limits written as "<count>/<window>", e.g. "6/10m".
 type SendLimits struct {
-	PerChat string `json:"per_chat"`
-	Global  string `json:"global"`
+	PerChat  string `json:"per_chat"`  // each contact (and the self chat)
+	PerGroup string `json:"per_group"` // each group
+	Global   string `json:"global"`    // all chats together
+}
+
+// Default limits. Conservative for a personal number: a contact gets a
+// short conversation's worth, a group a steady posting rhythm.
+const (
+	DefaultLimitPerChat  = "6/10m"
+	DefaultLimitPerGroup = "20/1h"
+	DefaultLimitGlobal   = "60/1h"
+)
+
+// Limits are the parsed send limits.
+type Limits struct {
+	PerChat, PerGroup, Global Rate
+}
+
+// ForKind returns the per-chat limit that applies to a chat kind.
+func (l Limits) ForKind(group bool) Rate {
+	if group {
+		return l.PerGroup
+	}
+	return l.PerChat
 }
 
 // Rate is a parsed "<count>/<window>" limit.
@@ -88,13 +114,51 @@ type Rate struct {
 
 func (r Rate) String() string { return fmt.Sprintf("%d/%s", r.Count, FormatDuration(r.Window)) }
 
-// ParseRate parses "6/10m" into Rate{6, 10m}.
+// Human renders the rate for people: "20 per hour", "6 per 10 minutes".
+func (r Rate) Human() string {
+	unit := func(n int64, one, many string) string {
+		if n == 1 {
+			return one
+		}
+		return fmt.Sprintf("%d %s", n, many)
+	}
+	var w string
+	switch {
+	case r.Window%(24*time.Hour) == 0:
+		w = unit(int64(r.Window/(24*time.Hour)), "day", "days")
+	case r.Window%time.Hour == 0:
+		w = unit(int64(r.Window/time.Hour), "hour", "hours")
+	default:
+		w = unit(int64(r.Window/time.Minute), "minute", "minutes")
+	}
+	return fmt.Sprintf("%d per %s", r.Count, w)
+}
+
+// windowUnits maps the spelled-out units ParseRate accepts to Go's.
+var windowUnits = map[string]string{
+	"m": "m", "min": "m", "mins": "m", "minute": "m", "minutes": "m",
+	"h": "h", "hr": "h", "hour": "h", "hours": "h",
+	"d": "d", "day": "d", "days": "d",
+}
+
+// ParseRate parses "<count>/<window>": "6/10m", "20/1h", "20/h",
+// "60/hour", "100/1d". A bare unit means one of it.
 func ParseRate(s string) (Rate, error) {
 	n, w, ok := strings.Cut(strings.TrimSpace(s), "/")
 	if !ok {
-		return Rate{}, fmt.Errorf("invalid rate %q: want <count>/<window>, e.g. 6/10m", s)
+		return Rate{}, fmt.Errorf("invalid rate %q: want <count>/<window>, e.g. 6/10m, 20/h", s)
 	}
-	count, err := strconv.Atoi(n)
+	w = strings.ToLower(strings.TrimSpace(w))
+	if i := strings.IndexFunc(w, func(r rune) bool { return r < '0' || r > '9' }); i >= 0 {
+		num, u := w[:i], strings.TrimSpace(w[i:])
+		if std, ok := windowUnits[u]; ok {
+			if num == "" {
+				num = "1"
+			}
+			w = num + std
+		}
+	}
+	count, err := strconv.Atoi(strings.TrimSpace(n))
 	if err != nil || count < 1 {
 		return Rate{}, fmt.Errorf("invalid rate %q: count must be a positive integer", s)
 	}
@@ -115,7 +179,7 @@ func DefaultConfig() Config {
 		Version:    ConfigVersion,
 		DeviceName: "Shipyard",
 		DefaultTTL: FormatDuration(DefaultTTL),
-		Limits:     SendLimits{PerChat: "6/10m", Global: "30/1h"},
+		Limits:     SendLimits{PerChat: DefaultLimitPerChat, PerGroup: DefaultLimitPerGroup, Global: DefaultLimitGlobal},
 		MaxChars:   MaxMessageChars,
 		Humanize:   true,
 	}
@@ -134,6 +198,9 @@ func (c Config) Validate() error {
 	}
 	if _, err := ParseRate(c.Limits.PerChat); err != nil {
 		return fmt.Errorf("config: limits.per_chat: %w", err)
+	}
+	if _, err := ParseRate(c.Limits.PerGroup); err != nil {
+		return fmt.Errorf("config: limits.per_group: %w", err)
 	}
 	if _, err := ParseRate(c.Limits.Global); err != nil {
 		return fmt.Errorf("config: limits.global: %w", err)
@@ -159,11 +226,13 @@ func (c Config) Validate() error {
 	return nil
 }
 
-// Rates returns the parsed limits of a validated Config.
-func (c Config) Rates() (perChat, global Rate) {
-	perChat, _ = ParseRate(c.Limits.PerChat)
-	global, _ = ParseRate(c.Limits.Global)
-	return perChat, global
+// ParsedLimits returns the parsed limits of a validated Config.
+func (c Config) ParsedLimits() Limits {
+	var l Limits
+	l.PerChat, _ = ParseRate(c.Limits.PerChat)
+	l.PerGroup, _ = ParseRate(c.Limits.PerGroup)
+	l.Global, _ = ParseRate(c.Limits.Global)
+	return l
 }
 
 // DefaultTTLDuration returns DefaultTTL parsed. Callers hold a validated
@@ -185,8 +254,16 @@ func (c *Config) Set(key, value string) error {
 		c.DefaultTTL = value
 	case "limit-per-chat":
 		c.Limits.PerChat = value
+	case "limit-per-group":
+		c.Limits.PerGroup = value
 	case "limit-global":
 		c.Limits.Global = value
+	case "allow-groups":
+		b, err := strconv.ParseBool(value)
+		if err != nil {
+			return fmt.Errorf("config: allow-groups: %q is not true/false", value)
+		}
+		c.AllowGroups = b
 	case "max-chars":
 		n, err := strconv.Atoi(value)
 		if err != nil {
@@ -215,7 +292,8 @@ func (c *Config) Set(key, value string) error {
 
 // ConfigKeys are the keys accepted by Set. `paused` is deliberately not
 // one of them: pause/resume have their own commands.
-var ConfigKeys = []string{"device-name", "default-ttl", "limit-per-chat", "limit-global", "max-chars", "humanize", "fairway-addr", "include-own"}
+var ConfigKeys = []string{"device-name", "default-ttl", "limit-per-chat", "limit-per-group", "limit-global",
+	"allow-groups", "max-chars", "humanize", "fairway-addr", "include-own"}
 
 // LoadConfig reads path, returning DefaultConfig when it does not exist.
 func LoadConfig(path string) (Config, error) {
