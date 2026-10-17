@@ -77,7 +77,9 @@ func startSocket(t *testing.T, cfg fairway.SocketConfig) string {
 	done := make(chan error, 1)
 	go func() { done <- ss.Serve(ctx) }()
 
-	// Wait for socket file to appear (up to 5s).
+	// Wait until the socket accepts connections (up to 5s). The file alone
+	// is not enough: bind creates it a moment before listen, and a dial in
+	// between gets "connection refused" — likely under parallel test load.
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		select {
@@ -85,7 +87,8 @@ func startSocket(t *testing.T, cfg fairway.SocketConfig) string {
 			t.Fatalf("socket server exited before becoming ready: %v", err)
 		default:
 		}
-		if _, err := os.Stat(sockPath); err == nil {
+		if probe, err := net.Dial("unix", sockPath); err == nil {
+			_ = probe.Close()
 			break
 		}
 		time.Sleep(5 * time.Millisecond)
