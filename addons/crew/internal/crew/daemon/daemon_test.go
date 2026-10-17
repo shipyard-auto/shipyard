@@ -426,20 +426,31 @@ func TestRunPoolFullReturnsErrorWhenConcurrentRequestExceedsCapacity(t *testing.
 	}
 
 	// Slow backend that ignores any flags the cli backend appends
-	// (--permission-mode, --mcp-config, …). Writes a marker file the moment
-	// it starts and then sleeps long enough that the second client's run
-	// RPC fires while the first is still holding the pool slot.
+	// (--permission-mode, --mcp-config, …). It writes a marker file the
+	// moment it starts and then holds the pool slot until the test creates
+	// the release file — no wall-clock sleep decides the outcome.
 	//
-	// The marker (instead of a wall-clock sleep in the test) makes the
-	// "client 1 has acquired the pool" signal deterministic: we poll the
-	// marker before firing client 2, so the test stays green under
-	// arbitrary host load (parallel suites, -race overhead, CI cold cache).
+	// Both ends are deterministic under arbitrary host load (parallel
+	// suites, -race overhead, CI cold cache): the test polls the marker
+	// before firing client 2, so the slot is known to be held, and only
+	// releases it after client 2's rejection was asserted. A fixed sleep
+	// here used to race client 1's read deadline when process start-up ate
+	// most of it. The loop bound (30s) only keeps a failed test from
+	// leaving the script behind.
 	slowCmd := filepath.Join(root, "slow-backend.sh")
 	startedMarker := filepath.Join(root, "started.flag")
-	script := fmt.Sprintf("#!/bin/sh\ntouch %q\nsleep 2\nexit 0\n", startedMarker)
+	releaseMarker := filepath.Join(root, "release.flag")
+	script := fmt.Sprintf("#!/bin/sh\ntouch %q\ni=0\nwhile [ ! -e %q ] && [ $i -lt 300 ]; do sleep 0.1; i=$((i+1)); done\nexit 0\n",
+		startedMarker, releaseMarker)
 	if err := os.WriteFile(slowCmd, []byte(script), 0o755); err != nil {
 		t.Fatalf("write script: %v", err)
 	}
+	release := func() {
+		if err := os.WriteFile(releaseMarker, nil, 0o600); err != nil {
+			t.Errorf("write release marker: %v", err)
+		}
+	}
+	t.Cleanup(release) // never leave the backend looping on a failed test
 
 	agentYAML := fmt.Sprintf(`schema_version: "1"
 name: %s
@@ -500,49 +511,83 @@ tools: []
 
 	sockPath := filepath.Join(opts.RunDir, opts.AgentName+".sock")
 
-	// Helper: handshake then fire `run`, return the raw response map.
-	runCall := func(t *testing.T, label string, wantBlocking bool) map[string]any {
-		t.Helper()
-		c := dialSocket(t, sockPath)
+	// Helper: handshake then fire `run`, return the raw response map. It
+	// reports failures as errors instead of calling t.Fatal, because client
+	// 1 runs it off the test goroutine, where t.Fatal only kills that
+	// goroutine and leaves the test waiting on a result that never comes.
+	//
+	// Read deadlines are hang guards, not timing assumptions: client 1's
+	// answer is gated by the release marker and client 2's rejection by the
+	// pool, so neither depends on how fast the host is.
+	const readGuard = 30 * time.Second
+	runCall := func(label string) (map[string]any, error) {
+		// The daemon may still be binding the socket when client 1 dials.
+		var c net.Conn
+		var err error
+		for start := time.Now(); ; time.Sleep(10 * time.Millisecond) {
+			if c, err = net.Dial("unix", sockPath); err == nil {
+				break
+			}
+			if time.Since(start) > readGuard {
+				return nil, fmt.Errorf("[%s] dial: %w", label, err)
+			}
+		}
 		t.Cleanup(func() { _ = c.Close() })
 		sc := bufio.NewScanner(c)
 		sc.Buffer(make([]byte, 64*1024), 1<<20)
-		sendJSON(t, c, map[string]any{"jsonrpc": "2.0", "id": 1, "method": "handshake", "params": map[string]any{"version": "1.0.0"}})
-		_ = c.SetReadDeadline(time.Now().Add(2 * time.Second))
-		if hs := readJSON(t, sc); hs["error"] != nil {
-			t.Fatalf("[%s] handshake err: %+v", label, hs["error"])
+		call := func(req map[string]any) (map[string]any, error) {
+			raw, err := json.Marshal(req)
+			if err != nil {
+				return nil, err
+			}
+			if _, err := c.Write(append(raw, '\n')); err != nil {
+				return nil, fmt.Errorf("[%s] write: %w", label, err)
+			}
+			_ = c.SetReadDeadline(time.Now().Add(readGuard))
+			if !sc.Scan() {
+				return nil, fmt.Errorf("[%s] read: %v", label, sc.Err())
+			}
+			var resp map[string]any
+			if err := json.Unmarshal(sc.Bytes(), &resp); err != nil {
+				return nil, fmt.Errorf("[%s] decode %q: %w", label, sc.Text(), err)
+			}
+			return resp, nil
 		}
-		sendJSON(t, c, map[string]any{"jsonrpc": "2.0", "id": 2, "method": "run", "params": map[string]any{"input": map[string]any{}}})
-		// Client 1 holds the pool ~2s; give its read a longer deadline.
-		// Client 2 should answer immediately (ErrPoolFull).
-		deadline := 1 * time.Second
-		if wantBlocking {
-			deadline = 5 * time.Second
+		hs, err := call(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "handshake", "params": map[string]any{"version": "1.0.0"}})
+		if err != nil {
+			return nil, err
 		}
-		_ = c.SetReadDeadline(time.Now().Add(deadline))
-		return readJSON(t, sc)
+		if hs["error"] != nil {
+			return nil, fmt.Errorf("[%s] handshake err: %+v", label, hs["error"])
+		}
+		return call(map[string]any{"jsonrpc": "2.0", "id": 2, "method": "run", "params": map[string]any{"input": map[string]any{}}})
 	}
 
-	// First client fires async — its run holds the pool slot for ~2s.
+	// First client fires async — its run holds the pool slot until release.
 	type result struct {
 		resp map[string]any
+		err  error
 	}
 	first := make(chan result, 1)
 	go func() {
-		first <- result{resp: runCall(t, "client1", true)}
+		resp, err := runCall("client1")
+		first <- result{resp: resp, err: err}
 	}()
 
 	// Wait deterministically for the slow backend to start. Once the
 	// marker file exists, client 1 is mid-execution → pool slot is held.
-	// Polling with a 5s deadline tolerates arbitrary host load (race
-	// detector overhead, parallel suite contention, CI cold cache).
-	if err := waitForMarker(startedMarker, 5*time.Second); err != nil {
+	// The deadline only bounds a broken run; under any load the marker
+	// eventually appears.
+	if err := waitForMarker(startedMarker, readGuard); err != nil {
 		t.Fatalf("client1 backend never started: %v", err)
 	}
 
 	// Second client fires synchronously — should be rejected with
 	// ErrPoolFull surfaced as a JSON-RPC error.
-	resp2 := runCall(t, "client2", false)
+	resp2, err := runCall("client2")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if resp2["error"] == nil {
 		t.Fatalf("client2 expected error response, got result: %+v", resp2["result"])
 	}
@@ -552,15 +597,19 @@ tools: []
 		t.Fatalf("client2 error message should contain \"pool full\", got: %q", msg)
 	}
 
+	// Only now let client 1's backend finish.
+	release()
+
 	// Drain client 1 so the daemon shutdown does not race a pending RPC.
 	select {
 	case r := <-first:
-		// Either the call returned a result or a benign error — we don't
+		// The run itself may return a result or a benign error — we don't
 		// assert on its content. The contract is that the second client
-		// saw the rejection, not that the first one succeeded (sleep can
-		// be killed by ctx cancel on shutdown depending on timing).
-		_ = r
-	case <-time.After(6 * time.Second):
+		// saw the rejection; client 1 only has to get an answer.
+		if r.err != nil {
+			t.Fatalf("client1: %v", r.err)
+		}
+	case <-time.After(readGuard + 5*time.Second):
 		t.Fatal("client1 never received a response")
 	}
 
