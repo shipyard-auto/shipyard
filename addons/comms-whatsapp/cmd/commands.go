@@ -147,6 +147,15 @@ func printReport(w io.Writer, r wa.Report, now time.Time) {
 		sending = "PAUSED — " + sending
 	}
 	fmt.Fprintf(tw, "Sending:\t%s\n", sending)
+	routes := len(r.Config.Routes.ByChat)
+	if r.Config.Routes.Default != "" {
+		routes++
+	}
+	receiving := fmt.Sprintf("%d routes to fairway", routes)
+	if r.Daemon != nil && (r.Daemon.Delivered > 0 || r.Daemon.DeliveryFailed > 0) {
+		receiving += fmt.Sprintf(", %d delivered, %d failed since daemon start", r.Daemon.Delivered, r.Daemon.DeliveryFailed)
+	}
+	fmt.Fprintf(tw, "Receiving:\t%s\n", receiving)
 }
 
 // ── chats ────────────────────────────────────────────────────────────────

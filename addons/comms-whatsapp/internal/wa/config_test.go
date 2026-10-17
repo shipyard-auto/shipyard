@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -37,7 +38,7 @@ func TestParseDurationAndTTL(t *testing.T) {
 func TestConfigRoundTripAndDefaults(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	c, err := LoadConfig(path)
-	if err != nil || c != DefaultConfig() {
+	if err != nil || !reflect.DeepEqual(c, DefaultConfig()) {
 		t.Fatalf("missing file: %+v %v", c, err)
 	}
 	if err := c.Set("default-ttl", "7d"); err != nil {

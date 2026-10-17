@@ -19,6 +19,9 @@ type Paths struct {
 	Status  string // run/status.json — written by the daemon
 	Lock    string // run/wa.lock — held by whichever process owns the session
 	Socket  string // run/wa.sock — the daemon's control socket (send, status)
+	// FairwayDir is the sibling fairway addon's state, read (never
+	// written) to find where to deliver inbound events.
+	FairwayDir string
 }
 
 // Home returns the whatsapp addon root: $SHIPYARD_HOME/comms/whatsapp when
@@ -48,6 +51,8 @@ func PathsAt(dir string) Paths {
 		Status:  filepath.Join(run, "status.json"),
 		Lock:    filepath.Join(run, "wa.lock"),
 		Socket:  filepath.Join(run, "wa.sock"),
+		// dir is <shipyard home>/comms/whatsapp.
+		FairwayDir: filepath.Join(filepath.Dir(filepath.Dir(dir)), "fairway"),
 	}
 }
 

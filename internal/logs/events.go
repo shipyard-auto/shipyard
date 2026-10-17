@@ -82,6 +82,7 @@ const (
 	EventWASendDenied       = "wa_send_denied"
 	EventWASendFailed       = "wa_send_failed"
 	EventWARPCError         = "wa_rpc_error"
+	EventWADeliveryFailed   = "wa_delivery_failed"
 	EventWAClientLog        = "wa_client_log"
 )
 

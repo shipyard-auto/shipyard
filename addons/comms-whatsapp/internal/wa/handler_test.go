@@ -439,3 +439,11 @@ func TestHistorySyncRecordsConversationTimestamps(t *testing.T) {
 		t.Fatalf("conversation without timestamp got activity: %v", g.LastActivity)
 	}
 }
+
+func editOf(id, newText string) *waE2E.Message {
+	return &waE2E.Message{ProtocolMessage: &waE2E.ProtocolMessage{
+		Type:          waE2E.ProtocolMessage_MESSAGE_EDIT.Enum(),
+		Key:           &waCommon.MessageKey{ID: proto.String(id)},
+		EditedMessage: text(newText),
+	}}
+}

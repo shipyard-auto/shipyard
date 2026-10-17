@@ -58,6 +58,14 @@ func (t *Tracker) MessageSeen(at time.Time) {
 	}
 }
 
+// SetDeliveries records inbound delivery counters (persisted on the next
+// heartbeat or state change).
+func (t *Tracker) SetDeliveries(delivered, failed int64) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.s.Delivered, t.s.DeliveryFailed = delivered, failed
+}
+
 // Heartbeat refreshes HeartbeatAt and persists. Returns the write error,
 // if any.
 func (t *Tracker) Heartbeat() error {

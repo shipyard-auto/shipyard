@@ -110,6 +110,8 @@ func dispatch(ctx context.Context, e env, args []string) error {
 		return runPause(ctx, e, rest, true)
 	case "resume":
 		return runPause(ctx, e, rest, false)
+	case "route":
+		return runRoute(ctx, e, rest)
 	case "tool":
 		return runTool(ctx, e, rest)
 	case "tools":
