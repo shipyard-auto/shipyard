@@ -229,3 +229,73 @@ func TestConfigCacheReloadsOnChangeAndKeepsLastGood(t *testing.T) {
 		t.Fatalf("broken file: %+v %v", c, err)
 	}
 }
+
+func TestPublishPostsScopedEvent(t *testing.T) {
+	var mu sync.Mutex
+	var gotPath, gotTrace string
+	var got PublishedEvent
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		gotPath, gotTrace = r.URL.Path, r.Header.Get("X-Trace-Id")
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &got)
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer srv.Close()
+	d := testDeliverer(t, srv)
+	if !d.Publish(sampleEvent()) {
+		t.Fatal("publish refused")
+	}
+	runUntil(t, d, func() bool { n, _ := d.Counts(); return n == 1 })
+	mu.Lock()
+	defer mu.Unlock()
+	if gotPath != "/_shipyard/v1/events" || gotTrace != "trace-1" {
+		t.Fatalf("path=%q trace=%q", gotPath, gotTrace)
+	}
+	if got.ID != "evt_wa_m1" || got.Topic != "whatsapp.message" || got.Scope != "whatsapp.read:"+viniJID.String() ||
+		got.Source != "comms-whatsapp" || !got.OccurredAt.Equal(t0Send) || got.Data.Body != "oi" || got.Data.SchemaVersion != 1 {
+		t.Fatalf("event=%+v", got)
+	}
+}
+
+func TestHandlerPublishesWhenEnabled(t *testing.T) {
+	hs := newHarness(t)
+	ctx := context.Background()
+	var mu sync.Mutex
+	var published []Event
+	var delivered []string
+	enabled, routes := false, Routes{ByChat: map[string]string{momPN.String(): "/wa/mae"}}
+	hs.h.Routes = func() Routes { return routes }
+	hs.h.Deliver = func(path string, _ Event) bool {
+		mu.Lock()
+		defer mu.Unlock()
+		delivered = append(delivered, path)
+		return true
+	}
+	hs.h.Events = func() bool { return enabled }
+	hs.h.Publish = func(ev Event) bool { mu.Lock(); defer mu.Unlock(); published = append(published, ev); return true }
+
+	// Disabled: only the route fires.
+	hs.h.Handle(ctx, message(types.MessageSource{Chat: momPN, Sender: momPN}, "m1", text("oi")))
+	if len(published) != 0 || len(delivered) != 1 {
+		t.Fatalf("disabled: published=%d delivered=%v", len(published), delivered)
+	}
+	// Enabled: every chat is published, routed or not; routes still fire.
+	enabled = true
+	hs.h.Handle(ctx, message(types.MessageSource{Chat: momPN, Sender: momPN}, "m2", text("oi de novo")))
+	hs.h.Handle(ctx, message(types.MessageSource{Chat: family, Sender: momPN, IsGroup: true}, "m3", text("promo")))
+	// Own messages follow include_own.
+	hs.h.Handle(ctx, message(types.MessageSource{Chat: family, Sender: ownPN, IsFromMe: true, IsGroup: true}, "m4", text("meu")))
+	if len(published) != 2 || published[0].ID != "m2" || published[1].ID != "m3" || published[1].Metadata["chat_jid"] != family.String() {
+		t.Fatalf("published=%+v", published)
+	}
+	if len(delivered) != 2 {
+		t.Fatalf("delivered=%v", delivered)
+	}
+	routes.IncludeOwn = true
+	hs.h.Handle(ctx, message(types.MessageSource{Chat: family, Sender: ownPN, IsFromMe: true, IsGroup: true}, "m5", text("meu")))
+	if len(published) != 3 || published[2].Metadata["from_me"] != "true" {
+		t.Fatalf("include_own published=%+v", published)
+	}
+}

@@ -58,9 +58,31 @@ const (
 var DefaultBackoff = []time.Duration{2 * time.Second, 4 * time.Second, 8 * time.Second}
 
 type deliveryJob struct {
-	path string
-	ev   Event
+	path    string
+	body    []byte // marshalled payload
+	traceID string
+	chatJID string // for logs only
 }
+
+// EventsPath is fairway's publish endpoint (loopback only).
+const EventsPath = "/_shipyard/v1/events"
+
+// EventTopic is the topic received messages are published under.
+const EventTopic = "whatsapp.message"
+
+// PublishedEvent is the envelope fairway's events API accepts. Scope
+// declares what a subscriber must hold to receive it: reading this chat.
+type PublishedEvent struct {
+	ID         string    `json:"id"`
+	Topic      string    `json:"topic"`
+	Scope      string    `json:"scope"`
+	Source     string    `json:"source"`
+	OccurredAt time.Time `json:"occurred_at"`
+	Data       Event     `json:"data"`
+}
+
+// ReadScope is the scope a client needs to receive a chat's messages.
+func ReadScope(chatJID string) string { return "whatsapp.read:" + chatJID }
 
 // Deliverer posts events to fairway from one background worker, so the
 // WhatsApp event loop never waits on HTTP. A full queue drops the event
@@ -92,13 +114,37 @@ func NewDeliverer(addr func() string, log *slog.Logger) *Deliverer {
 // Enqueue schedules ev for path without blocking. It reports false when
 // the queue is full and the event was dropped.
 func (d *Deliverer) Enqueue(path string, ev Event) bool {
+	body, err := json.Marshal(ev)
+	if err != nil {
+		return false
+	}
+	return d.enqueue(deliveryJob{path: path, body: body, traceID: ev.TraceID, chatJID: ev.Metadata["chat_jid"]})
+}
+
+// Publish sends ev to fairway's events API as a whatsapp.message event
+// scoped to its chat, so only clients allowed to read that chat get it.
+// The event id derives from the message id: a redelivered message keeps
+// its id and subscribers deduplicate it.
+func (d *Deliverer) Publish(ev Event) bool {
+	chat := ev.Metadata["chat_jid"]
+	body, err := json.Marshal(PublishedEvent{
+		ID: "evt_wa_" + ev.ID, Topic: EventTopic, Scope: ReadScope(chat), Source: "comms-whatsapp",
+		OccurredAt: ev.Timestamp, Data: ev,
+	})
+	if err != nil {
+		return false
+	}
+	return d.enqueue(deliveryJob{path: EventsPath, body: body, traceID: ev.TraceID, chatJID: chat})
+}
+
+func (d *Deliverer) enqueue(job deliveryJob) bool {
 	select {
-	case d.queue <- deliveryJob{path: path, ev: ev}:
+	case d.queue <- job:
 		return true
 	default:
 		d.failed.Add(1)
 		d.Log.Error(yardlogs.EventWADeliveryFailed, slog.String(yardlogs.KeyMessage, "delivery queue full; event dropped"),
-			slog.String(yardlogs.KeyChatJID, ev.Metadata["chat_jid"]), slog.String(yardlogs.KeyRouteTarget, path))
+			slog.String(yardlogs.KeyChatJID, job.chatJID), slog.String(yardlogs.KeyRouteTarget, job.path))
 		return false
 	}
 }
@@ -120,8 +166,8 @@ func (d *Deliverer) Run(ctx context.Context) {
 			if err := d.deliver(ctx, job); err != nil {
 				d.failed.Add(1)
 				d.Log.Error(yardlogs.EventWADeliveryFailed, slog.String(yardlogs.KeyMessage, "event not delivered to fairway"),
-					slog.String(yardlogs.KeyChatJID, job.ev.Metadata["chat_jid"]), slog.String(yardlogs.KeyRouteTarget, job.path),
-					slog.String(yardlogs.KeyTraceID, job.ev.TraceID), slog.String(yardlogs.KeyError, err.Error()))
+					slog.String(yardlogs.KeyChatJID, job.chatJID), slog.String(yardlogs.KeyRouteTarget, job.path),
+					slog.String(yardlogs.KeyTraceID, job.traceID), slog.String(yardlogs.KeyError, err.Error()))
 				continue
 			}
 			d.delivered.Add(1)
@@ -134,10 +180,7 @@ func (d *Deliverer) Run(ctx context.Context) {
 type errPermanent struct{ error }
 
 func (d *Deliverer) deliver(ctx context.Context, job deliveryJob) error {
-	body, err := json.Marshal(job.ev)
-	if err != nil {
-		return err
-	}
+	body := job.body
 	var lastErr error
 	for attempt := 0; ; attempt++ {
 		lastErr = d.post(ctx, job, body)
@@ -160,7 +203,7 @@ func (d *Deliverer) post(ctx context.Context, job deliveryJob, body []byte) erro
 	req.Header.Set("Content-Type", "application/json")
 	// Fairway adopts this id, so the delivery, the crew run it triggers and
 	// any reply share one trace in `shipyard logs show --trace`.
-	req.Header.Set("X-Trace-Id", job.ev.TraceID)
+	req.Header.Set("X-Trace-Id", job.traceID)
 	resp, err := d.Client.Do(req)
 	if err != nil {
 		return err

@@ -152,6 +152,9 @@ func printReport(w io.Writer, r wa.Report, now time.Time) {
 		routes++
 	}
 	receiving := fmt.Sprintf("%d routes to fairway", routes)
+	if r.Config.PublishEvents {
+		receiving += ", publishing whatsapp.message events"
+	}
 	if r.Daemon != nil && (r.Daemon.Delivered > 0 || r.Daemon.DeliveryFailed > 0) {
 		receiving += fmt.Sprintf(", %d delivered, %d failed since daemon start", r.Daemon.Delivered, r.Daemon.DeliveryFailed)
 	}

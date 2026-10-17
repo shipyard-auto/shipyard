@@ -54,6 +54,10 @@ type Handler struct {
 	// fairway. Both nil disables delivery (pairing, tests).
 	Routes  func() Routes
 	Deliver func(path string, ev Event) bool
+	// Events reports whether to publish to fairway's events API, and
+	// Publish does it. Nil disables publishing.
+	Events  func() bool
+	Publish func(ev Event) bool
 }
 
 // Fatal errors passed to OnFatal.
@@ -174,12 +178,16 @@ func (h *Handler) onMessage(ctx context.Context, e *events.Message) {
 // Edits and revokes are not forwarded: agents react to new messages.
 func (h *Handler) route(ctx context.Context, e *events.Message, chat types.JID, kind archive.ChatKind,
 	sender types.JID, senderName string, content Content) {
-	if h.Routes == nil || h.Deliver == nil {
-		return
+	var routes Routes
+	if h.Routes != nil {
+		routes = h.Routes()
 	}
-	routes := h.Routes()
-	path := routes.PathFor(chat.String())
-	if path == "" || (e.Info.IsFromMe && !routes.IncludeOwn) {
+	path := ""
+	if h.Deliver != nil {
+		path = routes.PathFor(chat.String())
+	}
+	publish := h.Publish != nil && h.Events != nil && h.Events()
+	if (path == "" && !publish) || (e.Info.IsFromMe && !routes.IncludeOwn) {
 		return
 	}
 	chatName := chat.String()
@@ -187,7 +195,7 @@ func (h *Handler) route(ctx context.Context, e *events.Message, chat types.JID, 
 		chatName = c.Name
 	}
 	pn, _ := h.Dir.Own()
-	h.Deliver(path, Event{
+	ev := Event{
 		SchemaVersion: 1,
 		ID:            e.Info.ID,
 		TraceID:       newTraceID(),
@@ -205,7 +213,13 @@ func (h *Handler) route(ctx context.Context, e *events.Message, chat types.JID, 
 			"reply_to":  content.ReplyTo,
 		},
 		Timestamp: e.Info.Timestamp.UTC(),
-	})
+	}
+	if path != "" {
+		h.Deliver(path, ev)
+	}
+	if publish {
+		h.Publish(ev)
+	}
 }
 
 // ensureChat adds a chat seen for the first time to the catalog, so it can

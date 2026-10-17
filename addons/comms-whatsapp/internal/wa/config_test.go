@@ -217,3 +217,17 @@ func TestLimitDefaultsAndKeys(t *testing.T) {
 		t.Fatalf("old file: %+v %v", old, err)
 	}
 }
+
+func TestPublishEventsKey(t *testing.T) {
+	c := DefaultConfig()
+	if c.PublishEvents {
+		t.Fatal("publish-events must default to off")
+	}
+	mustDo(t, c.Set("publish-events", "true"))
+	if !c.PublishEvents {
+		t.Fatal("set true")
+	}
+	if err := c.Set("publish-events", "sim"); err == nil {
+		t.Fatal("non-bool accepted")
+	}
+}
