@@ -114,19 +114,16 @@ func Serve(ctx context.Context, opts ServeOptions) error {
 		return &ExitError{Code: ExitRuntime, Err: err}
 	}
 	defer func() { _ = os.Remove(opts.Paths.Socket) }()
-	rpc := &RPCServer{
-		Outbox: &Outbox{
-			Archive: arch,
-			Sender:  sess.Sender(),
-			Config:  cfgCache.Get,
-			Self:    func() types.JID { pn, _ := sess.Directory().Own(); return pn },
-			Log:     log,
-			Now:     time.Now,
-			Sleep:   SleepCtx,
-		},
-		Tracker: tracker,
+	outbox := &Outbox{
+		Archive: arch,
+		Sender:  sess.Sender(),
+		Config:  cfgCache.Get,
+		Self:    func() types.JID { pn, _ := sess.Directory().Own(); return pn },
 		Log:     log,
+		Now:     time.Now,
+		Sleep:   SleepCtx,
 	}
+	rpc := &RPCServer{Outbox: outbox, Tracker: tracker, Log: log}
 	// The query API is optional; failing to bind it is logged, not fatal:
 	// receiving and sending keep working.
 	if cfg, _ := cfgCache.Get(); cfg.APIAddr != "" {
@@ -135,6 +132,7 @@ func Serve(ctx context.Context, opts ServeOptions) error {
 			Token:   func() (string, error) { return ReadAPIToken(opts.Paths.APIToken) },
 			Self:    func() types.JID { pn, _ := sess.Directory().Own(); return pn },
 			Log:     log,
+			Outbox:  outbox,
 		}
 		if stop, err := ServeAPI(ctx, cfg.APIAddr, api.Handler()); err != nil {
 			log.Error(yardlogs.EventWAAPIError, slog.String(yardlogs.KeyMessage, "query API not started"), slog.String(yardlogs.KeyError, err.Error()))

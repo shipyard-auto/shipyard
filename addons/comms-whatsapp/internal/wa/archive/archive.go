@@ -77,6 +77,9 @@ type Sent struct {
 	Timestamp      time.Time `json:"ts"`
 	Chars          int       `json:"chars"`
 	IdempotencyKey string    `json:"idempotency_key,omitempty"`
+	// Client is the external system that asked for the send (its fairway
+	// client id); empty for local senders (CLI, crew tools).
+	Client string `json:"client,omitempty"`
 }
 
 // SentRetention is how long the send audit log is kept.
@@ -169,6 +172,9 @@ var migrations = []string{
 	DROP TABLE messages;
 	ALTER TABLE messages_v3 RENAME TO messages;
 	CREATE INDEX messages_chat_ts ON messages(chat_jid, ts);`,
+
+	// v4: who asked for each send (external client id; NULL = local).
+	`ALTER TABLE sent ADD COLUMN client TEXT;`,
 }
 
 // Open opens (creating if needed) the archive at path with mode 0600 and
@@ -572,8 +578,8 @@ func (s *Store) TouchActivity(ctx context.Context, jid string, ts time.Time) err
 // RecordSent appends to the send audit log.
 func (s *Store) RecordSent(ctx context.Context, r Sent) error {
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO sent (msg_id, chat_jid, ts, chars, idempotency_key) VALUES (?, ?, ?, ?, ?)`,
-		r.MsgID, r.ChatJID, r.Timestamp.Unix(), r.Chars, nullable(r.IdempotencyKey))
+		`INSERT INTO sent (msg_id, chat_jid, ts, chars, idempotency_key, client) VALUES (?, ?, ?, ?, ?, ?)`,
+		r.MsgID, r.ChatJID, r.Timestamp.Unix(), r.Chars, nullable(r.IdempotencyKey), nullable(r.Client))
 	if err != nil {
 		return fmt.Errorf("archive: record sent %s: %w", r.MsgID, err)
 	}
@@ -585,8 +591,8 @@ func (s *Store) SentByKey(ctx context.Context, key string) (Sent, bool, error) {
 	var r Sent
 	var ts int64
 	err := s.db.QueryRowContext(ctx,
-		`SELECT msg_id, chat_jid, ts, chars, idempotency_key FROM sent WHERE idempotency_key = ?`, key,
-	).Scan(&r.MsgID, &r.ChatJID, &ts, &r.Chars, &r.IdempotencyKey)
+		`SELECT msg_id, chat_jid, ts, chars, COALESCE(idempotency_key, ''), COALESCE(client, '') FROM sent WHERE idempotency_key = ?`, key,
+	).Scan(&r.MsgID, &r.ChatJID, &ts, &r.Chars, &r.IdempotencyKey, &r.Client)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Sent{}, false, nil
 	}
@@ -733,4 +739,47 @@ func (s *Store) Feed(ctx context.Context, q FeedQuery) ([]FeedRow, error) {
 		return nil, fmt.Errorf("archive: feed: %w", err)
 	}
 	return out, nil
+}
+
+// SentEntry is one audit row with its chat's name.
+type SentEntry struct {
+	Sent
+	ChatName string `json:"chat_name"`
+}
+
+// ListSent returns the send audit log since `since`, newest first.
+// client filters by requester: "" = everyone, "local" = local senders only.
+func (s *Store) ListSent(ctx context.Context, since time.Time, client string, limit int) ([]SentEntry, error) {
+	q := `SELECT s.msg_id, s.chat_jid, COALESCE(c.name, s.chat_jid), s.ts, s.chars, COALESCE(s.idempotency_key, ''), COALESCE(s.client, '')
+	      FROM sent s LEFT JOIN chats c ON c.jid = s.chat_jid WHERE s.ts >= ?`
+	args := []any{since.Unix()}
+	switch client {
+	case "":
+	case "local":
+		q += ` AND s.client IS NULL`
+	default:
+		q += ` AND s.client = ?`
+		args = append(args, client)
+	}
+	q += ` ORDER BY s.ts DESC, s.rowid DESC`
+	if limit > 0 {
+		q += ` LIMIT ?`
+		args = append(args, limit)
+	}
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("archive: list sent: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []SentEntry
+	for rows.Next() {
+		var e SentEntry
+		var ts int64
+		if err := rows.Scan(&e.MsgID, &e.ChatJID, &e.ChatName, &ts, &e.Chars, &e.IdempotencyKey, &e.Client); err != nil {
+			return nil, fmt.Errorf("archive: scan sent: %w", err)
+		}
+		e.Timestamp = time.Unix(ts, 0).UTC()
+		out = append(out, e)
+	}
+	return out, rows.Err()
 }

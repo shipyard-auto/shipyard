@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/shipyard-auto/shipyard/addons/comms-whatsapp/internal/wa"
+	"github.com/shipyard-auto/shipyard/addons/comms-whatsapp/internal/wa/archive"
 )
 
 func TestAPICommands(t *testing.T) {
@@ -35,7 +37,15 @@ func TestAPICommands(t *testing.T) {
 	}
 
 	// The generated files are valid fairway route definitions.
-	for name, path := range map[string]string{"messages": wa.APIMessagesPath, "chats": wa.APIChatsPath} {
+	for name, want := range map[string]struct {
+		path, scope string
+		timeout     time.Duration
+	}{
+		"messages": {wa.APIMessagesPath, "whatsapp.read", 30 * time.Second},
+		"chats":    {wa.APIChatsPath, "whatsapp.read", 30 * time.Second},
+		"send":     {wa.APISendPath, "whatsapp.send", 60 * time.Second},
+		"limits":   {wa.APILimitsPath, "whatsapp.send", 30 * time.Second},
+	} {
 		file := filepath.Join(p.APIRoutes, name+".json")
 		st, err := os.Stat(file)
 		if err != nil || st.Mode().Perm() != 0o600 {
@@ -46,9 +56,9 @@ func TestAPICommands(t *testing.T) {
 		if err := json.Unmarshal(raw, &r); err != nil {
 			t.Fatal(err)
 		}
-		if r.Path != "/api/whatsapp/"+name || r.Auth.Type != "signed" || r.Auth.Scope != "whatsapp.read" ||
-			r.Action.Type != "http.forward" || r.Action.URL != "http://"+wa.DefaultAPIAddr+path || r.Action.Method != "POST" ||
-			r.Action.Headers["Authorization"] != "Bearer "+token || r.Timeout != 30*time.Second {
+		if r.Path != "/api/whatsapp/"+name || r.Auth.Type != "signed" || r.Auth.Scope != want.scope ||
+			r.Action.Type != "http.forward" || r.Action.URL != "http://"+wa.DefaultAPIAddr+want.path || r.Action.Method != "POST" ||
+			r.Action.Headers["Authorization"] != "Bearer "+token || r.Timeout != want.timeout {
 			t.Fatalf("%s route=%+v", name, r)
 		}
 	}
@@ -83,5 +93,49 @@ func TestAPICommands(t *testing.T) {
 	}
 	if _, _, err := cli(t, "api", "rotate-token"); err == nil {
 		t.Fatal("rotate while off must fail")
+	}
+}
+
+func TestSentCommand(t *testing.T) {
+	p := setup(t)
+	seed(t, p)
+	out, _, err := cli(t, "sent")
+	if err != nil || !strings.Contains(out, "Nothing sent") {
+		t.Fatalf("empty: %q %v", out, err)
+	}
+	ctx := context.Background()
+	a, err := archive.Open(ctx, p.Archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.UpsertChat(ctx, viniJID, "Vini Eduqo", archive.KindDM); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	for _, s := range []archive.Sent{
+		{MsgID: "M1", ChatJID: viniJID, Timestamp: now.Add(-time.Hour), Chars: 10},
+		{MsgID: "M2", ChatJID: viniJID, Timestamp: now.Add(-time.Minute), Chars: 20, Client: "promo-manager", IdempotencyKey: "promo-manager/p1"},
+		{MsgID: "M3", ChatJID: viniJID, Timestamp: now.Add(-72 * time.Hour), Chars: 30},
+	} {
+		if err := a.RecordSent(ctx, s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_ = a.Close()
+	out, _, err = cli(t, "sent")
+	if err != nil || !strings.Contains(out, "promo-manager") || !strings.Contains(out, "local") || strings.Count(out, "Vini Eduqo") != 2 {
+		t.Fatalf("list:\n%s %v", out, err)
+	}
+	if strings.Index(out, "promo-manager") > strings.Index(out, "local") {
+		t.Fatalf("not newest first:\n%s", out)
+	}
+	out, _, _ = cli(t, "sent", "--client", "promo-manager", "--json")
+	var rows []archive.SentEntry
+	if err := json.Unmarshal([]byte(out), &rows); err != nil || len(rows) != 1 || rows[0].MsgID != "M2" || rows[0].ChatName != "Vini Eduqo" {
+		t.Fatalf("json: %s %v", out, err)
+	}
+	out, _, _ = cli(t, "sent", "--since", "7d", "--client", "local")
+	if strings.Count(out, "Vini Eduqo") != 2 || strings.Contains(out, "promo-manager") {
+		t.Fatalf("local 7d:\n%s", out)
 	}
 }

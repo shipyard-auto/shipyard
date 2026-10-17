@@ -98,6 +98,8 @@ asks — a CLI user, a crew tool, or an agent with a shell:
 | daemon not connected | `not_connected` |
 | WhatsApp rejected the send | `send_failed` |
 
+- `sent [--since 24h] [--client ID|local]` lists that audit log: when, which
+  chat, how long, and who asked (a fairway client or `local`).
 - Limits count rows in the `sent` audit table (kept 30 days), not memory, so
   a crash-looping daemon cannot reset them. `limits` shows them in plain words
   with usage, remaining slots and when the next opens; `limits <chat>` says
@@ -138,12 +140,12 @@ only to subscribed clients holding that scope — e.g. a client granted
 `whatsapp.read:<group jid>` receives that group and nothing else. Event ids
 are stable per message (`evt_wa_<msg id>`) for deduplication.
 
-## Query API (external systems)
+## API for external systems
 
-`api enable` lets another system read the archive through fairway, limited
-to the chats it was granted, with cursor pagination — the pull-side
-complement to `publish-events`: events deliver live, the cursor recovers
-whatever a consumer missed while it was down.
+`api enable` lets another system read the archive and send messages through
+fairway, limited to the chats it was granted. Reads are cursor-paginated —
+the pull-side complement to `publish-events`: events deliver live, the
+cursor recovers whatever a consumer missed while it was down.
 
 ```
 client ──signed──▶ fairway route (auth signed, scope whatsapp.read)
@@ -165,6 +167,15 @@ client ──signed──▶ fairway route (auth signed, scope whatsapp.read)
   `next_cursor` and send it back as `after`.
 - `POST <prefix>/chats` `{"search", "kind", "watched_only"}` lists the chats
   the client may read.
+- `POST <prefix>/send` `{"chat", "text", "idempotency_key", "dry_run"}`
+  needs `whatsapp.send:<chat jid>` and then passes every check of the send
+  policy — allowlist, `allow-groups`, limits, pause, humanize — so the scope
+  is the client's permission and the owner keeps the last word. Refusals
+  carry the refusal code (429 `rate_limited` adds `Retry-After`). Keys are
+  per client, and every send is audited with the client id: `sent`.
+- `POST <prefix>/limits` `{"chat"}` returns the `limits` report (usage,
+  `can_send_now`, blockers, `retry_after_seconds`) to check before a
+  broadcast.
 - `api rotate-token` replaces the token and rewrites the route files;
   `api disable` turns it off. Full contract: `help api`.
 

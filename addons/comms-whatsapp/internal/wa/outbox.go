@@ -30,6 +30,10 @@ type SendRequest struct {
 	IdempotencyKey string `json:"idempotency_key,omitempty"`
 	// DryRun runs every check without sending.
 	DryRun bool `json:"dry_run,omitempty"`
+	// Client is the external system behind the request, set by the query
+	// API from fairway's identity and recorded in the audit log. Never
+	// read from the socket: local callers cannot claim to be a client.
+	Client string `json:"-"`
 }
 
 // SendResult describes a send that happened (or would have, for DryRun).
@@ -129,7 +133,7 @@ func (o *Outbox) Send(ctx context.Context, req SendRequest) (SendResult, error) 
 			event = yardlogs.EventWASendFailed
 		}
 		o.Log.Warn(event, slog.String(yardlogs.KeyMessage, "send refused or failed"),
-			slog.String(yardlogs.KeyChatJID, req.Chat), slog.String(yardlogs.KeyErrorKind, code),
+			slog.String(yardlogs.KeyChatJID, req.Chat), slog.String(yardlogs.KeyEntityID, req.Client), slog.String(yardlogs.KeyErrorKind, code),
 			slog.String(yardlogs.KeyError, err.Error()))
 	}
 	return res, err
@@ -247,6 +251,7 @@ func (o *Outbox) send(ctx context.Context, req SendRequest) (SendResult, error) 
 	bg := context.WithoutCancel(ctx)
 	if err := o.Archive.RecordSent(bg, archive.Sent{
 		MsgID: id, ChatJID: chat.JID, Timestamp: at, Chars: utf8.RuneCountInString(text), IdempotencyKey: req.IdempotencyKey,
+		Client: req.Client,
 	}); err != nil {
 		o.logArchiveError(chat.JID, err)
 	}
@@ -260,7 +265,8 @@ func (o *Outbox) send(ctx context.Context, req SendRequest) (SendResult, error) 
 		o.logArchiveError(chat.JID, err)
 	}
 	o.Log.Info(yardlogs.EventWAMessageSent, slog.String(yardlogs.KeyMessage, "message sent"),
-		slog.String(yardlogs.KeyChatJID, chat.JID), slog.Int(yardlogs.KeyCount, utf8.RuneCountInString(text)))
+		slog.String(yardlogs.KeyChatJID, chat.JID), slog.String(yardlogs.KeyEntityID, req.Client),
+		slog.Int(yardlogs.KeyCount, utf8.RuneCountInString(text)))
 	return result, nil
 }
 
