@@ -93,6 +93,8 @@ Keys:
   humanize        true/false: show "typing…" before each send
   fairway-addr    host:port for inbound deliveries (default: from fairway)
   include-own     true/false: also deliver messages the account itself sent
+  publish-events  true/false: publish every new message to fairway's events
+                  API for signed webhook subscribers (default false)
 
 Pausing is not a key: use pause / resume.`,
 		examples: []string{"config", "config set default-ttl 7d", "config set allow-groups true"},
@@ -322,7 +324,9 @@ Safe sending from automation:
   1. archives it if the chat is watched (see 'help files');
   2. records the chat's last activity (unblocks sending, see 'help sending');
   3. if the chat has a route ('route set'), POSTs an event to fairway at
-     http://<fairway_addr><path>, with header X-Trace-Id.
+     http://<fairway_addr><path>, with header X-Trace-Id;
+  4. if 'config set publish-events true', publishes it to fairway's events
+     API (see "Events for external systems" below).
 
 Event (comms Message envelope, schema v1):
   {"schema_version":1, "id":"<msg id>", "trace_id":"…", "channel":"whatsapp",
@@ -344,7 +348,24 @@ configuration error and is not retried. Undeliverable events are logged
 (wa_delivery_failed) and dropped; watched chats keep them in the archive.
 Edits and deletions are not delivered. fairway_addr defaults to the bind/port
 in fairway's routes.json (127.0.0.1:9876); override with
-'config set fairway-addr host:port'.`},
+'config set fairway-addr host:port'.
+
+Events for external systems:
+With publish-events on, every new message of every chat (own messages only
+with include-own) is POSTed to http://<fairway_addr>/_shipyard/v1/events as
+  {"id":"evt_wa_<msg id>", "topic":"whatsapp.message",
+   "scope":"whatsapp.read:<chat_jid>", "source":"comms-whatsapp",
+   "occurred_at":"…", "data":<the envelope above>}
+Fairway forwards it, signed, to each subscription for the topic whose client
+also holds the scope, so a system subscribed with 'whatsapp.read:<group jid>'
+gets that group only and 'whatsapp.read:*' gets everything. Grant and
+subscribe on the fairway side:
+  shipyard fairway client scopes <client> \
+      --scope events.subscribe:whatsapp.message --scope 'whatsapp.read:<chat_jid>'
+  shipyard fairway subscription add <client> --topic whatsapp.message \
+      --url https://…
+The event id is stable per message, so subscribers can deduplicate retries.
+Publishing uses the same queue and retries as routes.`},
 	{"agent-tools", "crew tool contract for wa_send, wa_chats and wa_history", `'tools install' writes crew tool definitions that run '<binary> tool <name>'.
 Input: one JSON object on stdin. Output: an envelope on stdout, exit 0.
 

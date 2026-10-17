@@ -97,6 +97,8 @@ func Serve(ctx context.Context, opts ServeOptions) error {
 		OnFatal: func(err error) { cancel(err) },
 		Routes:  func() Routes { cfg, _ := cfgCache.Get(); return cfg.Routes },
 		Deliver: deliverer.Enqueue,
+		Events:  func() bool { cfg, _ := cfgCache.Get(); return cfg.PublishEvents },
+		Publish: deliverer.Publish,
 	}
 	sess.Client.AddEventHandler(func(evt any) { h.Handle(ctx, evt) })
 

@@ -131,6 +131,13 @@ receiving never blocks; network errors, 5xx and 429 are retried 3 times
 `routes.json` (default `127.0.0.1:9876`) or `config set fairway-addr`. Full
 payload: `help receiving`.
 
+For external systems, `config set publish-events true` also publishes every
+new message to fairway's events API as a `whatsapp.message` event with
+`scope: whatsapp.read:<chat_jid>`. Fairway delivers it as a signed webhook
+only to subscribed clients holding that scope — e.g. a client granted
+`whatsapp.read:<group jid>` receives that group and nothing else. Event ids
+are stable per message (`evt_wa_<msg id>`) for deduplication.
+
 ## Crew tools
 
 `tools install` writes `wa_send.yaml`, `wa_chats.yaml` and `wa_history.yaml`

@@ -46,6 +46,10 @@ type Config struct {
 	// Inbound delivery: received messages of routed chats are POSTed to
 	// fairway as comms Message envelopes, so agents can react to them.
 	Routes Routes `json:"routes"`
+	// PublishEvents also publishes every new message (any chat) to fairway's
+	// events API as "whatsapp.message", scoped "whatsapp.read:<chat>", for
+	// signed webhook subscribers. Off by default.
+	PublishEvents bool `json:"publish_events"`
 	// FairwayAddr overrides where events go ("host:port"). Empty means
 	// "read bind/port from fairway's routes.json", defaulting to
 	// 127.0.0.1:9876.
@@ -272,6 +276,12 @@ func (c *Config) Set(key, value string) error {
 		c.MaxChars = n
 	case "fairway-addr":
 		c.FairwayAddr = value
+	case "publish-events":
+		b, err := strconv.ParseBool(value)
+		if err != nil {
+			return fmt.Errorf("config: publish-events: %q is not true/false", value)
+		}
+		c.PublishEvents = b
 	case "include-own":
 		b, err := strconv.ParseBool(value)
 		if err != nil {
@@ -293,7 +303,7 @@ func (c *Config) Set(key, value string) error {
 // ConfigKeys are the keys accepted by Set. `paused` is deliberately not
 // one of them: pause/resume have their own commands.
 var ConfigKeys = []string{"device-name", "default-ttl", "limit-per-chat", "limit-per-group", "limit-global",
-	"allow-groups", "max-chars", "humanize", "fairway-addr", "include-own"}
+	"allow-groups", "max-chars", "humanize", "fairway-addr", "include-own", "publish-events"}
 
 // LoadConfig reads path, returning DefaultConfig when it does not exist.
 func LoadConfig(path string) (Config, error) {
