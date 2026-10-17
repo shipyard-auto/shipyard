@@ -366,3 +366,21 @@ func TestLogLinesFollowSchemaV2(t *testing.T) {
 		}
 	}
 }
+
+func TestHistorySyncDoesNotOverrideAddressBookName(t *testing.T) {
+	hs := newHarness(t)
+	ctx := context.Background()
+	hs.h.Handle(ctx, &events.Connected{}) // catalog refresh: "Mãe" from the address book
+	hs.h.Handle(ctx, &events.HistorySync{Data: &waHistorySync.HistorySync{
+		Conversations: []*waHistorySync.Conversation{
+			{ID: proto.String(momPN.String()), Name: proto.String("Maria Aparecida (perfil)")},
+			{ID: proto.String(shopPN.String()), Name: proto.String("Petz Moema")}, // not saved: sync name is all we have
+		},
+	}})
+	if c, _ := hs.arch.GetChat(ctx, momPN.String()); c.Name != "Mãe" {
+		t.Fatalf("saved contact renamed to %q", c.Name)
+	}
+	if c, _ := hs.arch.GetChat(ctx, shopPN.String()); c.Name != "Petz Moema" {
+		t.Fatalf("unsaved contact name=%q", c.Name)
+	}
+}

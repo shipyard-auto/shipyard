@@ -271,15 +271,23 @@ func (h *Handler) onHistorySync(ctx context.Context, e *events.HistorySync) {
 		if !ok {
 			continue
 		}
-		name := conv.GetName()
-		if name == "" {
-			name = conv.GetDisplayName()
-		}
-		if name == "" && kind == archive.KindDM {
+		// For one-to-one chats the address-book name wins: the sync's
+		// conversation name there is the other person's push name, and
+		// sync chunks keep arriving after the catalog refresh, so letting
+		// it through would rename "Vini Eduqo" to whatever Vini calls
+		// himself. Groups have no address-book name; use the subject.
+		var name string
+		switch kind {
+		case archive.KindSelf:
+			name = selfChatName(h.Dir.OwnPushName())
+		case archive.KindDM:
 			name = h.Dir.ContactName(ctx, chat)
 		}
-		if kind == archive.KindSelf {
-			name = selfChatName(h.Dir.OwnPushName())
+		if name == "" {
+			name = conv.GetName()
+		}
+		if name == "" {
+			name = conv.GetDisplayName()
 		}
 		if err := h.Archive.UpsertChat(ctx, chat.String(), name, kind); err != nil {
 			h.archiveError(chat.String(), err)
