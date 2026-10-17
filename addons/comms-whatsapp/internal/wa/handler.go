@@ -123,6 +123,13 @@ func (h *Handler) onMessage(ctx context.Context, e *events.Message) {
 		h.archiveError(chatJID, err)
 		return
 	}
+	// Remember that a conversation exists, watched or not: sending is
+	// only allowed into chats with prior activity.
+	if content.Action == ActionStore {
+		if err := h.Archive.TouchActivity(ctx, chatJID, e.Info.Timestamp); err != nil {
+			h.archiveError(chatJID, err)
+		}
+	}
 
 	var err error
 	switch content.Action {
@@ -311,6 +318,11 @@ func (h *Handler) onHistorySync(ctx context.Context, e *events.HistorySync) {
 		if err := h.Archive.UpsertChat(ctx, chat.String(), name, kind); err != nil {
 			h.archiveError(chat.String(), err)
 			continue
+		}
+		if ts := max(conv.GetConversationTimestamp(), conv.GetLastMsgTimestamp()); ts > 0 {
+			if err := h.Archive.TouchActivity(ctx, chat.String(), time.Unix(int64(ts), 0)); err != nil {
+				h.archiveError(chat.String(), err)
+			}
 		}
 		n++
 	}

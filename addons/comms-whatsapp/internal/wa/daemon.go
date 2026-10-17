@@ -8,6 +8,8 @@ import (
 	"os"
 	"time"
 
+	"go.mau.fi/whatsmeow/types"
+
 	"github.com/shipyard-auto/shipyard/addons/comms-whatsapp/internal/wa/archive"
 	yardlogs "github.com/shipyard-auto/shipyard/internal/logs"
 )
@@ -93,6 +95,36 @@ func Serve(ctx context.Context, opts ServeOptions) error {
 	if err := sess.Client.Connect(); err != nil {
 		return &ExitError{Code: ExitRuntime, Err: fmt.Errorf("connect: %w", err)}
 	}
+
+	// The control socket is the only way to send: every message passes
+	// through the Outbox policy, whoever asks.
+	ln, err := ListenRPC(opts.Paths.Socket)
+	if err != nil {
+		return &ExitError{Code: ExitRuntime, Err: err}
+	}
+	defer func() { _ = os.Remove(opts.Paths.Socket) }()
+	rpc := &RPCServer{
+		Outbox: &Outbox{
+			Archive: arch,
+			Sender:  sess.Sender(),
+			Config:  func() (Config, error) { return LoadConfig(opts.Paths.Config) },
+			Self:    func() types.JID { pn, _ := sess.Directory().Own(); return pn },
+			Log:     log,
+			Now:     time.Now,
+			Sleep:   SleepCtx,
+		},
+		Tracker: tracker,
+		Log:     log,
+	}
+	rpcDone := make(chan struct{})
+	go func() {
+		defer close(rpcDone)
+		rpc.Serve(ctx, ln)
+	}()
+	defer func() {
+		cancel(nil)
+		<-rpcDone
+	}()
 
 	prune := func() {
 		n, err := arch.Prune(ctx, opts.Config.DefaultTTLDuration())

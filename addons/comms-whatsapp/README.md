@@ -30,6 +30,11 @@ shipyard-comms-whatsapp unwatch "Família"       # also deletes its archived mes
 
 shipyard-comms-whatsapp config set default-ttl 14d
 shipyard-comms-whatsapp logout [--local]
+
+shipyard-comms-whatsapp allow "Vini Eduqo"      # send allowlist (contacts only)
+shipyard-comms-whatsapp send "Vini Eduqo" --text "oi" [--idempotency-key K] [--dry-run]
+shipyard-comms-whatsapp pause | resume          # emergency stop for all sending
+shipyard-comms-whatsapp tools install           # wa_send / wa_chats / wa_history for crew
 ```
 
 `<chat>` accepts a JID, a chat name (case and accents ignored) or a phone
@@ -55,6 +60,49 @@ shipyard service add --name whatsapp --auto-restart \
 Message bodies never go to the logs (`~/.shipyard/logs/comms/`), only chat ids
 and counts.
 
+## Sending
+
+Only the running daemon sends. It owns the session, so `send` (and the
+crew tool) are thin clients of its control socket (`run/wa.sock`, 0600,
+JSON-RPC). Every message passes the same checks, in this order, whoever
+asks — a CLI user, a crew tool, or an agent with a shell:
+
+| Check | Refusal code |
+|---|---|
+| idempotency key already used → return the first result, send nothing | — |
+| empty / invalid UTF-8 / not a user or group JID | `invalid` |
+| longer than `max_chars` (default 4096) | `too_long` |
+| chat not in the catalog | `unknown_chat` |
+| `pause` in effect | `paused` |
+| chat not on the allowlist (`allow`; groups are never allowed) | `not_allowed` |
+| no conversation ever seen in that chat | `no_history` |
+| more than `limits.per_chat` (6/10m) or `limits.global` (30/1h) | `rate_limited` |
+| daemon not connected | `not_connected` |
+| WhatsApp rejected the send | `send_failed` |
+
+- Limits count rows in the `sent` audit table (kept 30 days), not memory, so
+  a crash-looping daemon cannot reset them.
+- With `humanize` (default on) the daemon shows "typing…" for
+  1.5s + 40ms/char (max 8s) before sending.
+- Config is re-read on every send: `pause`, `resume` and limit changes apply
+  without a restart.
+- "Conversation seen" is a per-chat timestamp updated by every message in
+  either direction, watched or not (no content is kept for unwatched chats),
+  and by the initial history sync.
+- `send` exits 3 on a policy refusal and 1 on other errors. The crew tool
+  returns `{ok:false, error, details:{code}}`.
+- Pass an idempotency key from agents: a tool retried after a timeout then
+  returns the original message instead of sending it twice.
+
+## Crew tools
+
+`tools install` writes `wa_send.yaml`, `wa_chats.yaml` and `wa_history.yaml`
+into the crew tool library. They run `shipyard-comms-whatsapp tool <name>`,
+which speaks the crew exec contract natively (JSON on stdin, envelope on
+stdout) — no wrapper script and no message text in argv. Agents that send
+should also set `builtin_tools: []` (crew ≥ 0.7.0) so their only way out is
+the policy-checked tool.
+
 ## On disk
 
 ```
@@ -63,6 +111,7 @@ and counts.
   session.db                        linked-device keys (whatsmeow store)
   archive.db                        chat catalog + archived messages
   run/status.json                   written by the daemon every 30s
+  run/wa.sock                       control socket (send, status)
   run/wa.lock                       one process owns the session at a time
 ```
 
@@ -89,7 +138,7 @@ The SQLite driver is pure Go (`modernc.org/sqlite`); keep `CGO_ENABLED=0`.
 
 ## Roadmap
 
-Sending (with allowlist, rate limits and chat ownership enforced in the
-daemon), delivery of incoming messages to fairway, and the `shipyard comms
-whatsapp` passthrough in the core CLI come in the next slices. See
-`docs/comms/whatsapp-design.md` (kept locally).
+Delivery of incoming messages to fairway, chat ownership (lease/handoff for
+flows), media sending and the `shipyard comms whatsapp` passthrough in the
+core CLI come in the next slices. See `docs/comms/whatsapp-design.md` (kept
+locally).

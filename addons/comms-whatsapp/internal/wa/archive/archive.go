@@ -44,6 +44,12 @@ type Chat struct {
 	TTL       time.Duration `json:"-"` // 0 = config default_ttl
 	Messages  int           `json:"messages"`
 	UpdatedAt time.Time     `json:"updated_at"`
+	// SendAllowed puts the chat on the send allowlist.
+	SendAllowed bool `json:"send_allowed"`
+	// LastActivity is the newest message seen in either direction, watched
+	// or not (no content is kept for unwatched chats — just this stamp).
+	// Zero means no conversation was ever observed.
+	LastActivity time.Time `json:"last_activity_at,omitzero"`
 }
 
 // Message is one archived message.
@@ -57,7 +63,24 @@ type Message struct {
 	Kind       string    `json:"kind"` // text|image|audio|video|file|location|sticker|contact|poll|other
 	Text       string    `json:"text,omitempty"`
 	ReplyTo    string    `json:"reply_to,omitempty"`
+	// ViaShipyard marks messages this daemon sent, as opposed to ones the
+	// user typed on the phone.
+	ViaShipyard bool `json:"via_shipyard,omitempty"`
 }
+
+// Sent is one row of the send audit log. It is written for every message
+// the daemon sends, watched chat or not, and is what rate limits count —
+// so a crash-looping daemon cannot reset its own counters.
+type Sent struct {
+	MsgID          string    `json:"msg_id"`
+	ChatJID        string    `json:"chat_jid"`
+	Timestamp      time.Time `json:"ts"`
+	Chars          int       `json:"chars"`
+	IdempotencyKey string    `json:"idempotency_key,omitempty"`
+}
+
+// SentRetention is how long the send audit log is kept.
+const SentRetention = 30 * 24 * time.Hour
 
 // ErrNotFound is returned when a chat lookup matches nothing.
 var ErrNotFound = errors.New("chat not found")
@@ -106,6 +129,21 @@ var migrations = []string{
 		PRIMARY KEY (chat_jid, msg_id)
 	);
 	CREATE INDEX messages_chat_ts ON messages(chat_jid, ts);`,
+
+	// v2: sending. Allowlist and last-activity per chat, provenance of
+	// archived messages, and the send audit log.
+	`ALTER TABLE chats ADD COLUMN send_allowed INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE chats ADD COLUMN last_activity_at INTEGER;
+	ALTER TABLE messages ADD COLUMN via_shipyard INTEGER NOT NULL DEFAULT 0;
+	CREATE TABLE sent (
+		msg_id           TEXT PRIMARY KEY,
+		chat_jid         TEXT NOT NULL,
+		ts               INTEGER NOT NULL,
+		chars            INTEGER NOT NULL,
+		idempotency_key  TEXT UNIQUE
+	);
+	CREATE INDEX sent_ts ON sent(ts);
+	CREATE INDEX sent_chat_ts ON sent(chat_jid, ts);`,
 }
 
 // Open opens (creating if needed) the archive at path with mode 0600 and
@@ -279,7 +317,8 @@ type ListFilter struct {
 }
 
 const chatColumns = `c.jid, c.name, c.kind, c.watched, COALESCE(c.ttl_seconds, 0), c.updated_at,
-	(SELECT COUNT(*) FROM messages m WHERE m.chat_jid = c.jid)`
+	(SELECT COUNT(*) FROM messages m WHERE m.chat_jid = c.jid),
+	c.send_allowed, COALESCE(c.last_activity_at, 0)`
 
 // ListChats returns chats ordered by name. Search ignores case and
 // accents ("familia" finds "Família"); the catalog is small enough to
@@ -367,13 +406,17 @@ func (s *Store) queryChats(ctx context.Context, q string, args ...any) ([]Chat, 
 	for rows.Next() {
 		var c Chat
 		var kind string
-		var watched int
-		var ttl, updated int64
-		if err := rows.Scan(&c.JID, &c.Name, &kind, &watched, &ttl, &updated, &c.Messages); err != nil {
+		var watched, allowed int
+		var ttl, updated, activity int64
+		if err := rows.Scan(&c.JID, &c.Name, &kind, &watched, &ttl, &updated, &c.Messages, &allowed, &activity); err != nil {
 			return nil, fmt.Errorf("archive: scan chat: %w", err)
 		}
 		c.Kind = ChatKind(kind)
 		c.Watched = watched == 1
+		c.SendAllowed = allowed == 1
+		if activity > 0 {
+			c.LastActivity = time.Unix(activity, 0).UTC()
+		}
 		c.TTL = time.Duration(ttl) * time.Second
 		c.UpdatedAt = time.Unix(updated, 0).UTC()
 		out = append(out, c)
@@ -389,12 +432,12 @@ func (s *Store) queryChats(ctx context.Context, q string, args ...any) ([]Chat, 
 // written.
 func (s *Store) InsertMessage(ctx context.Context, m Message) (bool, error) {
 	res, err := s.db.ExecContext(ctx, `
-		INSERT INTO messages (chat_jid, msg_id, sender_jid, sender_name, from_me, ts, kind, text, reply_to)
-		SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?
+		INSERT INTO messages (chat_jid, msg_id, sender_jid, sender_name, from_me, ts, kind, text, reply_to, via_shipyard)
+		SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
 		WHERE EXISTS (SELECT 1 FROM chats WHERE jid = ? AND watched = 1)
 		ON CONFLICT (chat_jid, msg_id) DO UPDATE SET text = excluded.text, kind = excluded.kind`,
 		m.ChatJID, m.ID, m.SenderJID, nullable(m.SenderName), boolInt(m.FromMe), m.Timestamp.Unix(),
-		m.Kind, nullable(m.Text), nullable(m.ReplyTo), m.ChatJID)
+		m.Kind, nullable(m.Text), nullable(m.ReplyTo), boolInt(m.ViaShipyard), m.ChatJID)
 	if err != nil {
 		return false, fmt.Errorf("archive: insert message %s/%s: %w", m.ChatJID, m.ID, err)
 	}
@@ -426,7 +469,7 @@ func (s *Store) DeleteMessage(ctx context.Context, chatJID, id string) error {
 // oldest first. limit <= 0 means no limit.
 func (s *Store) History(ctx context.Context, jid string, since time.Time, limit int) ([]Message, error) {
 	q := `SELECT chat_jid, msg_id, sender_jid, COALESCE(sender_name, ''), from_me, ts, kind,
-	             COALESCE(text, ''), COALESCE(reply_to, '')
+	             COALESCE(text, ''), COALESCE(reply_to, ''), via_shipyard
 	      FROM messages WHERE chat_jid = ? AND ts >= ? ORDER BY ts DESC, msg_id DESC`
 	args := []any{jid, since.Unix()}
 	if limit > 0 {
@@ -441,12 +484,13 @@ func (s *Store) History(ctx context.Context, jid string, since time.Time, limit 
 	var out []Message
 	for rows.Next() {
 		var m Message
-		var fromMe int
+		var fromMe, via int
 		var ts int64
-		if err := rows.Scan(&m.ChatJID, &m.ID, &m.SenderJID, &m.SenderName, &fromMe, &ts, &m.Kind, &m.Text, &m.ReplyTo); err != nil {
+		if err := rows.Scan(&m.ChatJID, &m.ID, &m.SenderJID, &m.SenderName, &fromMe, &ts, &m.Kind, &m.Text, &m.ReplyTo, &via); err != nil {
 			return nil, fmt.Errorf("archive: scan message: %w", err)
 		}
 		m.FromMe = fromMe == 1
+		m.ViaShipyard = via == 1
 		m.Timestamp = time.Unix(ts, 0).UTC()
 		out = append(out, m)
 	}
@@ -460,24 +504,97 @@ func (s *Store) History(ctx context.Context, jid string, since time.Time, limit 
 }
 
 // Prune deletes messages older than their chat's TTL (defaultTTL for chats
-// without one). Returns how many rows were removed.
+// without one) and send-log rows older than SentRetention. Returns how
+// many messages were removed.
 func (s *Store) Prune(ctx context.Context, defaultTTL time.Duration) (int64, error) {
+	now := s.now()
 	res, err := s.db.ExecContext(ctx, `
 		DELETE FROM messages WHERE ts < ? - COALESCE(
 			(SELECT ttl_seconds FROM chats c WHERE c.jid = messages.chat_jid), ?)`,
-		s.now().Unix(), int64(defaultTTL/time.Second))
+		now.Unix(), int64(defaultTTL/time.Second))
 	if err != nil {
 		return 0, fmt.Errorf("archive: prune: %w", err)
 	}
 	n, _ := res.RowsAffected()
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM sent WHERE ts < ?`, now.Add(-SentRetention).Unix()); err != nil {
+		return n, fmt.Errorf("archive: prune sent: %w", err)
+	}
+	return n, nil
+}
+
+// SetSendAllowed adds jid to, or removes it from, the send allowlist.
+func (s *Store) SetSendAllowed(ctx context.Context, jid string, allowed bool) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE chats SET send_allowed = ?, updated_at = ? WHERE jid = ?`,
+		boolInt(allowed), s.now().Unix(), jid)
+	if err != nil {
+		return fmt.Errorf("archive: allow %s: %w", jid, err)
+	}
+	return requireRow(res, jid)
+}
+
+// TouchActivity records that a message was seen in jid at ts. The stamp
+// only moves forward; unknown chats are ignored.
+func (s *Store) TouchActivity(ctx context.Context, jid string, ts time.Time) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE chats SET last_activity_at = MAX(COALESCE(last_activity_at, 0), ?) WHERE jid = ?`,
+		ts.Unix(), jid)
+	if err != nil {
+		return fmt.Errorf("archive: touch %s: %w", jid, err)
+	}
+	return nil
+}
+
+// RecordSent appends to the send audit log.
+func (s *Store) RecordSent(ctx context.Context, r Sent) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO sent (msg_id, chat_jid, ts, chars, idempotency_key) VALUES (?, ?, ?, ?, ?)`,
+		r.MsgID, r.ChatJID, r.Timestamp.Unix(), r.Chars, nullable(r.IdempotencyKey))
+	if err != nil {
+		return fmt.Errorf("archive: record sent %s: %w", r.MsgID, err)
+	}
+	return nil
+}
+
+// SentByKey returns the send recorded under an idempotency key.
+func (s *Store) SentByKey(ctx context.Context, key string) (Sent, bool, error) {
+	var r Sent
+	var ts int64
+	err := s.db.QueryRowContext(ctx,
+		`SELECT msg_id, chat_jid, ts, chars, idempotency_key FROM sent WHERE idempotency_key = ?`, key,
+	).Scan(&r.MsgID, &r.ChatJID, &ts, &r.Chars, &r.IdempotencyKey)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Sent{}, false, nil
+	}
+	if err != nil {
+		return Sent{}, false, fmt.Errorf("archive: sent by key: %w", err)
+	}
+	r.Timestamp = time.Unix(ts, 0).UTC()
+	return r, true, nil
+}
+
+// CountSent counts sends at or after since, in one chat or (chatJID "")
+// across all chats.
+func (s *Store) CountSent(ctx context.Context, chatJID string, since time.Time) (int, error) {
+	q := `SELECT COUNT(*) FROM sent WHERE ts >= ?`
+	args := []any{since.Unix()}
+	if chatJID != "" {
+		q += ` AND chat_jid = ?`
+		args = append(args, chatJID)
+	}
+	var n int
+	if err := s.db.QueryRowContext(ctx, q, args...).Scan(&n); err != nil {
+		return 0, fmt.Errorf("archive: count sent: %w", err)
+	}
 	return n, nil
 }
 
 // Counts summarizes the archive for `status`.
 type Counts struct {
-	Chats    int `json:"chats"`
-	Watched  int `json:"watched"`
-	Messages int `json:"messages"`
+	Chats        int `json:"chats"`
+	Watched      int `json:"watched"`
+	Messages     int `json:"messages"`
+	SendAllowed  int `json:"send_allowed"`
+	SentLastHour int `json:"sent_last_hour"`
 }
 
 // Counts returns catalog and archive sizes.
@@ -486,7 +603,10 @@ func (s *Store) Counts(ctx context.Context) (Counts, error) {
 	err := s.db.QueryRowContext(ctx, `SELECT
 		(SELECT COUNT(*) FROM chats),
 		(SELECT COUNT(*) FROM chats WHERE watched = 1),
-		(SELECT COUNT(*) FROM messages)`).Scan(&c.Chats, &c.Watched, &c.Messages)
+		(SELECT COUNT(*) FROM messages),
+		(SELECT COUNT(*) FROM chats WHERE send_allowed = 1),
+		(SELECT COUNT(*) FROM sent WHERE ts >= ?)`, s.now().Add(-time.Hour).Unix(),
+	).Scan(&c.Chats, &c.Watched, &c.Messages, &c.SendAllowed, &c.SentLastHour)
 	if err != nil {
 		return Counts{}, fmt.Errorf("archive: counts: %w", err)
 	}

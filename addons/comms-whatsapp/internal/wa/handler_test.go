@@ -404,3 +404,38 @@ func TestCatalogPrefersSavedNameAcrossLIDAndPhoneEntries(t *testing.T) {
 		}
 	}
 }
+
+func TestMessagesRecordActivityEvenWhenUnwatched(t *testing.T) {
+	hs := newHarness(t)
+	ctx := context.Background()
+	hs.h.Handle(ctx, message(types.MessageSource{Chat: momPN, Sender: ownPN, IsFromMe: true}, "m1", text("oi mãe")))
+	c, err := hs.arch.GetChat(ctx, momPN.String())
+	if err != nil || c.Watched || c.Messages != 0 || !c.LastActivity.Equal(ts) {
+		t.Fatalf("chat=%+v err=%v", c, err)
+	}
+	// Protocol noise (a revoke) does not count as conversation.
+	hs.h.Handle(ctx, message(types.MessageSource{Chat: family, Sender: momPN, IsGroup: true}, "r1", &waE2E.Message{
+		ProtocolMessage: &waE2E.ProtocolMessage{Type: waE2E.ProtocolMessage_REVOKE.Enum(), Key: &waCommon.MessageKey{ID: proto.String("x")}},
+	}))
+	if g, _ := hs.arch.GetChat(ctx, family.String()); !g.LastActivity.IsZero() {
+		t.Fatalf("revoke counted as activity: %+v", g)
+	}
+}
+
+func TestHistorySyncRecordsConversationTimestamps(t *testing.T) {
+	hs := newHarness(t)
+	ctx := context.Background()
+	hs.h.Handle(ctx, &events.HistorySync{Data: &waHistorySync.HistorySync{
+		Conversations: []*waHistorySync.Conversation{
+			{ID: proto.String(momPN.String()), ConversationTimestamp: proto.Uint64(uint64(ts.Unix()))},
+			{ID: proto.String(family.String()), Name: proto.String("Família")},
+		},
+	}})
+	mom, _ := hs.arch.GetChat(ctx, momPN.String())
+	if !mom.LastActivity.Equal(ts) {
+		t.Fatalf("mom activity=%v", mom.LastActivity)
+	}
+	if g, _ := hs.arch.GetChat(ctx, family.String()); !g.LastActivity.IsZero() {
+		t.Fatalf("conversation without timestamp got activity: %v", g.LastActivity)
+	}
+}

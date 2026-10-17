@@ -165,6 +165,12 @@ func printReport(w io.Writer, r wa.Report, now time.Time) {
 	}
 	fmt.Fprintf(tw, "Archive:\t%d watched of %d chats, %d messages\n", r.Archive.Watched, r.Archive.Chats, r.Archive.Messages)
 	fmt.Fprintf(tw, "Default TTL:\t%s\n", r.Config.DefaultTTL)
+	sending := fmt.Sprintf("%d allowed chats, %d sent in the last hour (limits %s per chat, %s overall)",
+		r.Archive.SendAllowed, r.Archive.SentLastHour, r.Config.Limits.PerChat, r.Config.Limits.Global)
+	if r.Config.Paused {
+		sending = "PAUSED — " + sending
+	}
+	fmt.Fprintf(tw, "Sending:\t%s\n", sending)
 }
 
 // ── chats ────────────────────────────────────────────────────────────────
@@ -206,13 +212,16 @@ func runChats(ctx context.Context, e env, args []string) error {
 		return nil
 	}
 	tw := tabwriter.NewWriter(e.stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "NAME\tKIND\tWATCHED\tTTL\tMESSAGES\tJID")
+	fmt.Fprintln(tw, "NAME\tKIND\tWATCHED\tTTL\tMESSAGES\tSEND\tJID")
 	for _, c := range chats {
-		w := ""
+		w, s := "", ""
 		if c.Watched {
 			w = "yes"
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%d\t%s\n", c.Name, c.Kind, w, chatTTL(c, cfg), c.Messages, c.JID)
+		if c.SendAllowed {
+			s = "allowed"
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%d\t%s\t%s\n", c.Name, c.Kind, w, chatTTL(c, cfg), c.Messages, s, c.JID)
 	}
 	return tw.Flush()
 }

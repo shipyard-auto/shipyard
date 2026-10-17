@@ -303,3 +303,95 @@ func must(t *testing.T, err error) {
 		t.Fatal(err)
 	}
 }
+
+func TestMigrationFromV1KeepsData(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "archive.db")
+	ctx := context.Background()
+	// Build a v1 database by hand: only the first migration applied.
+	s, err := Open(ctx, path)
+	must(t, err)
+	_ = s.Close()
+	raw, err := Open(ctx, path)
+	must(t, err)
+	if _, err := raw.db.Exec(`DROP TABLE sent; DROP INDEX IF EXISTS sent_ts;`); err != nil {
+		t.Fatal(err)
+	}
+	// SQLite cannot drop the added columns portably; rebuild v1 tables.
+	if _, err := raw.db.Exec(`
+		DROP TABLE messages; DROP TABLE chats;
+		CREATE TABLE chats (jid TEXT PRIMARY KEY, name TEXT NOT NULL,
+			kind TEXT NOT NULL CHECK (kind IN ('dm','group','self')),
+			watched INTEGER NOT NULL DEFAULT 0, ttl_seconds INTEGER, updated_at INTEGER NOT NULL);
+		CREATE TABLE messages (chat_jid TEXT NOT NULL REFERENCES chats(jid) ON DELETE CASCADE,
+			msg_id TEXT NOT NULL, sender_jid TEXT NOT NULL, sender_name TEXT, from_me INTEGER NOT NULL,
+			ts INTEGER NOT NULL, kind TEXT NOT NULL, text TEXT, reply_to TEXT, PRIMARY KEY (chat_jid, msg_id));
+		INSERT INTO chats VALUES ('b@g.us', 'Família', 'group', 1, NULL, 0);
+		INSERT INTO messages VALUES ('b@g.us', '1', 'x', NULL, 0, 100, 'text', 'oi', NULL);
+		PRAGMA user_version = 1;`); err != nil {
+		t.Fatal(err)
+	}
+	_ = raw.Close()
+
+	s, err = Open(ctx, path)
+	must(t, err)
+	defer func() { _ = s.Close() }()
+	c, err := s.GetChat(ctx, "b@g.us")
+	if err != nil || !c.Watched || c.SendAllowed || !c.LastActivity.IsZero() || c.Messages != 1 {
+		t.Fatalf("migrated chat=%+v err=%v", c, err)
+	}
+	h, _ := s.History(ctx, "b@g.us", time.Time{}, 0)
+	if len(h) != 1 || h[0].ViaShipyard {
+		t.Fatalf("migrated history=%+v", h)
+	}
+}
+
+func TestAllowlistActivityAndSentLog(t *testing.T) {
+	s, now := openTest(t)
+	ctx := context.Background()
+	must(t, s.UpsertChat(ctx, "a@s.whatsapp.net", "Vini", KindDM))
+
+	must(t, s.SetSendAllowed(ctx, "a@s.whatsapp.net", true))
+	if err := s.SetSendAllowed(ctx, "nope@s.whatsapp.net", true); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("unknown allow: %v", err)
+	}
+
+	must(t, s.TouchActivity(ctx, "a@s.whatsapp.net", t0))
+	must(t, s.TouchActivity(ctx, "a@s.whatsapp.net", t0.Add(-time.Hour))) // older: ignored
+	must(t, s.TouchActivity(ctx, "unknown@s.whatsapp.net", t0))           // unknown: no-op
+	c, _ := s.GetChat(ctx, "a@s.whatsapp.net")
+	if !c.SendAllowed || !c.LastActivity.Equal(t0) {
+		t.Fatalf("chat=%+v", c)
+	}
+
+	must(t, s.RecordSent(ctx, Sent{MsgID: "m1", ChatJID: "a@s.whatsapp.net", Timestamp: t0, Chars: 3, IdempotencyKey: "k1"}))
+	must(t, s.RecordSent(ctx, Sent{MsgID: "m2", ChatJID: "b@s.whatsapp.net", Timestamp: t0.Add(-2 * time.Hour), Chars: 3}))
+	if err := s.RecordSent(ctx, Sent{MsgID: "m3", ChatJID: "a@s.whatsapp.net", Timestamp: t0, IdempotencyKey: "k1"}); err == nil {
+		t.Fatal("duplicate idempotency key accepted")
+	}
+	if n, _ := s.CountSent(ctx, "a@s.whatsapp.net", t0.Add(-time.Minute)); n != 1 {
+		t.Fatalf("per chat=%d", n)
+	}
+	if n, _ := s.CountSent(ctx, "", t0.Add(-3*time.Hour)); n != 2 {
+		t.Fatalf("global=%d", n)
+	}
+	got, ok, err := s.SentByKey(ctx, "k1")
+	if err != nil || !ok || got.MsgID != "m1" {
+		t.Fatalf("by key=%+v %v %v", got, ok, err)
+	}
+	if _, ok, _ := s.SentByKey(ctx, "missing"); ok {
+		t.Fatal("missing key found")
+	}
+	counts, _ := s.Counts(ctx)
+	if counts.SendAllowed != 1 || counts.SentLastHour != 1 {
+		t.Fatalf("counts=%+v", counts)
+	}
+
+	*now = t0.Add(SentRetention + time.Hour)
+	_, err = s.Prune(ctx, defaultTestTTL)
+	must(t, err)
+	if n, _ := s.CountSent(ctx, "", time.Time{}); n != 0 {
+		t.Fatalf("sent log not pruned: %d", n)
+	}
+}
+
+const defaultTestTTL = 14 * 24 * time.Hour

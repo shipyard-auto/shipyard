@@ -19,7 +19,7 @@ import (
 func cli(t *testing.T, args ...string) (string, string, error) {
 	t.Helper()
 	var out, errb bytes.Buffer
-	err := run(context.Background(), args, &out, &errb)
+	err := run(context.Background(), args, strings.NewReader(""), &out, &errb)
 	return out.String(), errb.String(), err
 }
 

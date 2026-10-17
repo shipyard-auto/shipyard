@@ -22,7 +22,7 @@ The binary is named `shipyard`. Install it once per machine and manage cron jobs
 | `addons/fairway/` | Fairway HTTP gateway addon (own binary) |
 | `addons/crew/` | Crew LLM agent addon (own binary) |
 | `addons/comms/` | Comms messaging addon, stateless (own binary) |
-| `addons/comms-whatsapp/` | WhatsApp linked-device daemon + local archive (own binary) |
+| `addons/comms-whatsapp/` | WhatsApp linked-device daemon: local archive, policy-checked sending (own binary) |
 | `manifest` | Release source of truth (`shipyard=`, `fairway=`, `crew=`, `comms=`, `comms-whatsapp=` lines) |
 
 The repository is a **single Go module** (`go.mod` at the root). Each addon
