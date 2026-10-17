@@ -162,6 +162,19 @@ func (b *CLIBackend) Run(ctx context.Context, in RunInput, _ ToolDispatcher) (Ru
 		)
 	}
 
+	if bt := in.Agent.BuiltinTools; bt != nil {
+		// The value rides in the same argv element ("--tools=" for an empty
+		// list): --tools is variadic, so a separate "" would let it swallow a
+		// positional prompt from backend.command.
+		args = append(args, "--tools="+strings.Join(*bt, ","))
+		if cfgPath == "" {
+			// An agent that restricts its built-in tools wants exactly the
+			// surface it declared; without this the CLI would still load
+			// every MCP server from the user's ~/.claude.json.
+			args = append(args, "--strict-mcp-config")
+		}
+	}
+
 	// Stateful agents must persist a session id across turns, but recent
 	// versions of `claude --print` no longer emit a `session=<id>` marker
 	// on stderr — the id is only surfaced through --output-format json.

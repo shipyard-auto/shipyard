@@ -35,6 +35,7 @@ func Write(a *crew.Agent) error {
 		Tools:         a.Tools,
 		MCPServers:    a.MCPServers,
 		ProjectScope:  a.ProjectScope,
+		BuiltinTools:  a.BuiltinTools,
 	}
 	buf, err := yaml.Marshal(doc)
 	if err != nil {

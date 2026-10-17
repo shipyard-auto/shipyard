@@ -82,6 +82,12 @@ func TestAgentValidate(t *testing.T) {
 		{"tool output_schema invalid type", func(a *Agent) {
 			a.Tools[0].OutputSchema = map[string]string{"ok": "datetime"}
 		}, "output_schema"},
+		{"builtin_tools empty", func(a *Agent) { a.BuiltinTools = &[]string{} }, ""},
+		{"builtin_tools named", func(a *Agent) { a.BuiltinTools = &[]string{"Read", "WebFetch"} }, ""},
+		{"builtin_tools lowercase", func(a *Agent) { a.BuiltinTools = &[]string{"bash"} }, "agent.builtin_tools[0]"},
+		{"builtin_tools pattern form", func(a *Agent) { a.BuiltinTools = &[]string{"Bash(git *)"} }, "agent.builtin_tools[0]"},
+		{"builtin_tools empty entry", func(a *Agent) { a.BuiltinTools = &[]string{"Read", ""} }, "agent.builtin_tools[1]"},
+		{"builtin_tools duplicate", func(a *Agent) { a.BuiltinTools = &[]string{"Read", "Read"} }, "duplicate \"Read\""},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

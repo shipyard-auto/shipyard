@@ -539,6 +539,14 @@ shipyard crew tool rm my-tool
 
 `--protocol` is `exec` (shell command) or `http` (HTTP request).
 
+#### Built-in tools (`builtin_tools`)
+
+A `backend: cli` agent runs with `--permission-mode bypassPermissions`, so by
+default it also holds every built-in tool of the host CLI (Bash, Edit, Write,
+WebFetch) besides what it declares. `builtin_tools: []` in `agent.yaml` removes
+them (`--tools=` plus `--strict-mcp-config`); `[Read, Grep]` keeps a subset;
+absent keeps all. Agents that act on the user's behalf should set it.
+
 ---
 
 ## Conversation lifecycle (stateful agents)

@@ -27,6 +27,7 @@ type yamlDoc struct {
 	Tools         []crew.Tool         `yaml:"tools"`
 	MCPServers    []crew.MCPServerRef `yaml:"mcp_servers,omitempty"`
 	ProjectScope  string              `yaml:"project_scope,omitempty"`
+	BuiltinTools  *[]string           `yaml:"builtin_tools,omitempty"`
 }
 
 // loadDoc is the on-disk shape used by Load. Tools are decoded into the
@@ -43,6 +44,7 @@ type loadDoc struct {
 	Tools         []ToolEntry         `yaml:"tools"`
 	MCPServers    []crew.MCPServerRef `yaml:"mcp_servers"`
 	ProjectScope  string              `yaml:"project_scope"`
+	BuiltinTools  *[]string           `yaml:"builtin_tools"`
 }
 
 // Load reads an agent directory and returns a fully-resolved *crew.Agent.
@@ -90,6 +92,7 @@ func Load(dir string) (*crew.Agent, error) {
 		Tools:        resolvedTools,
 		MCPServers:   doc.MCPServers,
 		ProjectScope: doc.ProjectScope,
+		BuiltinTools: doc.BuiltinTools,
 		Dir:          dir,
 		PromptPath:   promptPath,
 	}
