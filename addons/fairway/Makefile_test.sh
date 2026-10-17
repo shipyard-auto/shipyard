@@ -103,7 +103,7 @@ main() {
 
   log "scenario: make_package_all_includesCoreFairwayCrewAndComms"
   make DIST_DIR="$dist_dir" package-all >/dev/null
-  [ "$(count_tarballs "$dist_dir")" -eq 16 ] || fail "expected 16 total tarballs after package-all (4 core + 4 fairway + 4 crew + 4 comms)"
+  [ "$(count_tarballs "$dist_dir")" -eq 20 ] || fail "expected 20 total tarballs after package-all (4 core + 4 fairway + 4 crew + 4 comms + 4 comms-whatsapp)"
 
   log "scenario: build_does_not_regress"
   make DIST_DIR="$dist_dir" build >/dev/null

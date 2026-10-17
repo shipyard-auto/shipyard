@@ -1,0 +1,508 @@
+// Package archive is the local SQLite store behind shipyard-comms-whatsapp:
+// the catalog of known chats (with per-chat watch/TTL settings) and the
+// messages of watched chats.
+//
+// Only chats with watched = 1 ever get message rows; the check happens
+// inside the INSERT itself so a concurrent `unwatch` cannot race a write.
+// Rows older than the chat's TTL are removed by Prune.
+//
+// The driver is modernc.org/sqlite (pure Go): releases are cross-compiled
+// for four targets from one runner with CGO disabled.
+package archive
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+	"os"
+	"strings"
+	"time"
+	"unicode"
+
+	"golang.org/x/text/runes"
+	"golang.org/x/text/transform"
+	"golang.org/x/text/unicode/norm"
+	_ "modernc.org/sqlite" // registers the "sqlite" driver
+)
+
+// ChatKind classifies a chat.
+type ChatKind string
+
+const (
+	KindDM    ChatKind = "dm"
+	KindGroup ChatKind = "group"
+	KindSelf  ChatKind = "self" // "Message yourself"
+)
+
+// Chat is one row of the chat catalog.
+type Chat struct {
+	JID       string        `json:"jid"`
+	Name      string        `json:"name"`
+	Kind      ChatKind      `json:"kind"`
+	Watched   bool          `json:"watched"`
+	TTL       time.Duration `json:"-"` // 0 = config default_ttl
+	Messages  int           `json:"messages"`
+	UpdatedAt time.Time     `json:"updated_at"`
+}
+
+// Message is one archived message.
+type Message struct {
+	ChatJID    string    `json:"chat_jid"`
+	ID         string    `json:"id"`
+	SenderJID  string    `json:"sender_jid"`
+	SenderName string    `json:"sender_name,omitempty"`
+	FromMe     bool      `json:"from_me"`
+	Timestamp  time.Time `json:"ts"`
+	Kind       string    `json:"kind"` // text|image|audio|video|file|location|sticker|contact|poll|other
+	Text       string    `json:"text,omitempty"`
+	ReplyTo    string    `json:"reply_to,omitempty"`
+}
+
+// ErrNotFound is returned when a chat lookup matches nothing.
+var ErrNotFound = errors.New("chat not found")
+
+// AmbiguousError is returned by Resolve when a name matches several chats.
+type AmbiguousError struct {
+	Query   string
+	Matches []Chat
+}
+
+func (e *AmbiguousError) Error() string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%q matches %d chats; use the JID:", e.Query, len(e.Matches))
+	for _, c := range e.Matches {
+		fmt.Fprintf(&b, "\n  %s  %s (%s)", c.JID, c.Name, c.Kind)
+	}
+	return b.String()
+}
+
+// Store wraps the archive database.
+type Store struct {
+	db  *sql.DB
+	now func() time.Time
+}
+
+// migrations are applied in order; PRAGMA user_version records how many ran.
+var migrations = []string{
+	`CREATE TABLE chats (
+		jid          TEXT PRIMARY KEY,
+		name         TEXT NOT NULL,
+		kind         TEXT NOT NULL CHECK (kind IN ('dm','group','self')),
+		watched      INTEGER NOT NULL DEFAULT 0,
+		ttl_seconds  INTEGER,
+		updated_at   INTEGER NOT NULL
+	);
+	CREATE TABLE messages (
+		chat_jid     TEXT NOT NULL REFERENCES chats(jid) ON DELETE CASCADE,
+		msg_id       TEXT NOT NULL,
+		sender_jid   TEXT NOT NULL,
+		sender_name  TEXT,
+		from_me      INTEGER NOT NULL,
+		ts           INTEGER NOT NULL,
+		kind         TEXT NOT NULL,
+		text         TEXT,
+		reply_to     TEXT,
+		PRIMARY KEY (chat_jid, msg_id)
+	);
+	CREATE INDEX messages_chat_ts ON messages(chat_jid, ts);`,
+}
+
+// Open opens (creating if needed) the archive at path with mode 0600 and
+// applies pending migrations. The CLI and the daemon may hold it at the
+// same time: WAL mode plus a busy timeout serializes their writes.
+func Open(ctx context.Context, path string) (*Store, error) {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("archive: create %s: %w", path, err)
+	}
+	_ = f.Close()
+	// _txlock=immediate takes the write lock at BEGIN, so a transaction
+	// never fails mid-way upgrading a read lock (which skips busy_timeout).
+	dsn := "file:" + path + "?_pragma=foreign_keys(1)&_pragma=busy_timeout(10000)&_pragma=journal_mode(WAL)&_txlock=immediate"
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return nil, fmt.Errorf("archive: open %s: %w", path, err)
+	}
+	// One connection per handle: writers inside a process queue on the
+	// pool instead of contending for SQLite's lock; contention between
+	// processes (CLI vs daemon) is left to busy_timeout.
+	db.SetMaxOpenConns(1)
+	s := &Store{db: db, now: time.Now}
+	if err := s.migrate(ctx); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	return s, nil
+}
+
+// Close closes the database.
+func (s *Store) Close() error { return s.db.Close() }
+
+// WithClock overrides the clock used for updated_at and Prune (tests).
+func (s *Store) WithClock(now func() time.Time) *Store {
+	s.now = now
+	return s
+}
+
+func (s *Store) migrate(ctx context.Context) error {
+	var version int
+	if err := s.db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version); err != nil {
+		return fmt.Errorf("archive: read schema version: %w", err)
+	}
+	if version > len(migrations) {
+		return fmt.Errorf("archive: schema version %d is newer than this binary supports (%d); upgrade shipyard-comms-whatsapp", version, len(migrations))
+	}
+	for i := version; i < len(migrations); i++ {
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("archive: migrate: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, migrations[i]); err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("archive: migration %d: %w", i+1, err)
+		}
+		if _, err := tx.ExecContext(ctx, fmt.Sprintf(`PRAGMA user_version = %d`, i+1)); err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("archive: migration %d: %w", i+1, err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("archive: migration %d: %w", i+1, err)
+		}
+	}
+	return nil
+}
+
+// UpsertChat inserts the chat or refreshes its name and kind. It never
+// touches watched or ttl. An empty name keeps the stored one.
+func (s *Store) UpsertChat(ctx context.Context, jid, name string, kind ChatKind) error {
+	if name == "" {
+		name = jid
+	}
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO chats (jid, name, kind, updated_at) VALUES (?, ?, ?, ?)
+		ON CONFLICT (jid) DO UPDATE SET
+			name = CASE WHEN excluded.name = excluded.jid THEN chats.name ELSE excluded.name END,
+			kind = excluded.kind,
+			updated_at = CASE WHEN chats.name = excluded.name AND chats.kind = excluded.kind
+			                  THEN chats.updated_at ELSE excluded.updated_at END`,
+		jid, name, string(kind), s.now().Unix())
+	if err != nil {
+		return fmt.Errorf("archive: upsert chat %s: %w", jid, err)
+	}
+	return nil
+}
+
+// Watch turns archiving on for jid. ttl 0 means "use the config default".
+func (s *Store) Watch(ctx context.Context, jid string, ttl time.Duration) error {
+	var ttlArg any
+	if ttl > 0 {
+		ttlArg = int64(ttl / time.Second)
+	}
+	res, err := s.db.ExecContext(ctx, `UPDATE chats SET watched = 1, ttl_seconds = ?, updated_at = ? WHERE jid = ?`,
+		ttlArg, s.now().Unix(), jid)
+	if err != nil {
+		return fmt.Errorf("archive: watch %s: %w", jid, err)
+	}
+	return requireRow(res, jid)
+}
+
+// Unwatch turns archiving off for jid and deletes its archived messages:
+// stopping observation of a chat should not leave its history behind.
+// Returns how many messages were deleted.
+func (s *Store) Unwatch(ctx context.Context, jid string) (int64, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("archive: unwatch %s: %w", jid, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	res, err := tx.ExecContext(ctx, `UPDATE chats SET watched = 0, ttl_seconds = NULL, updated_at = ? WHERE jid = ?`,
+		s.now().Unix(), jid)
+	if err != nil {
+		return 0, fmt.Errorf("archive: unwatch %s: %w", jid, err)
+	}
+	if err := requireRow(res, jid); err != nil {
+		return 0, err
+	}
+	del, err := tx.ExecContext(ctx, `DELETE FROM messages WHERE chat_jid = ?`, jid)
+	if err != nil {
+		return 0, fmt.Errorf("archive: unwatch %s: %w", jid, err)
+	}
+	n, _ := del.RowsAffected()
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("archive: unwatch %s: %w", jid, err)
+	}
+	return n, nil
+}
+
+func requireRow(res sql.Result, jid string) error {
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("archive: %w", err)
+	}
+	if n == 0 {
+		return fmt.Errorf("%w: %s", ErrNotFound, jid)
+	}
+	return nil
+}
+
+// IsWatched reports whether jid is watched (false when unknown).
+func (s *Store) IsWatched(ctx context.Context, jid string) (bool, error) {
+	var w int
+	err := s.db.QueryRowContext(ctx, `SELECT watched FROM chats WHERE jid = ?`, jid).Scan(&w)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("archive: %w", err)
+	}
+	return w == 1, nil
+}
+
+// Known reports whether jid is in the catalog.
+func (s *Store) Known(ctx context.Context, jid string) (bool, error) {
+	var one int
+	err := s.db.QueryRowContext(ctx, `SELECT 1 FROM chats WHERE jid = ?`, jid).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("archive: %w", err)
+	}
+	return true, nil
+}
+
+// ListFilter narrows ListChats.
+type ListFilter struct {
+	Search      string // case-insensitive substring of name or JID
+	WatchedOnly bool
+}
+
+const chatColumns = `c.jid, c.name, c.kind, c.watched, COALESCE(c.ttl_seconds, 0), c.updated_at,
+	(SELECT COUNT(*) FROM messages m WHERE m.chat_jid = c.jid)`
+
+// ListChats returns chats ordered by name. Search ignores case and
+// accents ("familia" finds "Família"); the catalog is small enough to
+// filter in Go, where that folding is easy.
+func (s *Store) ListChats(ctx context.Context, f ListFilter) ([]Chat, error) {
+	q := `SELECT ` + chatColumns + ` FROM chats c`
+	if f.WatchedOnly {
+		q += ` WHERE c.watched = 1`
+	}
+	q += ` ORDER BY lower(c.name), c.jid`
+	chats, err := s.queryChats(ctx, q)
+	if err != nil || f.Search == "" {
+		return chats, err
+	}
+	needle := Fold(f.Search)
+	out := chats[:0]
+	for _, c := range chats {
+		if strings.Contains(Fold(c.Name), needle) || strings.Contains(c.JID, needle) {
+			out = append(out, c)
+		}
+	}
+	return out, nil
+}
+
+// GetChat returns the chat with this JID.
+func (s *Store) GetChat(ctx context.Context, jid string) (Chat, error) {
+	chats, err := s.queryChats(ctx, `SELECT `+chatColumns+` FROM chats c WHERE c.jid = ?`, jid)
+	if err != nil {
+		return Chat{}, err
+	}
+	if len(chats) == 0 {
+		return Chat{}, fmt.Errorf("%w: %s", ErrNotFound, jid)
+	}
+	return chats[0], nil
+}
+
+// Resolve finds a chat by exact JID, then by name ignoring case and
+// accents. Several chats sharing a name yield *AmbiguousError.
+func (s *Store) Resolve(ctx context.Context, query string) (Chat, error) {
+	query = strings.TrimSpace(query)
+	if c, err := s.GetChat(ctx, query); err == nil {
+		return c, nil
+	} else if !errors.Is(err, ErrNotFound) {
+		return Chat{}, err
+	}
+	all, err := s.ListChats(ctx, ListFilter{})
+	if err != nil {
+		return Chat{}, err
+	}
+	want := Fold(query)
+	var matches []Chat
+	for _, c := range all {
+		if Fold(c.Name) == want {
+			matches = append(matches, c)
+		}
+	}
+	switch len(matches) {
+	case 0:
+		return Chat{}, fmt.Errorf("%w: %q (try 'chats --search')", ErrNotFound, query)
+	case 1:
+		return matches[0], nil
+	default:
+		return Chat{}, &AmbiguousError{Query: query, Matches: matches}
+	}
+}
+
+// Fold normalizes a name for matching: trimmed, lower-case, without
+// diacritics.
+func Fold(s string) string {
+	t := transform.Chain(norm.NFD, runes.Remove(runes.In(unicode.Mn)), norm.NFC)
+	out, _, err := transform.String(t, s)
+	if err != nil {
+		out = s
+	}
+	return strings.ToLower(strings.TrimSpace(out))
+}
+
+func (s *Store) queryChats(ctx context.Context, q string, args ...any) ([]Chat, error) {
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("archive: list chats: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []Chat
+	for rows.Next() {
+		var c Chat
+		var kind string
+		var watched int
+		var ttl, updated int64
+		if err := rows.Scan(&c.JID, &c.Name, &kind, &watched, &ttl, &updated, &c.Messages); err != nil {
+			return nil, fmt.Errorf("archive: scan chat: %w", err)
+		}
+		c.Kind = ChatKind(kind)
+		c.Watched = watched == 1
+		c.TTL = time.Duration(ttl) * time.Second
+		c.UpdatedAt = time.Unix(updated, 0).UTC()
+		out = append(out, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("archive: list chats: %w", err)
+	}
+	return out, nil
+}
+
+// InsertMessage stores m if, and only if, its chat is watched. Duplicate
+// IDs (redelivery, edits) overwrite the text. Returns whether a row was
+// written.
+func (s *Store) InsertMessage(ctx context.Context, m Message) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `
+		INSERT INTO messages (chat_jid, msg_id, sender_jid, sender_name, from_me, ts, kind, text, reply_to)
+		SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?
+		WHERE EXISTS (SELECT 1 FROM chats WHERE jid = ? AND watched = 1)
+		ON CONFLICT (chat_jid, msg_id) DO UPDATE SET text = excluded.text, kind = excluded.kind`,
+		m.ChatJID, m.ID, m.SenderJID, nullable(m.SenderName), boolInt(m.FromMe), m.Timestamp.Unix(),
+		m.Kind, nullable(m.Text), nullable(m.ReplyTo), m.ChatJID)
+	if err != nil {
+		return false, fmt.Errorf("archive: insert message %s/%s: %w", m.ChatJID, m.ID, err)
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}
+
+// EditMessage replaces the content of an archived message. A message that
+// was never archived (chat not watched at the time) stays absent.
+func (s *Store) EditMessage(ctx context.Context, chatJID, id, kind, text string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE messages SET kind = ?, text = ? WHERE chat_jid = ? AND msg_id = ?`,
+		kind, nullable(text), chatJID, id)
+	if err != nil {
+		return fmt.Errorf("archive: edit message %s/%s: %w", chatJID, id, err)
+	}
+	return nil
+}
+
+// DeleteMessage removes an archived message ("delete for everyone").
+func (s *Store) DeleteMessage(ctx context.Context, chatJID, id string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM messages WHERE chat_jid = ? AND msg_id = ?`, chatJID, id)
+	if err != nil {
+		return fmt.Errorf("archive: delete message %s/%s: %w", chatJID, id, err)
+	}
+	return nil
+}
+
+// History returns the newest `limit` messages of jid at or after since,
+// oldest first. limit <= 0 means no limit.
+func (s *Store) History(ctx context.Context, jid string, since time.Time, limit int) ([]Message, error) {
+	q := `SELECT chat_jid, msg_id, sender_jid, COALESCE(sender_name, ''), from_me, ts, kind,
+	             COALESCE(text, ''), COALESCE(reply_to, '')
+	      FROM messages WHERE chat_jid = ? AND ts >= ? ORDER BY ts DESC, msg_id DESC`
+	args := []any{jid, since.Unix()}
+	if limit > 0 {
+		q += ` LIMIT ?`
+		args = append(args, limit)
+	}
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("archive: history %s: %w", jid, err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []Message
+	for rows.Next() {
+		var m Message
+		var fromMe int
+		var ts int64
+		if err := rows.Scan(&m.ChatJID, &m.ID, &m.SenderJID, &m.SenderName, &fromMe, &ts, &m.Kind, &m.Text, &m.ReplyTo); err != nil {
+			return nil, fmt.Errorf("archive: scan message: %w", err)
+		}
+		m.FromMe = fromMe == 1
+		m.Timestamp = time.Unix(ts, 0).UTC()
+		out = append(out, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("archive: history %s: %w", jid, err)
+	}
+	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+		out[i], out[j] = out[j], out[i]
+	}
+	return out, nil
+}
+
+// Prune deletes messages older than their chat's TTL (defaultTTL for chats
+// without one). Returns how many rows were removed.
+func (s *Store) Prune(ctx context.Context, defaultTTL time.Duration) (int64, error) {
+	res, err := s.db.ExecContext(ctx, `
+		DELETE FROM messages WHERE ts < ? - COALESCE(
+			(SELECT ttl_seconds FROM chats c WHERE c.jid = messages.chat_jid), ?)`,
+		s.now().Unix(), int64(defaultTTL/time.Second))
+	if err != nil {
+		return 0, fmt.Errorf("archive: prune: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
+}
+
+// Counts summarizes the archive for `status`.
+type Counts struct {
+	Chats    int `json:"chats"`
+	Watched  int `json:"watched"`
+	Messages int `json:"messages"`
+}
+
+// Counts returns catalog and archive sizes.
+func (s *Store) Counts(ctx context.Context) (Counts, error) {
+	var c Counts
+	err := s.db.QueryRowContext(ctx, `SELECT
+		(SELECT COUNT(*) FROM chats),
+		(SELECT COUNT(*) FROM chats WHERE watched = 1),
+		(SELECT COUNT(*) FROM messages)`).Scan(&c.Chats, &c.Watched, &c.Messages)
+	if err != nil {
+		return Counts{}, fmt.Errorf("archive: counts: %w", err)
+	}
+	return c, nil
+}
+
+func nullable(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
+}
+
+func boolInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}

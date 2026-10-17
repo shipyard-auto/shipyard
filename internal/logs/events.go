@@ -9,6 +9,7 @@ const (
 	SourceService = "service"
 	SourceFairway = "fairway"
 	SourceCrew    = "crew"
+	SourceComms   = "comms"
 )
 
 // Entity types. Stored in the "entity_type" field.
@@ -60,6 +61,24 @@ const (
 	EventToolCallStart = "tool_call_start"
 	EventToolCallEnd   = "tool_call_end"
 	EventRunError      = "run_error"
+
+	// WhatsApp linked-device daemon (shipyard-comms-whatsapp). Message
+	// bodies are never logged — only chat ids and counts.
+	EventWADaemonStarted    = "wa_daemon_started"
+	EventWADaemonStopped    = "wa_daemon_stopped"
+	EventWAPaired           = "wa_paired"
+	EventWALogout           = "wa_logout"
+	EventWAConnected        = "wa_connected"
+	EventWADisconnected     = "wa_disconnected"
+	EventWALoggedOut        = "wa_logged_out"
+	EventWATemporaryBan     = "wa_temporary_ban"
+	EventWAStreamReplaced   = "wa_stream_replaced"
+	EventWACatalogRefreshed = "wa_catalog_refreshed"
+	EventWAHistorySync      = "wa_history_sync"
+	EventWAPruned           = "wa_pruned"
+	EventWAArchiveError     = "wa_archive_error"
+	EventWAStatusError      = "wa_status_error"
+	EventWAClientLog        = "wa_client_log"
 )
 
 // Attribute keys. Centralizing them as constants prevents key drift across
@@ -101,6 +120,9 @@ const (
 
 	KeyTokensInput  = "tokens_input"
 	KeyTokensOutput = "tokens_output"
+
+	KeyChatJID = "chat_jid"
+	KeyCount   = "count"
 
 	// Subprocess output capture. Emitted on completion events (cron_job_run_*,
 	// run_end, future runners) so operators can see the tail of stdout without

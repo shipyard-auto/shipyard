@@ -5,6 +5,7 @@ CREW_APP_NAME    := shipyard-crew
 CREW_NAME        := $(CREW_APP_NAME)
 COMMS_APP_NAME   := shipyard-comms
 COMMS_NAME       := $(COMMS_APP_NAME)
+WA_APP_NAME      := shipyard-comms-whatsapp
 DIST_DIR         := dist
 
 SHIPYARD_VERSION ?= $(shell grep '^shipyard=' manifest | cut -d= -f2)
@@ -15,6 +16,7 @@ CREW_VERSION     ?= $(shell grep '^crew=' manifest | cut -d= -f2)
 # Makefile_test.sh smoke working before the first manifest bump
 # without producing tarballs with double-underscore filenames.
 COMMS_VERSION    ?= $(or $(shell grep '^comms=' manifest | cut -d= -f2),dev)
+WA_VERSION       ?= $(or $(shell grep '^comms-whatsapp=' manifest | cut -d= -f2),dev)
 
 COMMIT     ?= dev
 BUILD_DATE ?= $(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
@@ -39,10 +41,18 @@ COMMS_LDFLAGS := \
   -X github.com/shipyard-auto/shipyard/addons/comms/internal/app.Commit=$(COMMIT) \
   -X github.com/shipyard-auto/shipyard/addons/comms/internal/app.BuildDate=$(BUILD_DATE)
 
+# shipyard-comms-whatsapp links SQLite in pure Go (modernc.org/sqlite);
+# CGO stays off so the four cross-compiled targets build from one runner.
+WA_LDFLAGS := \
+  -X github.com/shipyard-auto/shipyard/addons/comms-whatsapp/internal/app.Version=$(WA_VERSION) \
+  -X github.com/shipyard-auto/shipyard/addons/comms-whatsapp/internal/app.Commit=$(COMMIT) \
+  -X github.com/shipyard-auto/shipyard/addons/comms-whatsapp/internal/app.BuildDate=$(BUILD_DATE)
+
 .PHONY: build test fmt tidy clean dist package \
         build-fairway dist-fairway package-fairway checksums-fairway \
         build-crew dist-crew package-crew checksums-crew \
         build-comms dist-comms package-comms checksums-comms \
+        build-comms-whatsapp dist-comms-whatsapp package-comms-whatsapp checksums-comms-whatsapp \
         build-all dist-all package-all
 
 # ── core ─────────────────────────────────────────────────────────────────────
@@ -169,8 +179,38 @@ checksums-comms: package-comms
 		$(COMMS_APP_NAME)_$(COMMS_VERSION)_darwin_arm64.tar.gz \
 		> $(COMMS_APP_NAME)_$(COMMS_VERSION)_checksums.txt
 
+# ── comms-whatsapp ───────────────────────────────────────────────────────────
+
+build-comms-whatsapp:
+	mkdir -p $(DIST_DIR)
+	CGO_ENABLED=0 go build -ldflags "$(WA_LDFLAGS)" -o $(DIST_DIR)/$(WA_APP_NAME) ./addons/comms-whatsapp/cmd
+
+dist-comms-whatsapp:
+	mkdir -p $(DIST_DIR)/comms-whatsapp-linux-amd64
+	CGO_ENABLED=0 GOOS=linux  GOARCH=amd64 go build -ldflags "$(WA_LDFLAGS)" -o $(DIST_DIR)/comms-whatsapp-linux-amd64/$(WA_APP_NAME)  ./addons/comms-whatsapp/cmd
+	mkdir -p $(DIST_DIR)/comms-whatsapp-linux-arm64
+	CGO_ENABLED=0 GOOS=linux  GOARCH=arm64 go build -ldflags "$(WA_LDFLAGS)" -o $(DIST_DIR)/comms-whatsapp-linux-arm64/$(WA_APP_NAME)  ./addons/comms-whatsapp/cmd
+	mkdir -p $(DIST_DIR)/comms-whatsapp-darwin-amd64
+	CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -ldflags "$(WA_LDFLAGS)" -o $(DIST_DIR)/comms-whatsapp-darwin-amd64/$(WA_APP_NAME) ./addons/comms-whatsapp/cmd
+	mkdir -p $(DIST_DIR)/comms-whatsapp-darwin-arm64
+	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -ldflags "$(WA_LDFLAGS)" -o $(DIST_DIR)/comms-whatsapp-darwin-arm64/$(WA_APP_NAME) ./addons/comms-whatsapp/cmd
+
+package-comms-whatsapp: dist-comms-whatsapp
+	tar -C $(DIST_DIR)/comms-whatsapp-linux-amd64  -czf $(DIST_DIR)/$(WA_APP_NAME)_$(WA_VERSION)_linux_amd64.tar.gz  $(WA_APP_NAME)
+	tar -C $(DIST_DIR)/comms-whatsapp-linux-arm64  -czf $(DIST_DIR)/$(WA_APP_NAME)_$(WA_VERSION)_linux_arm64.tar.gz  $(WA_APP_NAME)
+	tar -C $(DIST_DIR)/comms-whatsapp-darwin-amd64 -czf $(DIST_DIR)/$(WA_APP_NAME)_$(WA_VERSION)_darwin_amd64.tar.gz $(WA_APP_NAME)
+	tar -C $(DIST_DIR)/comms-whatsapp-darwin-arm64 -czf $(DIST_DIR)/$(WA_APP_NAME)_$(WA_VERSION)_darwin_arm64.tar.gz $(WA_APP_NAME)
+
+checksums-comms-whatsapp: package-comms-whatsapp
+	cd $(DIST_DIR) && shasum -a 256 \
+		$(WA_APP_NAME)_$(WA_VERSION)_linux_amd64.tar.gz \
+		$(WA_APP_NAME)_$(WA_VERSION)_linux_arm64.tar.gz \
+		$(WA_APP_NAME)_$(WA_VERSION)_darwin_amd64.tar.gz \
+		$(WA_APP_NAME)_$(WA_VERSION)_darwin_arm64.tar.gz \
+		> $(WA_APP_NAME)_$(WA_VERSION)_checksums.txt
+
 # ── combined ─────────────────────────────────────────────────────────────────
 
-build-all:   build build-fairway build-crew build-comms
-dist-all:    dist  dist-fairway  dist-crew  dist-comms
-package-all: package package-fairway checksums-fairway package-crew checksums-crew package-comms checksums-comms
+build-all:   build build-fairway build-crew build-comms build-comms-whatsapp
+dist-all:    dist  dist-fairway  dist-crew  dist-comms  dist-comms-whatsapp
+package-all: package package-fairway checksums-fairway package-crew checksums-crew package-comms checksums-comms package-comms-whatsapp checksums-comms-whatsapp
