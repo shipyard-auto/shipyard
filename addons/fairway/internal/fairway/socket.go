@@ -52,6 +52,9 @@ type SocketConfig struct {
 	// Clients is the signed-route client registry managed by the client.*
 	// methods. Defaults to Server.ClientStore().
 	Clients *ClientStore
+
+	// Events serves the subscription.* methods. Defaults to Server.Events().
+	Events *Dispatcher
 }
 
 // SocketServer is the Unix socket JSON-RPC 2.0 control plane server.
@@ -70,6 +73,7 @@ type SocketServer struct {
 	handshakeTimeout time.Duration
 	onInvalidate     func()
 	clients          *ClientStore
+	events           *Dispatcher
 }
 
 // NewSocketServer creates a SocketServer from cfg.
@@ -100,9 +104,13 @@ func NewSocketServer(cfg SocketConfig) *SocketServer {
 		handshakeTimeout: ht,
 		onInvalidate:     onInvalidate,
 		clients:          cfg.Clients,
+		events:           cfg.Events,
 	}
 	if ss.clients == nil && cfg.Server != nil {
 		ss.clients = cfg.Server.ClientStore()
+	}
+	if ss.events == nil && cfg.Server != nil {
+		ss.events = cfg.Server.Events()
 	}
 	return ss
 }
@@ -301,6 +309,9 @@ func (s *SocketServer) dispatch(ctx context.Context, req Request) Response {
 	case "client.list", "client.add", "client.delete", "client.rotate", "client.scopes", "client.disable", "client.enable":
 		return s.dispatchClient(req)
 
+	case "subscription.list", "subscription.add", "subscription.delete", "subscription.test":
+		return s.dispatchSubscription(req)
+
 	case "status":
 		cfg := s.router.Config()
 		inFlight := 0
@@ -467,11 +478,55 @@ func (s *SocketServer) dispatchClient(req Request) Response {
 		if err := s.clients.Delete(p.ID); err != nil {
 			return errResp(req.ID, ErrCodeInvalidParams, err.Error(), nil)
 		}
+		// A deleted client's subscriptions would only accumulate failures.
+		if s.events != nil {
+			_ = s.events.Subs.DeleteByClient(p.ID)
+		}
 		return okResp(req.ID, map[string]bool{"ok": true})
 	default: // client.disable / client.enable
 		if err := s.clients.SetDisabled(p.ID, req.Method == "client.disable"); err != nil {
 			return errResp(req.ID, ErrCodeInvalidParams, err.Error(), nil)
 		}
 		return okResp(req.ID, map[string]bool{"ok": true})
+	}
+}
+
+// dispatchSubscription implements the subscription.* control methods.
+func (s *SocketServer) dispatchSubscription(req Request) Response {
+	if s.events == nil {
+		return errResp(req.ID, ErrCodeInvalidParams, "events not configured", nil)
+	}
+	var p struct {
+		ID        string `json:"id"`
+		ClientID  string `json:"clientId"`
+		Topic     string `json:"topic"`
+		URL       string `json:"url"`
+		AllowHTTP bool   `json:"allowHttp"`
+	}
+	if len(req.Params) > 0 {
+		if err := json.Unmarshal(req.Params, &p); err != nil {
+			return errResp(req.ID, ErrCodeInvalidParams, "invalid params", nil)
+		}
+	}
+	switch req.Method {
+	case "subscription.list":
+		return okResp(req.ID, s.events.Views(p.ClientID))
+	case "subscription.add":
+		sub, err := s.events.Subscribe(p.ClientID, p.Topic, p.URL, p.AllowHTTP)
+		if err != nil {
+			return errResp(req.ID, ErrCodeInvalidParams, err.Error(), nil)
+		}
+		return okResp(req.ID, sub)
+	case "subscription.delete":
+		if err := s.events.Subs.Delete(p.ID, ""); err != nil {
+			return errResp(req.ID, ErrCodeInvalidParams, err.Error(), nil)
+		}
+		return okResp(req.ID, map[string]bool{"ok": true})
+	default: // subscription.test
+		ev, err := s.events.Ping(p.ID)
+		if err != nil {
+			return errResp(req.ID, ErrCodeInvalidParams, err.Error(), nil)
+		}
+		return okResp(req.ID, map[string]string{"eventId": ev.ID})
 	}
 }

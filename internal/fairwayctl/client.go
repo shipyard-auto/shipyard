@@ -392,3 +392,52 @@ func (c *Client) ClientSetDisabled(ctx context.Context, id string, disabled bool
 	}
 	return nil
 }
+
+// ── Event subscriptions ──────────────────────────────────────────────────────
+
+// SubscriptionList returns subscriptions with delivery stats; clientID filters.
+func (c *Client) SubscriptionList(ctx context.Context, clientID string) ([]Subscription, error) {
+	raw, err := c.call(ctx, "subscription.list", map[string]any{"clientId": clientID})
+	if err != nil {
+		return nil, fmt.Errorf("fairway: subscription list: %w", err)
+	}
+	var out []Subscription
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, fmt.Errorf("fairway: subscription list: decode: %w", err)
+	}
+	return out, nil
+}
+
+// SubscriptionAdd subscribes a client to a topic at a webhook URL.
+func (c *Client) SubscriptionAdd(ctx context.Context, clientID, topic, url string, allowHTTP bool) (Subscription, error) {
+	raw, err := c.call(ctx, "subscription.add", map[string]any{"clientId": clientID, "topic": topic, "url": url, "allowHttp": allowHTTP})
+	if err != nil {
+		return Subscription{}, fmt.Errorf("fairway: subscription add: %w", err)
+	}
+	var out Subscription
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return Subscription{}, fmt.Errorf("fairway: subscription add: decode: %w", err)
+	}
+	return out, nil
+}
+
+// SubscriptionDelete removes a subscription.
+func (c *Client) SubscriptionDelete(ctx context.Context, id string) error {
+	if _, err := c.call(ctx, "subscription.delete", map[string]any{"id": id}); err != nil {
+		return fmt.Errorf("fairway: subscription delete: %w", err)
+	}
+	return nil
+}
+
+// SubscriptionTest sends a shipyard.ping event to one subscription.
+func (c *Client) SubscriptionTest(ctx context.Context, id string) (string, error) {
+	raw, err := c.call(ctx, "subscription.test", map[string]any{"id": id})
+	if err != nil {
+		return "", fmt.Errorf("fairway: subscription test: %w", err)
+	}
+	var out struct {
+		EventID string `json:"eventId"`
+	}
+	_ = json.Unmarshal(raw, &out)
+	return out.EventID, nil
+}

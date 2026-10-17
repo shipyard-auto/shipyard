@@ -178,6 +178,14 @@ func run(ctx context.Context, deps runDeps) int {
 		return exitInvalidConfig
 	}
 
+	subs, err := fairway.OpenSubscriptionStore(filepath.Join(filepath.Dir(resolvedConfigPath), "subscriptions.json"))
+	if err != nil {
+		deps.bootstrapLog.Printf("bootstrap falhou: carregar subscriptions.json: %v", err)
+		return exitInvalidConfig
+	}
+	events := fairway.NewDispatcher(subs, clients, eventLogger, deps.version)
+	go events.Run(ctx)
+
 	server := deps.newServer(fairway.ServerConfig{
 		Router:      router,
 		Executor:    executor,
@@ -185,6 +193,7 @@ func run(ctx context.Context, deps runDeps) int {
 		EventLogger: eventLogger,
 		Stats:       stats,
 		Clients:     clients,
+		Events:      events,
 	})
 
 	socketPath := filepath.Join(runDir, "fairway.sock")

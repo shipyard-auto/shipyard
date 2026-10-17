@@ -104,7 +104,9 @@ func (a *signedAuth) VerifyContext(r *http.Request) (*http.Request, error) {
 	if !a.nonces.Use(p.ClientID+"\x00"+p.Nonce, a.now()) {
 		return nil, &AuthError{Reason: "replayed request (nonce already used)", Status: 401}
 	}
-	if !signing.Grants(c.Scopes, a.scope) {
+	// An empty scope means "any authenticated client"; used only by
+	// fairway's own API, which then authorises per operation.
+	if a.scope != "" && !signing.Grants(c.Scopes, a.scope) {
 		return nil, &AuthError{Reason: "client lacks scope " + a.scope, Status: 403}
 	}
 	return r.WithContext(WithIdentity(r.Context(), Identity{ClientID: c.ID, Scopes: c.Scopes})), nil

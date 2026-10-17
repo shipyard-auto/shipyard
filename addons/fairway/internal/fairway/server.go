@@ -52,6 +52,10 @@ type ServerConfig struct {
 	// without it, signed routes answer 500 (misconfiguration) rather than
 	// letting anything through.
 	Clients *ClientStore
+
+	// Events publishes events to subscriptions. Optional: without it the
+	// /_shipyard/v1 API answers 503.
+	Events *Dispatcher
 }
 
 // Server is the HTTP server for the fairway daemon. It matches incoming
@@ -73,6 +77,7 @@ type Server struct {
 	authCache   map[string]Authenticator
 	authDeps    AuthDeps
 	clients     *ClientStore
+	events      *Dispatcher
 
 	// asyncWG tracks goroutines spawned for async routes so a graceful
 	// shutdown can wait for them to complete before returning.
@@ -90,6 +95,7 @@ func NewServer(cfg ServerConfig) *Server {
 		authCache:   make(map[string]Authenticator),
 		authDeps:    AuthDeps{Nonces: NewNonceCache()},
 		clients:     cfg.Clients,
+		events:      cfg.Events,
 	}
 	if cfg.Clients != nil { // avoid a non-nil interface around a nil pointer
 		s.authDeps.Clients = cfg.Clients
@@ -105,6 +111,10 @@ func NewServer(cfg ServerConfig) *Server {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/_health", s.handleHealth)
+	mux.HandleFunc("POST /_shipyard/v1/events", s.handlePublish)
+	mux.HandleFunc("GET /_shipyard/v1/subscriptions", s.handleSubscriptionList)
+	mux.HandleFunc("POST /_shipyard/v1/subscriptions", s.handleSubscriptionCreate)
+	mux.HandleFunc("DELETE /_shipyard/v1/subscriptions/{id}", s.handleSubscriptionDelete)
 	mux.HandleFunc("/", s.handleRouted)
 
 	// Always wrap with the trace-injecting middleware so every request gets
@@ -194,6 +204,9 @@ func (s *Server) handler() http.Handler {
 func ServerHandlerForTest(s *Server) http.Handler {
 	return s.httpSrv.Handler
 }
+
+// Events returns the event dispatcher (nil when not configured).
+func (s *Server) Events() *Dispatcher { return s.events }
 
 // ClientStore returns the client registry (nil when not configured).
 func (s *Server) ClientStore() *ClientStore { return s.clients }

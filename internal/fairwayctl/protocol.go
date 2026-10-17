@@ -161,3 +161,20 @@ type TestResult struct {
 	Body       string `json:"body"`
 	DurationMs int64  `json:"durationMs"`
 }
+
+// Subscription sends a client's events of a topic to a webhook URL.
+type Subscription struct {
+	ID        string    `json:"id"`
+	ClientID  string    `json:"clientId"`
+	Topic     string    `json:"topic"`
+	URL       string    `json:"url"`
+	AllowHTTP bool      `json:"allowHttp,omitempty"`
+	CreatedAt time.Time `json:"createdAt"`
+	Stats     struct {
+		Delivered     int64     `json:"delivered"`
+		Failed        int64     `json:"failed"`
+		LastStatus    int       `json:"lastStatus,omitempty"`
+		LastError     string    `json:"lastError,omitempty"`
+		LastAttemptAt time.Time `json:"lastAttemptAt,omitzero"`
+	} `json:"stats"`
+}

@@ -16,6 +16,9 @@
 //	"v1", METHOD (upper case), path, raw query ("" if none), timestamp,
 //	nonce, hex(SHA-256(body))
 //
+// path is the URL-decoded path ("/" when empty) — what a Go server reads
+// as r.URL.Path; raw query is kept exactly as sent.
+//
 // The verifier rejects unknown or disabled clients, timestamps more than
 // MaxSkew away from its clock, reused nonces and signature mismatches
 // (constant-time compare). The secret is the full secret string as bytes.
