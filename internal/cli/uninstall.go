@@ -34,6 +34,10 @@ var uninstallFairwayAddon uninstallAddonFunc = defaultUninstallFairwayAddon
 // uninstallCommsAddon executa o uninstall do comms. Variável para testes.
 var uninstallCommsAddon uninstallAddonFunc = defaultUninstallCommsAddon
 
+// uninstallCommsWhatsAppAddon removes the WhatsApp provider binary.
+// Variável para testes.
+var uninstallCommsWhatsAppAddon uninstallAddonFunc = defaultUninstallCommsWhatsAppAddon
+
 func newUninstallCmd() *cobra.Command {
 	var assumeYes bool
 	var keepAddons bool
@@ -141,6 +145,8 @@ func cascadeUninstallAddons(cmd *cobra.Command) {
 			fn = uninstallFairwayAddon
 		case addon.KindComms:
 			fn = uninstallCommsAddon
+		case addon.KindCommsWhatsApp:
+			fn = uninstallCommsWhatsAppAddon
 		default:
 			// Unknown kinds: log and skip. Registry may be from a future
 			// shipyard version; refusing here would block a legitimate
@@ -212,6 +218,16 @@ func defaultUninstallFairwayAddon(ctx context.Context) error {
 // so we pass an empty string. State directory under ~/.shipyard/comms/
 // is preserved (Purge=false) — `shipyard uninstall` removes the whole
 // ~/.shipyard/ afterwards anyway, so per-addon purge would be redundant.
+// defaultUninstallCommsWhatsAppAddon removes only the binary: the core
+// uninstall deletes ~/.shipyard (state included) right after.
+func defaultUninstallCommsWhatsAppAddon(ctx context.Context) error {
+	inst, err := whatsappInstallerNoVersion()
+	if err != nil {
+		return err
+	}
+	return inst.Uninstall(ctx)
+}
+
 func defaultUninstallCommsAddon(ctx context.Context) error {
 	inst, err := buildCommsInstaller("")
 	if err != nil {

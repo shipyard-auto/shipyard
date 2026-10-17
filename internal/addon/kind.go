@@ -19,6 +19,10 @@ const (
 
 	// KindComms is the shipyard-comms addon (external messaging transport).
 	KindComms Kind = "comms"
+
+	// KindCommsWhatsApp is the shipyard-comms-whatsapp provider daemon,
+	// managed under `shipyard comms whatsapp`.
+	KindCommsWhatsApp Kind = "comms-whatsapp"
 )
 
 // String returns the Kind name as used in CLI commands (e.g. "crew").
@@ -29,8 +33,13 @@ func (k Kind) BinaryName() string { return fmt.Sprintf("shipyard-%s", k) }
 
 // InstallCommand returns the CLI string the user should run to install
 // this addon (e.g. "shipyard crew install").
-func (k Kind) InstallCommand() string { return fmt.Sprintf("shipyard %s install", k) }
+func (k Kind) InstallCommand() string {
+	if k == KindCommsWhatsApp {
+		return "shipyard comms whatsapp install"
+	}
+	return fmt.Sprintf("shipyard %s install", k)
+}
 
 // AllKinds returns every known addon kind in a stable order.
 // Order is alphabetical so callers iterating get a deterministic list.
-func AllKinds() []Kind { return []Kind{KindComms, KindCrew, KindFairway} }
+func AllKinds() []Kind { return []Kind{KindComms, KindCommsWhatsApp, KindCrew, KindFairway} }

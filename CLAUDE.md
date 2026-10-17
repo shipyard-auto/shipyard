@@ -94,6 +94,7 @@ shipyard [command] [flags]
 | `logs` | Inspect structured local logs |
 | `fairway` | Manage the shipyard-fairway HTTP gateway addon |
 | `crew` | Manage the shipyard-crew LLM agent addon |
+| `comms` | Manage the shipyard-comms messaging addon and its providers (`comms whatsapp`) |
 
 ---
 
@@ -555,6 +556,39 @@ default it also holds every built-in tool of the host CLI (Bash, Edit, Write,
 WebFetch) besides what it declares. `builtin_tools: []` in `agent.yaml` removes
 them (`--tools=` plus `--strict-mcp-config`); `[Read, Grep]` keeps a subset;
 absent keeps all. Agents that act on the user's behalf should set it.
+
+---
+
+### `shipyard comms`
+
+Messaging transport. `shipyard-comms` is stateless (channels, credentials,
+`send`); providers that need a persistent connection run as their own binary
+and are reached over a local socket — the comms family is coupled by
+contract, not code.
+
+```bash
+shipyard comms install | update | uninstall [--purge]   # purge keeps provider state (comms/whatsapp/)
+shipyard comms channel add --type telegram|whatsapp --name <n> [...]
+shipyard comms send --channel <n> --to <recipient> --text "…" [--idempotency-key K]
+```
+
+#### `shipyard comms whatsapp`
+
+The WhatsApp provider (`shipyard-comms-whatsapp`): a linked-device daemon with
+a TTL-bound archive of watched chats, inbound delivery to fairway and
+policy-checked sending (allowlist, prior conversation, rate limits, pause).
+install/update/uninstall are handled by the core; everything else passes
+through to the addon, whose `help` is the full reference (written for agents):
+
+```bash
+shipyard comms whatsapp install
+shipyard comms whatsapp pair            # QR, or --phone for a code
+shipyard comms whatsapp help            # overview; help <command|topic>
+shipyard comms whatsapp send "Vini" --text "oi" --idempotency-key K
+```
+
+Addon exit codes are preserved through the passthrough (e.g. 3 = send
+refused by policy).
 
 ---
 

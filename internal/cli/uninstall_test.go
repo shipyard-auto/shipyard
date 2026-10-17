@@ -203,3 +203,18 @@ func TestCascadeUninstallAddons_commsAlone(t *testing.T) {
 		t.Errorf("missing comms removal line:\n%s", buf.String())
 	}
 }
+
+func TestCascadeUninstallAddons_includesCommsWhatsApp(t *testing.T) {
+	isolateHome(t)
+	stubAddonHooks(t, []addon.Kind{addon.KindCommsWhatsApp}, nil, nil, nil)
+	calls := 0
+	orig := uninstallCommsWhatsAppAddon
+	uninstallCommsWhatsAppAddon = func(context.Context) error { calls++; return nil }
+	t.Cleanup(func() { uninstallCommsWhatsAppAddon = orig })
+
+	cmd, buf := newCmdForTest()
+	cascadeUninstallAddons(cmd)
+	if calls != 1 || !strings.Contains(buf.String(), "Removed addon: comms-whatsapp") {
+		t.Fatalf("calls=%d output=%q", calls, buf.String())
+	}
+}

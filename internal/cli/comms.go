@@ -27,8 +27,10 @@ normalized Message envelope used across the subsystem. Inbound webhook
 traffic enters through fairway; comms exposes the send operation for any
 caller (scripts, cron jobs, crew agents, fairway actions).
 
-In v1 comms is stateless: each invocation reads config from
-~/.shipyard/comms/, performs one operation and exits. No daemon, no socket.`,
+comms itself is stateless: each invocation reads config from
+~/.shipyard/comms/, performs one operation and exits. Providers that need a
+persistent connection run as their own binary, reached over a local socket:
+'shipyard comms whatsapp' manages the WhatsApp one.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return cmd.Help()
 		},
@@ -39,6 +41,7 @@ In v1 comms is stateless: each invocation reads config from
 	cmd.AddCommand(newCommsStatusCmd())
 	cmd.AddCommand(newCommsChannelCmd())
 	cmd.AddCommand(newCommsSendCmd())
+	cmd.AddCommand(newCommsWhatsAppCmd())
 	return cmd
 }
 

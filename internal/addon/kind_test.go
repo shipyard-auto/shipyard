@@ -42,9 +42,18 @@ func TestKind_InstallCommand(t *testing.T) {
 }
 
 func TestAllKinds_IncludesComms(t *testing.T) {
-	want := []Kind{KindComms, KindCrew, KindFairway}
+	want := []Kind{KindComms, KindCommsWhatsApp, KindCrew, KindFairway}
 	got := AllKinds()
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("AllKinds() = %v, want %v", got, want)
+	}
+}
+
+func TestCommsWhatsAppKind(t *testing.T) {
+	if got := KindCommsWhatsApp.BinaryName(); got != "shipyard-comms-whatsapp" {
+		t.Errorf("binary=%s", got)
+	}
+	if got := KindCommsWhatsApp.InstallCommand(); got != "shipyard comms whatsapp install" {
+		t.Errorf("install command=%s", got)
 	}
 }
