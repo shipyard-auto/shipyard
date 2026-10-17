@@ -39,6 +39,8 @@ import (
 const (
 	APIMessagesPath = "/v1/messages"
 	APIChatsPath    = "/v1/chats"
+	APISendPath     = "/v1/send"
+	APILimitsPath   = "/v1/limits"
 )
 
 // Query limits.
@@ -70,6 +72,9 @@ type APIServer struct {
 	// Self is the account's own phone JID, for the envelopes' "to".
 	Self func() types.JID
 	Log  *slog.Logger
+	// Outbox sends for /v1/send (every policy check applies); /v1/limits
+	// reads its config. Nil disables both.
+	Outbox *Outbox
 }
 
 // Handler returns the HTTP handler.
@@ -77,8 +82,11 @@ func (s *APIServer) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc(APIMessagesPath, s.guard(s.messages))
 	mux.HandleFunc(APIChatsPath, s.guard(s.chats))
+	mux.HandleFunc(APISendPath, s.guard(s.send))
+	mux.HandleFunc(APILimitsPath, s.guard(s.limits))
 	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
-		apiError(w, http.StatusNotFound, "not_found", "unknown endpoint; use POST "+APIMessagesPath+" or "+APIChatsPath)
+		apiError(w, http.StatusNotFound, "not_found", "unknown endpoint; use POST "+
+			strings.Join([]string{APIMessagesPath, APIChatsPath, APISendPath, APILimitsPath}, ", "))
 	})
 	return mux
 }
@@ -89,9 +97,11 @@ type apiCaller struct {
 	Scopes []string
 }
 
-func (c apiCaller) canRead(chatJID string) bool {
-	return grants(c.Scopes, ReadScopeName+":"+chatJID)
+func (c apiCaller) can(scopeName, chatJID string) bool {
+	return grants(c.Scopes, scopeName+":"+chatJID)
 }
+
+func (c apiCaller) canRead(chatJID string) bool { return c.can(ReadScopeName, chatJID) }
 
 type apiHandler func(w http.ResponseWriter, r *http.Request, c apiCaller, body []byte)
 
@@ -182,7 +192,7 @@ func (s *APIServer) messages(w http.ResponseWriter, r *http.Request, c apiCaller
 	}
 	q := archive.FeedQuery{After: after, Since: since}
 	if req.Chat != "" {
-		chat, ok := s.resolveReadable(w, r, c, req.Chat)
+		chat, ok := s.resolveFor(w, r, c, req.Chat, ReadScopeName)
 		if !ok {
 			return
 		}
@@ -271,16 +281,16 @@ func (s *APIServer) chats(w http.ResponseWriter, r *http.Request, c apiCaller, b
 	apiJSON(w, http.StatusOK, resp)
 }
 
-// resolveReadable finds the requested chat and checks the client may read
-// it. Clients limited to some chats get the same 403 for "not yours" and
-// "does not exist", so they cannot probe the catalog.
-func (s *APIServer) resolveReadable(w http.ResponseWriter, r *http.Request, c apiCaller, query string) (archive.Chat, bool) {
+// resolveFor finds the requested chat and checks the client holds
+// scopeName on it. Clients limited to some chats get the same 403 for "not
+// yours" and "does not exist", so they cannot probe the catalog.
+func (s *APIServer) resolveFor(w http.ResponseWriter, r *http.Request, c apiCaller, query, scopeName string) (archive.Chat, bool) {
 	chat, err := ResolveChat(r.Context(), s.Archive, query)
-	everything := readsEverything(c.Scopes)
+	everything := coversAll(c.Scopes, scopeName)
 	var amb *archive.AmbiguousError
 	switch {
 	case err == nil:
-		if c.canRead(chat.JID) {
+		if c.can(scopeName, chat.JID) {
 			return chat, true
 		}
 	case errors.As(err, &amb):
@@ -292,7 +302,7 @@ func (s *APIServer) resolveReadable(w http.ResponseWriter, r *http.Request, c ap
 		// to it: pick the one it may read, if exactly one.
 		var mine []archive.Chat
 		for _, m := range amb.Matches {
-			if c.canRead(m.JID) {
+			if c.can(scopeName, m.JID) {
 				mine = append(mine, m)
 			}
 		}
@@ -313,8 +323,122 @@ func (s *APIServer) resolveReadable(w http.ResponseWriter, r *http.Request, c ap
 		return chat, false
 	}
 	s.denied(r, c.ID, "chat not in scopes: "+query)
-	apiError(w, http.StatusForbidden, "forbidden", fmt.Sprintf("not allowed to read %q: needs scope %s:<chat jid>", query, ReadScopeName))
+	verb := "read"
+	if scopeName == SendScopeName {
+		verb = "send to"
+	}
+	apiError(w, http.StatusForbidden, "forbidden", fmt.Sprintf("not allowed to %s %q: needs scope %s:<chat jid>", verb, query, scopeName))
 	return chat, false
+}
+
+// SendAPIRequest is the body of POST /v1/send.
+type SendAPIRequest struct {
+	Chat string `json:"chat"`
+	Text string `json:"text"`
+	// IdempotencyKey makes retries safe; strongly recommended. Keys are
+	// per client: two clients may use the same key independently.
+	IdempotencyKey string `json:"idempotency_key,omitempty"`
+	DryRun         bool   `json:"dry_run,omitempty"`
+}
+
+// sendStatus maps refusal codes to HTTP statuses; the body always carries
+// the code itself, which is what clients should branch on.
+var sendStatus = map[SendCode]int{
+	CodeInvalid:        http.StatusBadRequest,
+	CodeTooLong:        http.StatusBadRequest,
+	CodeUnknownChat:    http.StatusNotFound,
+	CodeGroupsDisabled: http.StatusForbidden,
+	CodeNotAllowed:     http.StatusForbidden,
+	CodeNoHistory:      http.StatusConflict,
+	CodeRateLimited:    http.StatusTooManyRequests,
+	CodePaused:         http.StatusServiceUnavailable,
+	CodeNotConnected:   http.StatusServiceUnavailable,
+	CodeSendFailed:     http.StatusBadGateway,
+}
+
+func (s *APIServer) send(w http.ResponseWriter, r *http.Request, c apiCaller, body []byte) {
+	if s.Outbox == nil {
+		apiError(w, http.StatusServiceUnavailable, "unavailable", "sending is not available on this daemon")
+		return
+	}
+	var req SendAPIRequest
+	if err := decodeBody(body, &req); err != nil {
+		apiError(w, http.StatusBadRequest, "invalid", err.Error())
+		return
+	}
+	if strings.TrimSpace(req.Chat) == "" {
+		apiError(w, http.StatusBadRequest, "invalid", "chat is required")
+		return
+	}
+	chat, ok := s.resolveFor(w, r, c, req.Chat, SendScopeName)
+	if !ok {
+		return
+	}
+	key := ""
+	if req.IdempotencyKey != "" {
+		key = c.ID + "/" + req.IdempotencyKey
+	}
+	res, err := s.Outbox.Send(r.Context(), SendRequest{
+		Chat: chat.JID, Text: req.Text, IdempotencyKey: key, DryRun: req.DryRun, Client: c.ID,
+	})
+	if err != nil {
+		var se *SendError
+		if !errors.As(err, &se) {
+			apiError(w, http.StatusInternalServerError, "internal", "send failed")
+			return
+		}
+		status, ok := sendStatus[se.Code]
+		if !ok {
+			status = http.StatusInternalServerError
+		}
+		var b apiErrorBody
+		b.Error.Code, b.Error.Message = string(se.Code), se.Msg
+		if se.RetryAfter > 0 {
+			secs := int(se.RetryAfter / time.Second)
+			b.Error.RetryAfterSeconds = secs
+			w.Header().Set("Retry-After", strconv.Itoa(secs))
+		}
+		apiJSON(w, status, b)
+		return
+	}
+	apiJSON(w, http.StatusOK, res)
+}
+
+// LimitsAPIRequest is the body of POST /v1/limits.
+type LimitsAPIRequest struct {
+	// Chat, when set, adds whether the client can send there right now.
+	Chat string `json:"chat,omitempty"`
+}
+
+func (s *APIServer) limits(w http.ResponseWriter, r *http.Request, c apiCaller, body []byte) {
+	if s.Outbox == nil {
+		apiError(w, http.StatusServiceUnavailable, "unavailable", "sending is not available on this daemon")
+		return
+	}
+	var req LimitsAPIRequest
+	if err := decodeBody(body, &req); err != nil {
+		apiError(w, http.StatusBadRequest, "invalid", err.Error())
+		return
+	}
+	var chat *archive.Chat
+	if req.Chat != "" {
+		ch, ok := s.resolveFor(w, r, c, req.Chat, SendScopeName)
+		if !ok {
+			return
+		}
+		chat = &ch
+	}
+	cfg, err := s.Outbox.Config()
+	if err != nil {
+		apiError(w, http.StatusInternalServerError, "internal", "config unreadable")
+		return
+	}
+	rep, err := BuildLimitsReport(r.Context(), s.Archive, cfg, s.Outbox.Now(), chat)
+	if err != nil {
+		apiError(w, http.StatusInternalServerError, "internal", "archive read failed")
+		return
+	}
+	apiJSON(w, http.StatusOK, rep)
 }
 
 func (s *APIServer) denied(r *http.Request, client, why string) {
@@ -405,6 +529,9 @@ type apiErrorBody struct {
 	Error struct {
 		Code    string `json:"code"`
 		Message string `json:"message"`
+		// RetryAfterSeconds, for rate_limited, is when to try again (also
+		// sent as the Retry-After header).
+		RetryAfterSeconds int `json:"retry_after_seconds,omitempty"`
 	} `json:"error"`
 }
 

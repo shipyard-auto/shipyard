@@ -116,6 +116,8 @@ func dispatch(ctx context.Context, e env, args []string) error {
 		return runLimits(ctx, e, rest)
 	case "api":
 		return runAPI(ctx, e, rest)
+	case "sent":
+		return runSent(ctx, e, rest)
 	case "tool":
 		return runTool(ctx, e, rest)
 	case "tools":

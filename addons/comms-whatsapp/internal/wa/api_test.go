@@ -330,8 +330,9 @@ func TestScopeGrants(t *testing.T) {
 			t.Errorf("grants(%v, %s) = %v", tc.scopes, tc.chat, got)
 		}
 	}
-	if !readsEverything([]string{"whatsapp.read"}) || !readsEverything([]string{"whatsapp.read:*"}) || readsEverything([]string{"whatsapp.read:120363*"}) {
-		t.Fatal("readsEverything")
+	if !coversAll([]string{"whatsapp.read"}, ReadScopeName) || !coversAll([]string{"whatsapp.read:*"}, ReadScopeName) ||
+		coversAll([]string{"whatsapp.read:120363*"}, ReadScopeName) || coversAll([]string{"whatsapp.read"}, SendScopeName) {
+		t.Fatal("coversAll")
 	}
 }
 

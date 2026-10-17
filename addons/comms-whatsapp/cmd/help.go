@@ -188,12 +188,13 @@ is archived. Messages the account sends itself are skipped unless
 	{
 		name: "api", group: "External systems",
 		usage:   "api [status] [--json] | api enable [--addr 127.0.0.1:9877] [--prefix /api/whatsapp] | api disable | api rotate-token",
-		summary: "let signed external systems read chats through fairway (cursor-paginated)",
-		details: `Serves a small query API so another system (on this machine or elsewhere)
-can read the archive through fairway, limited to the chats it was granted.
+		summary: "let signed external systems read and send through fairway",
+		details: `Serves a small API so another system (on this machine or elsewhere) can read
+the archive and send messages through fairway, limited to the chats it was
+granted.
 
-  client --signed request--> fairway route (auth signed, scope whatsapp.read)
-         --http.forward + API token--> daemon API on loopback
+  client --signed request--> fairway route (auth signed, scope whatsapp.read
+         or whatsapp.send) --http.forward + API token--> daemon API on loopback
 
 enable  sets api_addr (loopback only), creates the API token (api.token, 0600)
         and writes one fairway route definition per endpoint under api-routes/,
@@ -204,9 +205,9 @@ rotate-token replaces the token and rewrites the route files; re-add the
         routes in fairway (the old token stops working at once).
 
 Fairway authenticates the client and forwards its id and scopes; the daemon
-enforces which chats it may read: whatsapp.read:<chat jid> for one chat, a
-glob such as whatsapp.read:120363*@g.us, or whatsapp.read / whatsapp.read:*
-for all. Only watched chats have messages (see 'watch').
+enforces the chat: whatsapp.read:<chat jid> / whatsapp.send:<chat jid> for
+one chat, a glob such as whatsapp.read:120363*@g.us, or the bare scope (or
+":*") for all. Only watched chats have messages (see 'watch').
 
 POST <prefix>/messages  body (all optional):
   {"chat":"<jid|name|phone>", "since":"24h|7d|<RFC 3339>",
@@ -219,6 +220,21 @@ POST <prefix>/messages  body (all optional):
   and events deliver (see 'help receiving'); ids are stable, so dedupe on id.
 POST <prefix>/chats  body (optional): {"search":"promo", "kind":"group",
   "watched_only":true}  → {"chats":[{"jid","name","kind","watched",…}]}
+POST <prefix>/send  (scope whatsapp.send:<chat>)
+  {"chat":"<jid|name|phone>", "text":"…", "idempotency_key":"promo-123",
+   "dry_run":false}  → {"msg_id","chat","chat_name","sent_at","duplicate"}
+  The scope is the client's permission; every rule of 'help sending' still
+  applies on top (allowlist, allow-groups, limits, pause, humanize), so the
+  owner keeps the last word. Always pass an idempotency_key: a retry with
+  the same key returns the first result (duplicate=true) instead of sending
+  twice. Keys are per client. Refusals carry the refusal code:
+  400 invalid/too_long, 403 not_allowed/groups_disabled, 409 no_history,
+  429 rate_limited (+ Retry-After header and retry_after_seconds), 503
+  paused/not_connected, 502 send_failed. Each send is recorded with the
+  client id ('sent --client <id>'). A send takes a few seconds with humanize.
+POST <prefix>/limits  (scope whatsapp.send)  {"chat":"<jid>"} optional
+  → the 'limits' report: configured limits, live usage and, for the chat,
+  can_send_now / blockers / retry_after_seconds. Check before a broadcast.
 
 Errors: {"error":{"code":"…","message":"…"}} with 400 invalid/ambiguous,
 401 (token; fairway misconfigured), 403 forbidden (chat not in your scopes —
@@ -231,6 +247,17 @@ Typical first sync, then catch-up after downtime:
 Pair it with publish-events for live delivery: events are the fast path,
 the cursor is how a consumer recovers what it missed.`,
 		examples: []string{"api enable", "api", "api enable --addr 127.0.0.1:9877 --prefix /api/whatsapp", "api rotate-token", "api disable"},
+	},
+	{
+		name: "sent", group: "Sending",
+		usage:   "sent [--since 24h] [--client ID|local] [--limit 100] [--json]",
+		summary: "show the send audit log: what went out, where, and who asked",
+		details: `Lists messages the daemon sent, newest first, from the audit log that also
+drives the rate limits (kept 30 days). BY is the fairway client that asked
+through the API ('help api'), or "local" for the CLI and crew tools. KEY is
+the idempotency key (API keys are prefixed with "<client>/"). Text is not
+stored in the log; for watched chats it is in 'history'.`,
+		examples: []string{"sent", "sent --since 7d --client promo-manager", "sent --client local --json"},
 	},
 	{
 		name: "send", group: "Sending",

@@ -18,8 +18,17 @@ import (
 // DefaultAPIPrefix is where 'api enable' mounts the fairway routes.
 const DefaultAPIPrefix = "/api/whatsapp"
 
-// apiRouteTimeout bounds one forwarded query in fairway.
-const apiRouteTimeout = 30 * time.Second
+// apiEndpoints are the routes 'api enable' generates. Sends get a longer
+// timeout: humanize types for up to 8s and sends run one at a time.
+var apiEndpoints = []struct {
+	name, path, scope string
+	timeout           time.Duration
+}{
+	{"messages", wa.APIMessagesPath, wa.ReadScopeName, 30 * time.Second},
+	{"chats", wa.APIChatsPath, wa.ReadScopeName, 30 * time.Second},
+	{"send", wa.APISendPath, wa.SendScopeName, 60 * time.Second},
+	{"limits", wa.APILimitsPath, wa.SendScopeName, 30 * time.Second},
+}
 
 func runAPI(_ context.Context, e env, args []string) error {
 	fs := newFlags("api", e)
@@ -82,7 +91,9 @@ func runAPI(_ context.Context, e env, args []string) error {
 		}
 		fmt.Fprintln(e.stdout, "Query API disabled. Restart the daemon to stop serving it, and remove the fairway routes")
 		fmt.Fprintf(e.stdout, "(paths as created by 'api enable', %s/… by default):\n", DefaultAPIPrefix)
-		fmt.Fprintf(e.stdout, "  shipyard fairway route delete %s/messages\n  shipyard fairway route delete %s/chats\n", DefaultAPIPrefix, DefaultAPIPrefix)
+		for _, ep := range apiEndpoints {
+			fmt.Fprintf(e.stdout, "  shipyard fairway route delete %s/%s\n", DefaultAPIPrefix, ep.name)
+		}
 		return nil
 	case "rotate-token":
 		if cfg.APIAddr == "" {
@@ -136,13 +147,13 @@ func writeAPIRoutes(p wa.Paths, addr, prefix, token string) ([]apiRouteFile, err
 		return nil, fmt.Errorf("api: create %s: %w", p.APIRoutes, err)
 	}
 	var out []apiRouteFile
-	for _, ep := range []struct{ name, path string }{{"messages", wa.APIMessagesPath}, {"chats", wa.APIChatsPath}} {
+	for _, ep := range apiEndpoints {
 		var r fairwayRoute
 		r.Path = strings.TrimSuffix(prefix, "/") + "/" + ep.name
-		r.Auth.Type, r.Auth.Scope = "signed", wa.ReadScopeName
+		r.Auth.Type, r.Auth.Scope = "signed", ep.scope
 		r.Action.Type, r.Action.URL, r.Action.Method = "http.forward", "http://"+addr+ep.path, "POST"
 		r.Action.Headers = map[string]string{"Authorization": "Bearer " + token}
-		r.Timeout = apiRouteTimeout
+		r.Timeout = ep.timeout
 		raw, err := json.MarshalIndent(r, "", "  ")
 		if err != nil {
 			return nil, err
@@ -165,17 +176,20 @@ func printAPISteps(e env, files []apiRouteFile, prefix string, restart bool) {
 		fmt.Fprintf(e.stdout, "%d. Restart the daemon so it starts listening (e.g. 'shipyard service restart <id>').\n", step)
 		step++
 	}
-	fmt.Fprintf(e.stdout, "%d. Register the routes in fairway (signed clients, scope %s):\n", step, wa.ReadScopeName)
+	fmt.Fprintf(e.stdout, "%d. Register the routes in fairway (signed clients; scope %s to read, %s to send):\n", step, wa.ReadScopeName, wa.SendScopeName)
 	for _, f := range files {
 		fmt.Fprintf(e.stdout, "     shipyard fairway route add --from-file %s\n", f.file)
 	}
 	step++
-	fmt.Fprintf(e.stdout, "%d. Grant a client the chats it may read (see '%s help api'):\n", step, progName())
-	fmt.Fprintf(e.stdout, "     shipyard fairway client add <client> --scope '%s:<chat jid>'\n", wa.ReadScopeName)
+	fmt.Fprintf(e.stdout, "%d. Grant a client the chats it may read and send to (see '%s help api'):\n", step, progName())
+	fmt.Fprintf(e.stdout, "     shipyard fairway client add <client> --scope '%s:<chat jid>' --scope '%s:<group jid>'\n", wa.ReadScopeName, wa.SendScopeName)
+	fmt.Fprintf(e.stdout, "   Sending also needs the chat on the allowlist ('allow'), and groups need 'config set allow-groups true'.\n")
 	step++
 	fmt.Fprintf(e.stdout, "%d. Query it, signed by the client:\n", step)
 	fmt.Fprintf(e.stdout, "     POST %s/messages  {\"chat\":\"<jid>\",\"since\":\"24h\"}  → then {\"after\":\"<next_cursor>\"}\n", strings.TrimSuffix(prefix, "/"))
 	fmt.Fprintf(e.stdout, "     POST %s/chats     {}\n", strings.TrimSuffix(prefix, "/"))
+	fmt.Fprintf(e.stdout, "     POST %s/send      {\"chat\":\"<jid>\",\"text\":\"…\",\"idempotency_key\":\"promo-123\"}\n", strings.TrimSuffix(prefix, "/"))
+	fmt.Fprintf(e.stdout, "     POST %s/limits    {\"chat\":\"<jid>\"}\n", strings.TrimSuffix(prefix, "/"))
 }
 
 func validPrefix(p string) error {
