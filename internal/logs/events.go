@@ -77,6 +77,7 @@ const (
 	EventWAHistorySync      = "wa_history_sync"
 	EventWAPruned           = "wa_pruned"
 	EventWAArchiveError     = "wa_archive_error"
+	EventWAStatusError      = "wa_status_error"
 	EventWAClientLog        = "wa_client_log"
 )
 

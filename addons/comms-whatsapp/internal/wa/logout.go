@@ -58,6 +58,6 @@ func Logout(ctx context.Context, opts LogoutOptions) error {
 		return err
 	}
 	_ = os.Remove(opts.Paths.Status)
-	opts.Log.Info("device unlinked", slog.String(yardlogs.KeyEvent, yardlogs.EventWALogout))
+	opts.Log.Info(yardlogs.EventWALogout, slog.String(yardlogs.KeyMessage, "device unlinked"))
 	return nil
 }

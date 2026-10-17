@@ -100,7 +100,7 @@ func Pair(ctx context.Context, opts PairOptions) error {
 		case whatsmeow.QRChannelSuccess.Event:
 			pn := sess.Client.Store.ID.User
 			fmt.Fprintf(out, "Linked as +%s.\n", pn)
-			opts.Log.Info("device paired", slog.String(yardlogs.KeyEvent, yardlogs.EventWAPaired))
+			opts.Log.Info(yardlogs.EventWAPaired, slog.String(yardlogs.KeyMessage, "device paired"))
 			return collectCatalog(ctx, opts, sess)
 		case whatsmeow.QRChannelTimeout.Event:
 			return errors.New("pair: timed out waiting for the phone; run pair again")

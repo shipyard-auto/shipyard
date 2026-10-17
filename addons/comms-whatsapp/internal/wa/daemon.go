@@ -89,7 +89,7 @@ func Serve(ctx context.Context, opts ServeOptions) error {
 	}
 	sess.Client.AddEventHandler(func(evt any) { h.Handle(ctx, evt) })
 
-	log.Info("whatsapp daemon starting", slog.String(yardlogs.KeyEvent, yardlogs.EventWADaemonStarted))
+	log.Info(yardlogs.EventWADaemonStarted, slog.String(yardlogs.KeyMessage, "whatsapp daemon starting"))
 	if err := sess.Client.Connect(); err != nil {
 		return &ExitError{Code: ExitRuntime, Err: fmt.Errorf("connect: %w", err)}
 	}
@@ -101,7 +101,7 @@ func Serve(ctx context.Context, opts ServeOptions) error {
 			return
 		}
 		if n > 0 {
-			log.Info("expired messages pruned", slog.String(yardlogs.KeyEvent, yardlogs.EventWAPruned), slog.Int64(yardlogs.KeyCount, n))
+			log.Info(yardlogs.EventWAPruned, slog.String(yardlogs.KeyMessage, "expired messages pruned"), slog.Int64(yardlogs.KeyCount, n))
 		}
 	}
 	prune()
@@ -115,7 +115,7 @@ func Serve(ctx context.Context, opts ServeOptions) error {
 		select {
 		case <-ctx.Done():
 			cause := context.Cause(ctx)
-			log.Info("whatsapp daemon stopping", slog.String(yardlogs.KeyEvent, yardlogs.EventWADaemonStopped))
+			log.Info(yardlogs.EventWADaemonStopped, slog.String(yardlogs.KeyMessage, "whatsapp daemon stopping"))
 			switch {
 			case errors.Is(cause, ErrLoggedOut):
 				finalState, finalDetail = StateLoggedOut, cause.Error()
@@ -132,7 +132,7 @@ func Serve(ctx context.Context, opts ServeOptions) error {
 				msg = err.Error()
 			}
 			if msg != "" && msg != lastWriteErr {
-				log.Error("cannot write status file", slog.String(yardlogs.KeyError, msg))
+				log.Error(yardlogs.EventWAStatusError, slog.String(yardlogs.KeyMessage, "cannot write status file"), slog.String(yardlogs.KeyError, msg))
 			}
 			lastWriteErr = msg
 		case <-pruneTick.C:

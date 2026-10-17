@@ -175,7 +175,7 @@ func (s SlogLogger) Sub(module string) waLog.Logger {
 }
 
 func (s SlogLogger) log(level slog.Level, msg string, args []any) {
-	s.L.Log(context.Background(), level, fmt.Sprintf(msg, args...),
-		slog.String(yardlogs.KeyEvent, yardlogs.EventWAClientLog),
+	s.L.Log(context.Background(), level, yardlogs.EventWAClientLog,
+		slog.String(yardlogs.KeyMessage, fmt.Sprintf(msg, args...)),
 		slog.String("module", s.Module))
 }

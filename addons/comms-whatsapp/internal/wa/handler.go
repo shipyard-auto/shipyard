@@ -67,27 +67,27 @@ func (h *Handler) Handle(ctx context.Context, evt any) {
 		h.Tracker.SetState(StateConnected, "")
 		pn, _ := h.Dir.Own()
 		h.Tracker.SetAccount(pn.User, h.Dir.OwnPushName())
-		h.Log.Info("connected to WhatsApp", slog.String(yardlogs.KeyEvent, yardlogs.EventWAConnected))
+		h.Log.Info(yardlogs.EventWAConnected, slog.String(yardlogs.KeyMessage, "connected to WhatsApp"))
 		h.async(func() { h.RefreshCatalog(ctx) })
 	case *events.Disconnected:
 		h.Tracker.SetState(StateDisconnected, "")
-		h.Log.Warn("disconnected from WhatsApp; reconnecting", slog.String(yardlogs.KeyEvent, yardlogs.EventWADisconnected))
+		h.Log.Warn(yardlogs.EventWADisconnected, slog.String(yardlogs.KeyMessage, "disconnected from WhatsApp; reconnecting"))
 	case *events.KeepAliveTimeout:
 		h.Tracker.SetState(StateDisconnected, fmt.Sprintf("keepalive timeout (%d errors)", e.ErrorCount))
 	case *events.KeepAliveRestored:
 		h.Tracker.SetState(StateConnected, "")
 	case *events.LoggedOut:
 		h.Tracker.SetState(StateLoggedOut, e.Reason.String())
-		h.Log.Error("logged out by the phone", slog.String(yardlogs.KeyEvent, yardlogs.EventWALoggedOut),
+		h.Log.Error(yardlogs.EventWALoggedOut, slog.String(yardlogs.KeyMessage, "logged out by the phone"),
 			slog.String(yardlogs.KeyError, e.Reason.String()))
 		h.fatal(ErrLoggedOut)
 	case *events.StreamReplaced:
 		h.Tracker.SetState(StateStreamReplace, "")
-		h.Log.Error("session replaced by another client", slog.String(yardlogs.KeyEvent, yardlogs.EventWAStreamReplaced))
+		h.Log.Error(yardlogs.EventWAStreamReplaced, slog.String(yardlogs.KeyMessage, "session replaced by another client"))
 		h.fatal(ErrStreamReplaced)
 	case *events.TemporaryBan:
 		h.Tracker.SetState(StateTemporaryBan, e.String())
-		h.Log.Error("account temporarily banned", slog.String(yardlogs.KeyEvent, yardlogs.EventWATemporaryBan),
+		h.Log.Error(yardlogs.EventWATemporaryBan, slog.String(yardlogs.KeyMessage, "account temporarily banned"),
 			slog.String(yardlogs.KeyError, e.String()))
 	}
 }
@@ -177,7 +177,7 @@ func (h *Handler) ensureChat(ctx context.Context, chat types.JID, kind archive.C
 }
 
 func (h *Handler) archiveError(chatJID string, err error) {
-	h.Log.Error("archive write failed", slog.String(yardlogs.KeyEvent, yardlogs.EventWAArchiveError),
+	h.Log.Error(yardlogs.EventWAArchiveError, slog.String(yardlogs.KeyMessage, "archive write failed"),
 		slog.String(yardlogs.KeyChatJID, chatJID), slog.String(yardlogs.KeyError, err.Error()))
 }
 
@@ -287,7 +287,7 @@ func (h *Handler) onHistorySync(ctx context.Context, e *events.HistorySync) {
 		}
 		n++
 	}
-	h.Log.Info("history sync: chats catalogued", slog.String(yardlogs.KeyEvent, yardlogs.EventWAHistorySync),
+	h.Log.Info(yardlogs.EventWAHistorySync, slog.String(yardlogs.KeyMessage, "history sync: chats catalogued"),
 		slog.Int(yardlogs.KeyCount, n))
 }
 
@@ -324,6 +324,6 @@ func (h *Handler) RefreshCatalog(ctx context.Context) {
 			n++
 		}
 	}
-	h.Log.Info("chat catalog refreshed", slog.String(yardlogs.KeyEvent, yardlogs.EventWACatalogRefreshed),
+	h.Log.Info(yardlogs.EventWACatalogRefreshed, slog.String(yardlogs.KeyMessage, "chat catalog refreshed"),
 		slog.Int(yardlogs.KeyCount, n))
 }

@@ -2,9 +2,12 @@ package wa
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -318,5 +321,48 @@ func TestTemporaryBanAndDisconnectUpdateStatus(t *testing.T) {
 	}
 	if len(hs.fatal) != 0 {
 		t.Fatal("temporary ban must not stop the daemon")
+	}
+}
+
+func TestLogLinesFollowSchemaV2(t *testing.T) {
+	// internal/logs maps the slog message to "event": the first argument
+	// must be the event constant and free text goes in a "message" attr.
+	// Passing the text first produced lines with two "event" keys.
+	dir := t.TempDir()
+	store := yardlogs.NewStore(dir)
+	defer func() { _ = store.Close() }()
+	hs := newHarness(t)
+	hs.h.Log = yardlogs.New(yardlogs.SourceComms, yardlogs.Options{Store: store, Version: "test"})
+
+	hs.h.Handle(context.Background(), &events.Disconnected{})
+	SlogLogger{L: hs.h.Log, Module: "client"}.Warnf("socket %s", "closed")
+
+	files, err := filepath.Glob(filepath.Join(store.SourceDir(yardlogs.SourceComms), "*.jsonl"))
+	if err != nil || len(files) != 1 {
+		t.Fatalf("log files=%v err=%v", files, err)
+	}
+	raw, err := os.ReadFile(files[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(raw)), "\n")
+	want := []struct{ event, message string }{
+		{yardlogs.EventWADisconnected, "disconnected from WhatsApp; reconnecting"},
+		{yardlogs.EventWAClientLog, "socket closed"},
+	}
+	if len(lines) != len(want) {
+		t.Fatalf("lines=%q", lines)
+	}
+	for i, line := range lines {
+		if n := strings.Count(line, `"event":`); n != 1 {
+			t.Fatalf("line %d has %d event keys: %s", i, n, line)
+		}
+		var rec map[string]any
+		if err := json.Unmarshal([]byte(line), &rec); err != nil {
+			t.Fatal(err)
+		}
+		if rec["event"] != want[i].event || rec["message"] != want[i].message {
+			t.Fatalf("line %d: event=%v message=%v", i, rec["event"], rec["message"])
+		}
 	}
 }
