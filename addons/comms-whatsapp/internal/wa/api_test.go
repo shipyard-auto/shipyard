@@ -18,6 +18,7 @@ import (
 
 	"github.com/shipyard-auto/shipyard/addons/comms-whatsapp/internal/wa/archive"
 	yardlogs "github.com/shipyard-auto/shipyard/internal/logs"
+	"github.com/shipyard-auto/shipyard/internal/signing"
 )
 
 const testAPIToken = "wat_test"
@@ -326,8 +327,8 @@ func TestScopeGrants(t *testing.T) {
 		{[]string{"whatsapp.readx"}, promoA, false},
 		{nil, promoA, false},
 	} {
-		if got := grants(tc.scopes, ReadScopeName+":"+tc.chat); got != tc.want {
-			t.Errorf("grants(%v, %s) = %v", tc.scopes, tc.chat, got)
+		if got := signing.Grants(tc.scopes, ReadScopeName+":"+tc.chat); got != tc.want {
+			t.Errorf("signing.Grants(%v, %s) = %v", tc.scopes, tc.chat, got)
 		}
 	}
 	if !coversAll([]string{"whatsapp.read"}, ReadScopeName) || !coversAll([]string{"whatsapp.read:*"}, ReadScopeName) ||

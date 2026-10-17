@@ -22,6 +22,7 @@ import (
 
 	"github.com/shipyard-auto/shipyard/addons/comms-whatsapp/internal/wa/archive"
 	yardlogs "github.com/shipyard-auto/shipyard/internal/logs"
+	"github.com/shipyard-auto/shipyard/internal/signing"
 )
 
 // The query API lets external systems read the archive through fairway:
@@ -111,7 +112,7 @@ type apiCaller struct {
 }
 
 func (c apiCaller) can(scopeName, chatJID string) bool {
-	return grants(c.Scopes, scopeName+":"+chatJID)
+	return signing.Grants(c.Scopes, scopeName+":"+chatJID)
 }
 
 func (c apiCaller) canRead(chatJID string) bool { return c.can(ReadScopeName, chatJID) }
@@ -252,7 +253,7 @@ scan:
 		resp.NextCursor = encodeCursor(cursor)
 	}
 	s.Log.Info(yardlogs.EventWAAPIQuery, slog.String(yardlogs.KeyMessage, "api messages query"),
-		slog.String(yardlogs.KeyEntityID, c.ID), slog.String(yardlogs.KeyChatJID, q.Chat),
+		slog.String(yardlogs.KeyClientID, c.ID), slog.String(yardlogs.KeyChatJID, q.Chat),
 		slog.Int(yardlogs.KeyCount, len(resp.Messages)))
 	apiJSON(w, http.StatusOK, resp)
 }
@@ -293,7 +294,7 @@ func (s *APIServer) chats(w http.ResponseWriter, r *http.Request, c apiCaller, b
 		}
 	}
 	s.Log.Info(yardlogs.EventWAAPIQuery, slog.String(yardlogs.KeyMessage, "api chats query"),
-		slog.String(yardlogs.KeyEntityID, c.ID), slog.Int(yardlogs.KeyCount, len(resp.Chats)))
+		slog.String(yardlogs.KeyClientID, c.ID), slog.Int(yardlogs.KeyCount, len(resp.Chats)))
 	apiJSON(w, http.StatusOK, resp)
 }
 
@@ -382,7 +383,7 @@ func (s *APIServer) upload(w http.ResponseWriter, r *http.Request, c apiCaller, 
 		apiError(w, http.StatusServiceUnavailable, "unavailable", "sending is not available on this daemon")
 		return
 	}
-	if !grants(c.Scopes, SendScopeName) {
+	if !signing.Grants(c.Scopes, SendScopeName) {
 		s.denied(r, c.ID, "upload without "+SendScopeName)
 		apiError(w, http.StatusForbidden, "forbidden", "uploading needs scope "+SendScopeName)
 		return
@@ -656,7 +657,7 @@ func (s *APIServer) media(w http.ResponseWriter, r *http.Request, c apiCaller, b
 		return
 	}
 	s.Log.Info(yardlogs.EventWAAPIQuery, slog.String(yardlogs.KeyMessage, "api media read"),
-		slog.String(yardlogs.KeyEntityID, c.ID), slog.String(yardlogs.KeyChatJID, chat.JID),
+		slog.String(yardlogs.KeyClientID, c.ID), slog.String(yardlogs.KeyChatJID, chat.JID),
 		slog.Int64(yardlogs.KeySizeBytes, n))
 	apiJSON(w, http.StatusOK, MediaResponse{
 		Chat: chat.JID, ID: req.ID, MimeType: m.MimeType, FileName: m.FileName, Size: size, SHA256: m.SHA256,
@@ -666,7 +667,7 @@ func (s *APIServer) media(w http.ResponseWriter, r *http.Request, c apiCaller, b
 
 func (s *APIServer) denied(r *http.Request, client, why string) {
 	s.Log.Warn(yardlogs.EventWAAPIDenied, slog.String(yardlogs.KeyMessage, why),
-		slog.String(yardlogs.KeyEntityID, client), slog.String(yardlogs.KeyHTTPPath, r.URL.Path))
+		slog.String(yardlogs.KeyClientID, client), slog.String(yardlogs.KeyHTTPPath, r.URL.Path))
 }
 
 // archivedEvent renders an archived message as the same comms Message
