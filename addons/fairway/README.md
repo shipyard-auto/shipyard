@@ -219,6 +219,29 @@ Identity headers sent by callers are always stripped. Client secrets live in
 `~/.shipyard/fairway/clients.json` (0600), separate from `routes.json`;
 `rotate` replaces a secret, `disable`/`rm` cut a client off immediately.
 
+### Events and Webhook Subscriptions
+
+Addons on this machine publish events (`POST /_shipyard/v1/events`, loopback
+only); fairway forwards each to the subscriptions of its topic as a webhook
+signed with the subscriber's secret:
+
+```bash
+shipyard fairway client add promo-manager --scope events.subscribe:whatsapp.message --scope 'whatsapp.read:120363*'
+shipyard fairway subscription add promo-manager --topic whatsapp.message --url http://127.0.0.1:9100/hooks/wa
+shipyard fairway subscription test <id>
+```
+
+A subscriber receives an event only if it holds `events.subscribe:<topic>`
+and the scope the producer attached to the event (checked again at every
+delivery). Webhooks carry the v1 signature headers plus
+`X-Shipyard-Event-Id`, `X-Shipyard-Event-Topic` and
+`X-Shipyard-Delivery-Attempt`; the body is
+`{"id","topic","occurred_at","source","scope","data"}`. Retries: 2s, 10s,
+30s, 2m, 5m on network errors, 5xx, 408 and 429. The queue lives in memory —
+use the producer's query API to catch up after a restart, and deduplicate by
+event id. Clients can manage their own subscriptions with signed requests to
+`/_shipyard/v1/subscriptions`.
+
 ### Logs
 
 Read JSONL request logs directly from disk:

@@ -34,6 +34,7 @@ them to AI agents (crew.run), shell commands (exec), or upstream URLs
 	cmd.AddCommand(newFairwayLogsCmd())
 	cmd.AddCommand(newFairwayRouteCmd())
 	cmd.AddCommand(newFairwayClientCmd())
+	cmd.AddCommand(newFairwaySubscriptionCmd())
 	cmd.AddCommand(newFairwayStatsCmd())
 	cmd.AddCommand(newFairwayStatusCmd())
 	cmd.AddCommand(newFairwayUninstallCmd())

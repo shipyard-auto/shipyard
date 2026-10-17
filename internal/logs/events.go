@@ -87,6 +87,10 @@ const (
 	EventWAAPIQuery         = "wa_api_query"
 	EventWAAPIDenied        = "wa_api_denied"
 	EventWAAPIError         = "wa_api_error"
+
+	// Fairway events and webhooks.
+	EventEventPublished = "event_published"
+	EventWebhookFailed  = "webhook_failed"
 )
 
 // Attribute keys. Centralizing them as constants prevents key drift across
@@ -134,6 +138,12 @@ const (
 	// KeyClientID names the authenticated API client of a signed fairway
 	// route.
 	KeyClientID = "client_id"
+
+	// Fairway events.
+	KeyEventTopic  = "event_topic"
+	KeyEventID     = "event_id"
+	KeySubscribers = "subscribers"
+	KeyAttempts    = "attempts"
 
 	// Subprocess output capture. Emitted on completion events (cron_job_run_*,
 	// run_end, future runners) so operators can see the tail of stdout without

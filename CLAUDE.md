@@ -41,7 +41,7 @@ Shipyard stores all state under `~/.shipyard/`:
 | `~/.shipyard/services.json` | Shipyard-managed user services |
 | `~/.shipyard/logs.json` | Logs subsystem config |
 | `~/.shipyard/logs/` | JSONL log files per source |
-| `~/.shipyard/fairway/` | Fairway addon state (`routes.json`; `clients.json` holds signed-route client secrets, 0600) |
+| `~/.shipyard/fairway/` | Fairway addon state (`routes.json`; `clients.json` holds signed-route client secrets, 0600; `subscriptions.json` event webhooks) |
 | `~/.shipyard/crew/` | Crew addon state and agent definitions |
 | `~/.shipyard/crew/tools/` | Reusable tool definitions for crew agents |
 | `~/.shipyard/comms/` | Comms channels and per-channel secrets |
@@ -447,6 +447,30 @@ sha256(body)`
   (subprocess actions); copies arriving from outside are stripped.
 - Secrets live in `~/.shipyard/fairway/clients.json` (0600), never in
   `routes.json`.
+
+#### `shipyard fairway subscription` (events → signed webhooks)
+
+Local producers publish events to fairway (`POST /_shipyard/v1/events`,
+loopback only: `{topic, scope?, source?, id?, data}`); fairway delivers each
+one, as a webhook signed with the subscriber's own secret, to subscriptions of
+its topic whose client holds `events.subscribe:<topic>` **and** the event's
+scope (re-checked per delivery).
+
+```bash
+shipyard fairway subscription add promo-manager --topic whatsapp.message --url http://127.0.0.1:9100/hooks/wa
+shipyard fairway subscription list [--client c] | test <id> | rm <id>
+```
+
+- Clients may self-manage with signed requests: `GET|POST
+  /_shipyard/v1/subscriptions`, `DELETE /_shipyard/v1/subscriptions/{id}`.
+  `/_shipyard/*` and `/_health` are reserved: user routes cannot use them.
+- Webhook = event JSON + v1 signature headers + `X-Shipyard-Event-Id|Topic`,
+  `X-Shipyard-Delivery-Attempt`. At-least-once while fairway runs (retries
+  2s/10s/30s/2m/5m on network errors, 5xx, 408, 429); in-memory queue, so
+  consumers recover through the producer's query API. Dedupe by event id.
+- https only, except http to loopback (`--allow-http` is admin-only).
+- Producers declare the scope an event needs (e.g. `whatsapp.read:<chat>`);
+  fairway stays domain-agnostic. Deleting a client deletes its subscriptions.
 
 #### `shipyard fairway config`
 

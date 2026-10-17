@@ -203,6 +203,10 @@ func (r Route) Validate() error {
 			return fmt.Errorf("%w: path contains forbidden character %q: %q", ErrInvalidPath, ch, r.Path)
 		}
 	}
+	// Reserved for fairway's own API (events, subscriptions) and health.
+	if r.Path == "/_health" || strings.HasPrefix(r.Path, "/_shipyard/") || r.Path == "/_shipyard" {
+		return fmt.Errorf("%w: %q is reserved for fairway itself", ErrInvalidPath, r.Path)
+	}
 
 	if r.Timeout < 0 {
 		return fmt.Errorf("%w: must be >= 0, got %s", ErrInvalidTimeout, r.Timeout)
