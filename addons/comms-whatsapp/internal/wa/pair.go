@@ -163,9 +163,9 @@ func collectCatalog(ctx context.Context, opts PairOptions, sess *Session) error 
 		return err
 	}
 	fmt.Fprintf(opts.Out, "%d chats catalogued. Next:\n"+
-		"  shipyard comms whatsapp chats --search <name>\n"+
-		"  shipyard comms whatsapp watch <chat> --ttl 7d\n"+
-		"  shipyard comms whatsapp serve   (or run it as a service)\n", counts.Chats)
+		"  shipyard-comms-whatsapp chats --search <name>\n"+
+		"  shipyard-comms-whatsapp watch <chat> --ttl 7d\n"+
+		"  shipyard-comms-whatsapp serve   (or run it as a service)\n", counts.Chats)
 	return nil
 }
 

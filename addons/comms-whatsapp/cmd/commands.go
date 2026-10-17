@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"log/slog"
@@ -19,29 +18,6 @@ import (
 	"github.com/shipyard-auto/shipyard/addons/comms-whatsapp/internal/wa/archive"
 	yardlogs "github.com/shipyard-auto/shipyard/internal/logs"
 )
-
-// parse runs fs over args while allowing flags after positionals
-// (`watch Família --ttl 7d`), which the flag package alone stops at.
-func parse(fs *flag.FlagSet, args []string) ([]string, error) {
-	var positional []string
-	for {
-		if err := fs.Parse(args); err != nil {
-			return nil, err
-		}
-		args = fs.Args()
-		if len(args) == 0 {
-			return positional, nil
-		}
-		positional = append(positional, args[0])
-		args = args[1:]
-	}
-}
-
-func newFlags(name string, e env) *flag.FlagSet {
-	fs := flag.NewFlagSet(name, flag.ContinueOnError)
-	fs.SetOutput(e.stderr)
-	return fs
-}
 
 func loadConfig(e env) (wa.Config, error) {
 	return wa.LoadConfig(e.paths.Config)
@@ -135,7 +111,7 @@ func printReport(w io.Writer, r wa.Report, now time.Time) {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	defer func() { _ = tw.Flush() }()
 
-	paired := "no — run 'shipyard comms whatsapp pair'"
+	paired := "no — run 'shipyard-comms-whatsapp pair'"
 	if r.Paired {
 		paired = "yes, +" + r.Account
 		if r.PushName != "" {
@@ -165,6 +141,12 @@ func printReport(w io.Writer, r wa.Report, now time.Time) {
 	}
 	fmt.Fprintf(tw, "Archive:\t%d watched of %d chats, %d messages\n", r.Archive.Watched, r.Archive.Chats, r.Archive.Messages)
 	fmt.Fprintf(tw, "Default TTL:\t%s\n", r.Config.DefaultTTL)
+	sending := fmt.Sprintf("%d allowed chats, %d sent in the last hour (limits %s per chat, %s overall)",
+		r.Archive.SendAllowed, r.Archive.SentLastHour, r.Config.Limits.PerChat, r.Config.Limits.Global)
+	if r.Config.Paused {
+		sending = "PAUSED — " + sending
+	}
+	fmt.Fprintf(tw, "Sending:\t%s\n", sending)
 }
 
 // ── chats ────────────────────────────────────────────────────────────────
@@ -206,13 +188,16 @@ func runChats(ctx context.Context, e env, args []string) error {
 		return nil
 	}
 	tw := tabwriter.NewWriter(e.stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "NAME\tKIND\tWATCHED\tTTL\tMESSAGES\tJID")
+	fmt.Fprintln(tw, "NAME\tKIND\tWATCHED\tTTL\tMESSAGES\tSEND\tJID")
 	for _, c := range chats {
-		w := ""
+		w, s := "", ""
 		if c.Watched {
 			w = "yes"
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%d\t%s\n", c.Name, c.Kind, w, chatTTL(c, cfg), c.Messages, c.JID)
+		if c.SendAllowed {
+			s = "allowed"
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%d\t%s\t%s\n", c.Name, c.Kind, w, chatTTL(c, cfg), c.Messages, s, c.JID)
 	}
 	return tw.Flush()
 }
@@ -441,6 +426,10 @@ func runLogout(ctx context.Context, e env, args []string) error {
 // ── config ───────────────────────────────────────────────────────────────
 
 func runConfig(_ context.Context, e env, args []string) error {
+	args, err := parse(newFlags("config", e), args)
+	if err != nil {
+		return err
+	}
 	cfg, err := loadConfig(e)
 	if err != nil {
 		return err
@@ -464,6 +453,6 @@ func runConfig(_ context.Context, e env, args []string) error {
 		}
 		return nil
 	default:
-		return errors.New("usage: config [show] | config set <device-name|default-ttl> <value>")
+		return fmt.Errorf("usage: config [show] | config set <key> <value>; keys: %s", strings.Join(wa.ConfigKeys, ", "))
 	}
 }

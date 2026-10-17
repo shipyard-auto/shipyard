@@ -78,6 +78,10 @@ const (
 	EventWAPruned           = "wa_pruned"
 	EventWAArchiveError     = "wa_archive_error"
 	EventWAStatusError      = "wa_status_error"
+	EventWAMessageSent      = "wa_message_sent"
+	EventWASendDenied       = "wa_send_denied"
+	EventWASendFailed       = "wa_send_failed"
+	EventWARPCError         = "wa_rpc_error"
 	EventWAClientLog        = "wa_client_log"
 )
 
