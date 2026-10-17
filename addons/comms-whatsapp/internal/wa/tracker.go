@@ -66,6 +66,14 @@ func (t *Tracker) SetDeliveries(delivered, failed int64) {
 	t.s.Delivered, t.s.DeliveryFailed = delivered, failed
 }
 
+// SetAPI records where the query API listens ("" = not serving).
+func (t *Tracker) SetAPI(addr string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.s.APIAddr = addr
+	t.flushLocked()
+}
+
 // Heartbeat refreshes HeartbeatAt and persists. Returns the write error,
 // if any.
 func (t *Tracker) Heartbeat() error {

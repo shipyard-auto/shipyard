@@ -326,6 +326,7 @@ func TestMigrationFromV1KeepsData(t *testing.T) {
 			msg_id TEXT NOT NULL, sender_jid TEXT NOT NULL, sender_name TEXT, from_me INTEGER NOT NULL,
 			ts INTEGER NOT NULL, kind TEXT NOT NULL, text TEXT, reply_to TEXT, PRIMARY KEY (chat_jid, msg_id));
 		INSERT INTO chats VALUES ('b@g.us', 'Família', 'group', 1, NULL, 0);
+		INSERT INTO messages VALUES ('b@g.us', '2', 'x', NULL, 0, 200, 'text', 'tudo bem?', NULL);
 		INSERT INTO messages VALUES ('b@g.us', '1', 'x', NULL, 0, 100, 'text', 'oi', NULL);
 		PRAGMA user_version = 1;`); err != nil {
 		t.Fatal(err)
@@ -336,12 +337,72 @@ func TestMigrationFromV1KeepsData(t *testing.T) {
 	must(t, err)
 	defer func() { _ = s.Close() }()
 	c, err := s.GetChat(ctx, "b@g.us")
-	if err != nil || !c.Watched || c.SendAllowed || !c.LastActivity.IsZero() || c.Messages != 1 {
+	if err != nil || !c.Watched || c.SendAllowed || !c.LastActivity.IsZero() || c.Messages != 2 {
 		t.Fatalf("migrated chat=%+v err=%v", c, err)
 	}
 	h, _ := s.History(ctx, "b@g.us", time.Time{}, 0)
-	if len(h) != 1 || h[0].ViaShipyard {
+	if len(h) != 2 || h[0].ViaShipyard {
 		t.Fatalf("migrated history=%+v", h)
+	}
+	// v3 numbers pre-existing rows in timestamp order.
+	f, err := s.Feed(ctx, FeedQuery{Limit: 10})
+	if err != nil || len(f) != 2 || f[0].ID != "1" || f[1].ID != "2" || f[0].Seq >= f[1].Seq || f[0].ChatName != "Família" {
+		t.Fatalf("migrated feed=%+v err=%v", f, err)
+	}
+}
+
+func TestFeedOrderCursorAndFilters(t *testing.T) {
+	s, _ := openTest(t)
+	ctx := context.Background()
+	must(t, s.UpsertChat(ctx, "a@g.us", "Promos", KindGroup))
+	must(t, s.UpsertChat(ctx, "b@s.whatsapp.net", "Vini", KindDM))
+	must(t, s.Watch(ctx, "a@g.us", 0))
+	must(t, s.Watch(ctx, "b@s.whatsapp.net", 0))
+	// Arrival order differs from timestamp order (a late history sync).
+	for _, m := range []Message{
+		msg("a@g.us", "a2", t0.Add(2*time.Minute), "promo 2"),
+		msg("b@s.whatsapp.net", "b1", t0.Add(time.Minute), "oi"),
+		msg("a@g.us", "a1", t0, "promo 1"),
+	} {
+		if _, err := s.InsertMessage(ctx, m); err != nil {
+			t.Fatal(err)
+		}
+	}
+	all, err := s.Feed(ctx, FeedQuery{Limit: 10})
+	if err != nil || len(all) != 3 || all[0].ID != "a2" || all[2].ID != "a1" || all[1].ChatKind != KindDM {
+		t.Fatalf("feed=%+v err=%v", all, err)
+	}
+	page, _ := s.Feed(ctx, FeedQuery{After: all[0].Seq, Limit: 1})
+	if len(page) != 1 || page[0].ID != "b1" {
+		t.Fatalf("after cursor=%+v", page)
+	}
+	group, _ := s.Feed(ctx, FeedQuery{Chat: "a@g.us", Limit: 10})
+	if len(group) != 2 || group[0].ID != "a2" || group[1].ID != "a1" {
+		t.Fatalf("chat filter=%+v", group)
+	}
+	recent, _ := s.Feed(ctx, FeedQuery{Since: t0.Add(time.Minute), Limit: 10})
+	if len(recent) != 2 || recent[0].ID != "a2" || recent[1].ID != "b1" {
+		t.Fatalf("since filter=%+v", recent)
+	}
+	// A redelivered/edited message keeps its place: no duplicate, same seq.
+	if _, err := s.InsertMessage(ctx, msg("a@g.us", "a2", t0.Add(2*time.Minute), "promo 2 (editada)")); err != nil {
+		t.Fatal(err)
+	}
+	again, _ := s.Feed(ctx, FeedQuery{Limit: 10})
+	if len(again) != 3 || again[0].Seq != all[0].Seq || again[0].Text != "promo 2 (editada)" {
+		t.Fatalf("upsert moved the row: %+v", again)
+	}
+	// Sequence numbers are never reused, even when the newest row goes.
+	must(t, s.DeleteMessage(ctx, "a@g.us", "a1"))
+	if _, err := s.InsertMessage(ctx, msg("a@g.us", "a3", t0, "promo 3")); err != nil {
+		t.Fatal(err)
+	}
+	tail, _ := s.Feed(ctx, FeedQuery{After: all[2].Seq, Limit: 10})
+	if len(tail) != 1 || tail[0].ID != "a3" {
+		t.Fatalf("seq reused: %+v", tail)
+	}
+	if _, err := s.Feed(ctx, FeedQuery{}); err == nil {
+		t.Fatal("zero limit accepted")
 	}
 }
 

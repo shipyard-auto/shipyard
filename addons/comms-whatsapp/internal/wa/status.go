@@ -36,6 +36,8 @@ type Status struct {
 	// Inbound deliveries to fairway since the daemon started.
 	Delivered      int64 `json:"delivered,omitempty"`
 	DeliveryFailed int64 `json:"delivery_failed,omitempty"`
+	// APIAddr is where the query API is listening; empty when off.
+	APIAddr string `json:"api_addr,omitempty"`
 }
 
 // HeartbeatInterval is how often the daemon refreshes status.json while

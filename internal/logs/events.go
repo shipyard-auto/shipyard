@@ -84,6 +84,9 @@ const (
 	EventWARPCError         = "wa_rpc_error"
 	EventWADeliveryFailed   = "wa_delivery_failed"
 	EventWAClientLog        = "wa_client_log"
+	EventWAAPIQuery         = "wa_api_query"
+	EventWAAPIDenied        = "wa_api_denied"
+	EventWAAPIError         = "wa_api_error"
 )
 
 // Attribute keys. Centralizing them as constants prevents key drift across

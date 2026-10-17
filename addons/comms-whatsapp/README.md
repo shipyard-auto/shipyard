@@ -138,6 +138,39 @@ only to subscribed clients holding that scope — e.g. a client granted
 `whatsapp.read:<group jid>` receives that group and nothing else. Event ids
 are stable per message (`evt_wa_<msg id>`) for deduplication.
 
+## Query API (external systems)
+
+`api enable` lets another system read the archive through fairway, limited
+to the chats it was granted, with cursor pagination — the pull-side
+complement to `publish-events`: events deliver live, the cursor recovers
+whatever a consumer missed while it was down.
+
+```
+client ──signed──▶ fairway route (auth signed, scope whatsapp.read)
+       ──http.forward + API token──▶ daemon API (loopback only)
+```
+
+- `api enable [--addr 127.0.0.1:9877] [--prefix /api/whatsapp]` sets
+  `api_addr`, creates `api.token` (0600) and writes ready fairway route
+  definitions under `api-routes/`, then prints the
+  `shipyard fairway route add --from-file …` commands. Restart the daemon
+  after the first enable.
+- Fairway authenticates the client and forwards its identity; the daemon
+  enforces the chat: `whatsapp.read:<chat jid>` for one chat, a glob like
+  `whatsapp.read:120363*@g.us`, or `whatsapp.read` for all. Chats outside
+  the client's scopes answer 403 whether or not they exist.
+- `POST <prefix>/messages` `{"chat", "since", "after", "limit"}` returns
+  `{"messages": [<comms Message envelope>…], "next_cursor", "has_more"}` in
+  archive arrival order — the same envelope routes and events carry. Store
+  `next_cursor` and send it back as `after`.
+- `POST <prefix>/chats` `{"search", "kind", "watched_only"}` lists the chats
+  the client may read.
+- `api rotate-token` replaces the token and rewrites the route files;
+  `api disable` turns it off. Full contract: `help api`.
+
+Only watched chats have messages; the archive's sequence numbers are never
+reused, so a stored cursor stays valid across pruning and restarts.
+
 ## Crew tools
 
 `tools install` writes `wa_send.yaml`, `wa_chats.yaml` and `wa_history.yaml`

@@ -19,6 +19,10 @@ type Paths struct {
 	Status  string // run/status.json — written by the daemon
 	Lock    string // run/wa.lock — held by whichever process owns the session
 	Socket  string // run/wa.sock — the daemon's control socket (send, status)
+	// APIToken is the query API's shared secret with fairway (0600), and
+	// APIRoutes the directory of generated fairway route definitions.
+	APIToken  string
+	APIRoutes string
 	// FairwayDir is the sibling fairway addon's state, read (never
 	// written) to find where to deliver inbound events.
 	FairwayDir string
@@ -43,14 +47,16 @@ func Home() (string, error) {
 func PathsAt(dir string) Paths {
 	run := filepath.Join(dir, "run")
 	return Paths{
-		Dir:     dir,
-		Config:  filepath.Join(dir, "config.json"),
-		Session: filepath.Join(dir, "session.db"),
-		Archive: filepath.Join(dir, "archive.db"),
-		RunDir:  run,
-		Status:  filepath.Join(run, "status.json"),
-		Lock:    filepath.Join(run, "wa.lock"),
-		Socket:  filepath.Join(run, "wa.sock"),
+		Dir:       dir,
+		Config:    filepath.Join(dir, "config.json"),
+		Session:   filepath.Join(dir, "session.db"),
+		Archive:   filepath.Join(dir, "archive.db"),
+		RunDir:    run,
+		Status:    filepath.Join(run, "status.json"),
+		Lock:      filepath.Join(run, "wa.lock"),
+		Socket:    filepath.Join(run, "wa.sock"),
+		APIToken:  filepath.Join(dir, "api.token"),
+		APIRoutes: filepath.Join(dir, "api-routes"),
 		// dir is <shipyard home>/comms/whatsapp.
 		FairwayDir: filepath.Join(filepath.Dir(filepath.Dir(dir)), "fairway"),
 	}

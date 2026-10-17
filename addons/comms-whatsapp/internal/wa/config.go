@@ -54,7 +54,15 @@ type Config struct {
 	// "read bind/port from fairway's routes.json", defaulting to
 	// 127.0.0.1:9876.
 	FairwayAddr string `json:"fairway_addr,omitempty"`
+
+	// APIAddr is where the daemon serves the query API ("127.0.0.1:9877"),
+	// reached by external systems through a signed fairway route. Empty =
+	// off. Loopback only. Read at daemon start.
+	APIAddr string `json:"api_addr,omitempty"`
 }
+
+// DefaultAPIAddr is what 'api enable' uses without --addr.
+const DefaultAPIAddr = "127.0.0.1:9877"
 
 // Routes maps chats to fairway paths.
 type Routes struct {
@@ -227,6 +235,11 @@ func (c Config) Validate() error {
 			return fmt.Errorf("config: fairway_addr %q: want host:port", c.FairwayAddr)
 		}
 	}
+	if c.APIAddr != "" {
+		if err := ValidateAPIAddr(c.APIAddr); err != nil {
+			return fmt.Errorf("config: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -276,6 +289,11 @@ func (c *Config) Set(key, value string) error {
 		c.MaxChars = n
 	case "fairway-addr":
 		c.FairwayAddr = value
+	case "api-addr":
+		if value == "off" {
+			value = ""
+		}
+		c.APIAddr = value
 	case "publish-events":
 		b, err := strconv.ParseBool(value)
 		if err != nil {
@@ -303,7 +321,7 @@ func (c *Config) Set(key, value string) error {
 // ConfigKeys are the keys accepted by Set. `paused` is deliberately not
 // one of them: pause/resume have their own commands.
 var ConfigKeys = []string{"device-name", "default-ttl", "limit-per-chat", "limit-per-group", "limit-global",
-	"allow-groups", "max-chars", "humanize", "fairway-addr", "include-own", "publish-events"}
+	"allow-groups", "max-chars", "humanize", "fairway-addr", "include-own", "publish-events", "api-addr"}
 
 // LoadConfig reads path, returning DefaultConfig when it does not exist.
 func LoadConfig(path string) (Config, error) {

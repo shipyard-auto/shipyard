@@ -144,6 +144,31 @@ var migrations = []string{
 	);
 	CREATE INDEX sent_ts ON sent(ts);
 	CREATE INDEX sent_chat_ts ON sent(chat_jid, ts);`,
+
+	// v3: a stable arrival sequence for cursor reads. seq is AUTOINCREMENT
+	// so it is never reused, even after pruning or deleting the newest row
+	// (a reused number would hide a message from a reader parked on it).
+	// Existing rows are numbered in timestamp order.
+	`CREATE TABLE messages_v3 (
+		seq          INTEGER PRIMARY KEY AUTOINCREMENT,
+		chat_jid     TEXT NOT NULL REFERENCES chats(jid) ON DELETE CASCADE,
+		msg_id       TEXT NOT NULL,
+		sender_jid   TEXT NOT NULL,
+		sender_name  TEXT,
+		from_me      INTEGER NOT NULL,
+		ts           INTEGER NOT NULL,
+		kind         TEXT NOT NULL,
+		text         TEXT,
+		reply_to     TEXT,
+		via_shipyard INTEGER NOT NULL DEFAULT 0,
+		UNIQUE (chat_jid, msg_id)
+	);
+	INSERT INTO messages_v3 (chat_jid, msg_id, sender_jid, sender_name, from_me, ts, kind, text, reply_to, via_shipyard)
+		SELECT chat_jid, msg_id, sender_jid, sender_name, from_me, ts, kind, text, reply_to, via_shipyard
+		FROM messages ORDER BY ts, msg_id;
+	DROP TABLE messages;
+	ALTER TABLE messages_v3 RENAME TO messages;
+	CREATE INDEX messages_chat_ts ON messages(chat_jid, ts);`,
 }
 
 // Open opens (creating if needed) the archive at path with mode 0600 and
@@ -645,4 +670,67 @@ func boolInt(b bool) int {
 		return 1
 	}
 	return 0
+}
+
+// FeedQuery selects archived messages in arrival order.
+type FeedQuery struct {
+	After int64     // only rows with seq > After
+	Since time.Time // and, when non-zero, ts >= Since
+	Chat  string    // one chat JID; empty = all chats
+	Limit int       // rows to return (required, > 0)
+}
+
+// FeedRow is one message of a feed, with its sequence and chat.
+type FeedRow struct {
+	Seq      int64
+	ChatName string
+	ChatKind ChatKind
+	Message
+}
+
+// Feed returns messages in the order they were archived (seq), which is
+// not always timestamp order: a history sync can archive old messages
+// late. Readers resume from the last Seq they saw.
+func (s *Store) Feed(ctx context.Context, q FeedQuery) ([]FeedRow, error) {
+	if q.Limit <= 0 {
+		return nil, errors.New("archive: feed: limit must be positive")
+	}
+	sqlq := `SELECT m.seq, c.name, c.kind, m.chat_jid, m.msg_id, m.sender_jid, COALESCE(m.sender_name, ''), m.from_me, m.ts,
+	                m.kind, COALESCE(m.text, ''), COALESCE(m.reply_to, ''), m.via_shipyard
+	         FROM messages m JOIN chats c ON c.jid = m.chat_jid
+	         WHERE m.seq > ?`
+	args := []any{q.After}
+	if !q.Since.IsZero() {
+		sqlq += ` AND m.ts >= ?`
+		args = append(args, q.Since.Unix())
+	}
+	if q.Chat != "" {
+		sqlq += ` AND m.chat_jid = ?`
+		args = append(args, q.Chat)
+	}
+	sqlq += ` ORDER BY m.seq LIMIT ?`
+	args = append(args, q.Limit)
+	rows, err := s.db.QueryContext(ctx, sqlq, args...)
+	if err != nil {
+		return nil, fmt.Errorf("archive: feed: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []FeedRow
+	for rows.Next() {
+		var r FeedRow
+		var fromMe, via int
+		var ts int64
+		if err := rows.Scan(&r.Seq, &r.ChatName, &r.ChatKind, &r.ChatJID, &r.ID, &r.SenderJID, &r.SenderName, &fromMe, &ts,
+			&r.Kind, &r.Text, &r.ReplyTo, &via); err != nil {
+			return nil, fmt.Errorf("archive: scan feed: %w", err)
+		}
+		r.FromMe = fromMe == 1
+		r.ViaShipyard = via == 1
+		r.Timestamp = time.Unix(ts, 0).UTC()
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("archive: feed: %w", err)
+	}
+	return out, nil
 }
