@@ -118,15 +118,16 @@ func (d storeDirectory) GroupName(ctx context.Context, jid types.JID) string {
 	return info.Name
 }
 
-func (d storeDirectory) Contacts(ctx context.Context) (map[types.JID]string, error) {
+func (d storeDirectory) Contacts(ctx context.Context) (map[types.JID]ContactName, error) {
 	all, err := d.cli.Store.Contacts.GetAllContacts(ctx)
 	if err != nil {
 		return nil, err
 	}
-	out := make(map[types.JID]string, len(all))
+	out := make(map[types.JID]ContactName, len(all))
 	for jid, info := range all {
 		if name := contactName(info); name != "" {
-			out[jid] = name
+			saved := strings.TrimSpace(info.FullName) != "" || strings.TrimSpace(info.FirstName) != ""
+			out[jid] = ContactName{Name: name, Saved: saved}
 		}
 	}
 	return out, nil

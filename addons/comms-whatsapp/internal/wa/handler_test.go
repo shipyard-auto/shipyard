@@ -35,14 +35,14 @@ var (
 
 type fakeDir struct {
 	lids     map[types.JID]types.JID
-	contacts map[types.JID]string
+	contacts map[types.JID]ContactName
 	groups   map[types.JID]string
 }
 
 func newFakeDir() *fakeDir {
 	return &fakeDir{
 		lids:     map[types.JID]types.JID{momLID: momPN, ownLID: ownPN},
-		contacts: map[types.JID]string{momPN: "Mãe", shopLID: "Loja (sem número)"},
+		contacts: map[types.JID]ContactName{momPN: {"Mãe", true}, shopLID: {"Loja (sem número)", false}},
 		groups:   map[types.JID]string{family: "Família"},
 	}
 }
@@ -53,10 +53,12 @@ func (d *fakeDir) PNForLID(_ context.Context, lid types.JID) (types.JID, bool) {
 	pn, ok := d.lids[lid]
 	return pn, ok
 }
-func (d *fakeDir) ContactName(_ context.Context, j types.JID) string      { return d.contacts[j] }
-func (d *fakeDir) GroupName(_ context.Context, j types.JID) string        { return d.groups[j] }
-func (d *fakeDir) Contacts(context.Context) (map[types.JID]string, error) { return d.contacts, nil }
-func (d *fakeDir) Groups(context.Context) (map[types.JID]string, error)   { return d.groups, nil }
+func (d *fakeDir) ContactName(_ context.Context, j types.JID) string { return d.contacts[j].Name }
+func (d *fakeDir) GroupName(_ context.Context, j types.JID) string   { return d.groups[j] }
+func (d *fakeDir) Contacts(context.Context) (map[types.JID]ContactName, error) {
+	return d.contacts, nil
+}
+func (d *fakeDir) Groups(context.Context) (map[types.JID]string, error) { return d.groups, nil }
 
 type harness struct {
 	h     *Handler
@@ -382,5 +384,23 @@ func TestHistorySyncDoesNotOverrideAddressBookName(t *testing.T) {
 	}
 	if c, _ := hs.arch.GetChat(ctx, shopPN.String()); c.Name != "Petz Moema" {
 		t.Fatalf("unsaved contact name=%q", c.Name)
+	}
+}
+
+func TestCatalogPrefersSavedNameAcrossLIDAndPhoneEntries(t *testing.T) {
+	// Real data: the phone entry has the address-book name, the LID entry
+	// only the push name. Map order must not decide; run it repeatedly.
+	for i := 0; i < 20; i++ {
+		hs := newHarness(t)
+		dir := hs.h.Dir.(*fakeDir)
+		dir.contacts = map[types.JID]ContactName{
+			momPN:  {"Mãe", true},
+			momLID: {"Maria Aparecida", false}, // maps to momPN
+		}
+		hs.h.RefreshCatalog(context.Background())
+		c, err := hs.arch.GetChat(context.Background(), momPN.String())
+		if err != nil || c.Name != "Mãe" {
+			t.Fatalf("run %d: name=%q err=%v", i, c.Name, err)
+		}
 	}
 }

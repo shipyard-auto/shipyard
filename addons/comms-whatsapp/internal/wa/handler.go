@@ -29,7 +29,9 @@ type Directory interface {
 	// GroupName fetches the subject of a group (may hit the network).
 	GroupName(ctx context.Context, jid types.JID) string
 	// Contacts lists every user in the device's contact store with a name.
-	Contacts(ctx context.Context) (map[types.JID]string, error)
+	// One person can appear twice — under their phone JID and their LID —
+	// often with the address-book name on one entry only.
+	Contacts(ctx context.Context) (map[types.JID]ContactName, error)
 	// Groups lists joined groups with their subjects (network call).
 	Groups(ctx context.Context) (map[types.JID]string, error)
 }
@@ -250,6 +252,23 @@ func (h *Handler) isOwn(j types.JID) bool {
 		(!lid.IsEmpty() && j.User == lid.User && j.Server == lid.Server)
 }
 
+// ContactName is a display name and where it came from.
+type ContactName struct {
+	Name string
+	// Saved is true for names from the phone's address book, which win
+	// over push (profile) and business names.
+	Saved bool
+}
+
+// betterThan orders candidate names for one chat: saved beats unsaved,
+// then the lexically smaller name, so the choice never depends on map order.
+func (c ContactName) betterThan(o ContactName) bool {
+	if c.Saved != o.Saved {
+		return c.Saved
+	}
+	return c.Name < o.Name
+}
+
 func selfChatName(pushName string) string {
 	if pushName == "" {
 		return "Me (message yourself)"
@@ -309,12 +328,21 @@ func (h *Handler) RefreshCatalog(ctx context.Context) {
 	if err != nil {
 		h.archiveError("", fmt.Errorf("list contacts: %w", err))
 	}
+	// Merge entries that resolve to the same chat before writing: a LID
+	// entry usually carries only the push name, and letting map order pick
+	// the winner made names flip between restarts.
+	best := map[types.JID]ContactName{}
 	for jid, name := range contacts {
 		chat, kind, ok := h.normalizeChat(ctx, types.MessageSource{Chat: jid})
 		if !ok || kind == archive.KindSelf || chat.Server != types.DefaultUserServer {
 			continue
 		}
-		if err := h.Archive.UpsertChat(ctx, chat.String(), name, kind); err == nil {
+		if cur, seen := best[chat]; !seen || name.betterThan(cur) {
+			best[chat] = name
+		}
+	}
+	for chat, name := range best {
+		if err := h.Archive.UpsertChat(ctx, chat.String(), name.Name, archive.KindDM); err == nil {
 			n++
 		}
 	}
