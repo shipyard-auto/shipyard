@@ -170,12 +170,21 @@ func run(ctx context.Context, deps runDeps) int {
 		Version: deps.version,
 	})
 
+	// Clients of signed routes live next to routes.json, in their own
+	// 0600 file: route listings must never expose secrets.
+	clients, err := fairway.OpenClientStore(filepath.Join(filepath.Dir(resolvedConfigPath), "clients.json"))
+	if err != nil {
+		deps.bootstrapLog.Printf("bootstrap falhou: carregar clients.json: %v", err)
+		return exitInvalidConfig
+	}
+
 	server := deps.newServer(fairway.ServerConfig{
 		Router:      router,
 		Executor:    executor,
 		Logger:      daemonLogger,
 		EventLogger: eventLogger,
 		Stats:       stats,
+		Clients:     clients,
 	})
 
 	socketPath := filepath.Join(runDir, "fairway.sock")

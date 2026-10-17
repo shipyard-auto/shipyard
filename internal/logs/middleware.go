@@ -26,7 +26,10 @@ type responseBodyKey struct{}
 // reads .bytes after the handler returns. The holder is per-request, so
 // concurrent requests do not share state. A nil holder (request not handled
 // by Middleware) makes MarkResponseBody a no-op.
-type responseBodyHolder struct{ bytes []byte }
+type responseBodyHolder struct {
+	bytes    []byte
+	clientID string
+}
 
 // MarkResponseBody lets a handler signal to the logging middleware that the
 // given bytes were the effective response body for this request, so they
@@ -40,6 +43,14 @@ type responseBodyHolder struct{ bytes []byte }
 func MarkResponseBody(r *http.Request, body []byte) {
 	if h, ok := r.Context().Value(responseBodyKey{}).(*responseBodyHolder); ok {
 		h.bytes = body
+	}
+}
+
+// MarkClient records which authenticated client made the request, so the
+// http_request line carries client_id. A no-op outside Middleware.
+func MarkClient(r *http.Request, clientID string) {
+	if h, ok := r.Context().Value(responseBodyKey{}).(*responseBodyHolder); ok {
+		h.clientID = clientID
 	}
 }
 
@@ -74,6 +85,9 @@ func Middleware(logger *slog.Logger) func(http.Handler) http.Handler {
 				slog.Int64(KeyHTTPResponseSz, metrics.Written),
 				slog.String(KeyHTTPRemoteAddr, clientIP(r)),
 				slog.Int64(KeyDurationMs, time.Since(start).Milliseconds()),
+			}
+			if holder.clientID != "" {
+				attrs = append(attrs, slog.String(KeyClientID, holder.clientID))
 			}
 			if len(holder.bytes) > 0 {
 				attrs = append(attrs,

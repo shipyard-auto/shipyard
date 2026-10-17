@@ -6,6 +6,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/shipyard-auto/shipyard/internal/signing"
 )
 
 var (
@@ -16,6 +18,9 @@ var (
 	ErrMissingAuthValue    = errors.New("token auth requires a non-empty value")
 	ErrMissingAuthLookup   = errors.New("token auth requires header or query to be set")
 	ErrLocalOnlyExtraField = errors.New("local-only auth must not have token, value, header or query fields")
+	ErrSignedExtraField    = errors.New("signed auth must not have token, value, header or query fields")
+	ErrMissingAuthScope    = errors.New("signed auth requires --scope (e.g. whatsapp.read)")
+	ErrScopeNeedsSigned    = errors.New("--scope is only valid with --auth signed")
 	ErrInvalidActionType   = errors.New("invalid action type")
 	ErrMissingActionTarget = errors.New("action requires a non-empty target")
 	ErrInvalidActionURL    = errors.New("http.forward requires a valid http/https URL")
@@ -56,12 +61,23 @@ func (a Auth) Validate() error {
 		if a.Header == "" && a.Query == "" {
 			return ErrMissingAuthLookup
 		}
+	case AuthSigned:
+		if a.Token != "" || a.Value != "" || a.Header != "" || a.Query != "" {
+			return ErrSignedExtraField
+		}
+		if a.Scope == "" {
+			return ErrMissingAuthScope
+		}
+		return signing.ValidateScope(a.Scope)
 	case AuthLocalOnly:
 		if a.Token != "" || a.Value != "" || a.Header != "" || a.Query != "" {
 			return ErrLocalOnlyExtraField
 		}
 	default:
 		return fmt.Errorf("%w: %q", ErrInvalidAuthType, a.Type)
+	}
+	if a.Scope != "" {
+		return ErrScopeNeedsSigned
 	}
 	return nil
 }

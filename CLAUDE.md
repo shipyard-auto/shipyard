@@ -41,7 +41,7 @@ Shipyard stores all state under `~/.shipyard/`:
 | `~/.shipyard/services.json` | Shipyard-managed user services |
 | `~/.shipyard/logs.json` | Logs subsystem config |
 | `~/.shipyard/logs/` | JSONL log files per source |
-| `~/.shipyard/fairway/` | Fairway addon state |
+| `~/.shipyard/fairway/` | Fairway addon state (`routes.json`; `clients.json` holds signed-route client secrets, 0600) |
 | `~/.shipyard/crew/` | Crew addon state and agent definitions |
 | `~/.shipyard/crew/tools/` | Reusable tool definitions for crew agents |
 | `~/.shipyard/comms/` | Comms channels and per-channel secrets |
@@ -413,6 +413,40 @@ shipyard fairway route list
 shipyard fairway route add --path /hook --action crew.run --target my-agent
 shipyard fairway route delete /hook
 ```
+
+#### `shipyard fairway client` (signed routes)
+
+Fairway is the only network-facing component, and external systems call it
+through **signed routes**: `route add --auth signed --scope <scope>`. A client
+(an external system) gets an id, a secret (shown once) and scopes.
+
+```bash
+shipyard fairway client add promo-manager --scope whatsapp.read --scope events.subscribe:whatsapp.message
+shipyard fairway client list | rotate <id> | scopes <id> --scope … | disable <id> | enable <id> | rm <id>
+shipyard fairway client sign --client <id> --secret-file f --url http://127.0.0.1:9876/x --body '{}' --curl
+shipyard fairway route add --path /api/x --auth signed --scope whatsapp.read --action http.forward --url …
+```
+
+- Signing (Shipyard v1, `internal/signing`, shared by fairway, the CLI and
+  addons): HMAC-SHA256 over `v1
+METHOD
+path
+rawquery
+ts
+nonce
+sha256(body)`
+  in `X-Shipyard-Client|Timestamp|Nonce|Signature`; ±5 min clock window,
+  nonce replay cache, constant-time compare; unknown and mis-signed requests
+  get identical answers. `TestKnownVector` pins a vector for other languages.
+- Scopes are opaque `<name>[:<resource>]` strings with `*` globs. Fairway only
+  checks the route's scope name (and resource, if the route pins one); it
+  forwards the client's scopes to the service, which narrows by resource.
+  **Never add domain flags (chats, jobs…) to fairway** — resources stay opaque.
+- Identity reaches the service as `X-Shipyard-Client-Id`/`-Scopes` headers
+  (http.forward) or `SHIPYARD_CLIENT_ID`/`SHIPYARD_CLIENT_SCOPES` env vars
+  (subprocess actions); copies arriving from outside are stripped.
+- Secrets live in `~/.shipyard/fairway/clients.json` (0600), never in
+  `routes.json`.
 
 #### `shipyard fairway config`
 

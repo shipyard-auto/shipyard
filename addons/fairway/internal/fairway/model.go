@@ -5,6 +5,7 @@ package fairway
 import (
 	"errors"
 	"fmt"
+	"github.com/shipyard-auto/shipyard/internal/signing"
 	"net"
 	"net/url"
 	"strings"
@@ -53,6 +54,9 @@ var (
 	ErrMissingAuthValue    = errors.New("token auth requires a non-empty value")
 	ErrMissingAuthLookup   = errors.New("token auth requires header or query to be set")
 	ErrLocalOnlyExtraField = errors.New("local-only auth must not have token, value, header or query fields")
+	ErrSignedExtraField    = errors.New("signed auth must not have token, value, header or query fields")
+	ErrMissingAuthScope    = errors.New("signed auth requires a scope (e.g. whatsapp.read)")
+	ErrScopeNeedsSigned    = errors.New("scope is only valid with signed auth")
 	ErrInvalidActionType   = errors.New("invalid action type")
 	ErrMissingActionTarget = errors.New("action requires a non-empty target")
 	ErrInvalidActionURL    = errors.New("http.forward requires a valid http/https URL")
@@ -71,6 +75,10 @@ const (
 
 	// AuthLocalOnly allows requests only from loopback addresses (127.x.x.x / ::1).
 	AuthLocalOnly AuthType = "local-only"
+
+	// AuthSigned requires a request signed by a registered client (Shipyard
+	// v1 HMAC, see internal/signing) that holds the route's Scope.
+	AuthSigned AuthType = "signed"
 )
 
 // ActionType enumerates the actions fairway can dispatch when a route is hit.
@@ -238,6 +246,12 @@ type Auth struct {
 
 	// Query is the query parameter name to look for the token (used with AuthToken).
 	Query string `json:"query,omitempty"`
+
+	// Scope is the permission a client must hold (used with AuthSigned),
+	// e.g. "whatsapp.read" or "cron.run:backup". Opaque to fairway: it is
+	// matched against client grants and the resource part, if any, is left
+	// to the service behind the route.
+	Scope string `json:"scope,omitempty"`
 }
 
 // Validate checks the Auth configuration.
@@ -258,8 +272,22 @@ func (a Auth) Validate() error {
 		if a.Token != "" || a.Value != "" || a.Header != "" || a.Query != "" {
 			return ErrLocalOnlyExtraField
 		}
+	case AuthSigned:
+		if a.Token != "" || a.Value != "" || a.Header != "" || a.Query != "" {
+			return ErrSignedExtraField
+		}
+		if a.Scope == "" {
+			return ErrMissingAuthScope
+		}
+		if err := signing.ValidateScope(a.Scope); err != nil {
+			return err
+		}
+		return nil
 	default:
 		return fmt.Errorf("%w: %q", ErrInvalidAuthType, a.Type)
+	}
+	if a.Scope != "" {
+		return ErrScopeNeedsSigned
 	}
 	return nil
 }

@@ -322,3 +322,73 @@ func defaultDial(ctx context.Context, path string) (net.Conn, error) {
 	var d net.Dialer
 	return d.DialContext(ctx, "unix", path)
 }
+
+// ── Signed-route clients ─────────────────────────────────────────────────────
+
+// ClientList returns every client (without secrets).
+func (c *Client) ClientList(ctx context.Context) ([]ClientInfo, error) {
+	raw, err := c.call(ctx, "client.list", nil)
+	if err != nil {
+		return nil, fmt.Errorf("fairway: client list: %w", err)
+	}
+	var out []ClientInfo
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, fmt.Errorf("fairway: client list: decode: %w", err)
+	}
+	return out, nil
+}
+
+// ClientAdd registers a client and returns it with its secret (shown once).
+func (c *Client) ClientAdd(ctx context.Context, id string, scopes []string) (IssuedClient, error) {
+	return c.issued(ctx, "client.add", map[string]any{"id": id, "scopes": scopes})
+}
+
+// ClientRotate replaces a client's secret and returns the new one.
+func (c *Client) ClientRotate(ctx context.Context, id string) (IssuedClient, error) {
+	return c.issued(ctx, "client.rotate", map[string]any{"id": id})
+}
+
+func (c *Client) issued(ctx context.Context, method string, params any) (IssuedClient, error) {
+	raw, err := c.call(ctx, method, params)
+	if err != nil {
+		return IssuedClient{}, fmt.Errorf("fairway: %s: %w", method, err)
+	}
+	var out IssuedClient
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return IssuedClient{}, fmt.Errorf("fairway: %s: decode: %w", method, err)
+	}
+	return out, nil
+}
+
+// ClientSetScopes replaces a client's scopes.
+func (c *Client) ClientSetScopes(ctx context.Context, id string, scopes []string) (ClientInfo, error) {
+	raw, err := c.call(ctx, "client.scopes", map[string]any{"id": id, "scopes": scopes})
+	if err != nil {
+		return ClientInfo{}, fmt.Errorf("fairway: client scopes: %w", err)
+	}
+	var out ClientInfo
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return ClientInfo{}, fmt.Errorf("fairway: client scopes: decode: %w", err)
+	}
+	return out, nil
+}
+
+// ClientDelete removes a client; its secret stops working immediately.
+func (c *Client) ClientDelete(ctx context.Context, id string) error {
+	if _, err := c.call(ctx, "client.delete", map[string]any{"id": id}); err != nil {
+		return fmt.Errorf("fairway: client delete: %w", err)
+	}
+	return nil
+}
+
+// ClientSetDisabled turns a client off or back on.
+func (c *Client) ClientSetDisabled(ctx context.Context, id string, disabled bool) error {
+	method := "client.enable"
+	if disabled {
+		method = "client.disable"
+	}
+	if _, err := c.call(ctx, method, map[string]any{"id": id}); err != nil {
+		return fmt.Errorf("fairway: %s: %w", method, err)
+	}
+	return nil
+}

@@ -48,6 +48,10 @@ type SocketConfig struct {
 
 	// Stats provides live request counters for the "stats" RPC method. Optional.
 	Stats *Stats
+
+	// Clients is the signed-route client registry managed by the client.*
+	// methods. Defaults to Server.ClientStore().
+	Clients *ClientStore
 }
 
 // SocketServer is the Unix socket JSON-RPC 2.0 control plane server.
@@ -65,6 +69,7 @@ type SocketServer struct {
 	started          time.Time
 	handshakeTimeout time.Duration
 	onInvalidate     func()
+	clients          *ClientStore
 }
 
 // NewSocketServer creates a SocketServer from cfg.
@@ -84,7 +89,7 @@ func NewSocketServer(cfg SocketConfig) *SocketServer {
 	if onInvalidate == nil {
 		onInvalidate = func() {}
 	}
-	return &SocketServer{
+	ss := &SocketServer{
 		path:             cfg.Path,
 		router:           cfg.Router,
 		server:           cfg.Server,
@@ -94,7 +99,12 @@ func NewSocketServer(cfg SocketConfig) *SocketServer {
 		started:          now(),
 		handshakeTimeout: ht,
 		onInvalidate:     onInvalidate,
+		clients:          cfg.Clients,
 	}
+	if ss.clients == nil && cfg.Server != nil {
+		ss.clients = cfg.Server.ClientStore()
+	}
+	return ss
 }
 
 // Serve removes any stale socket file, binds a Unix socket, chmods it to 0600,
@@ -288,6 +298,9 @@ func (s *SocketServer) dispatch(ctx context.Context, req Request) Response {
 	case "route.test":
 		return s.dispatchRouteTest(req)
 
+	case "client.list", "client.add", "client.delete", "client.rotate", "client.scopes", "client.disable", "client.enable":
+		return s.dispatchClient(req)
+
 	case "status":
 		cfg := s.router.Config()
 		inFlight := 0
@@ -412,4 +425,53 @@ func parseMajor(v string) (int, bool) {
 		return 0, false
 	}
 	return n, true
+}
+
+// dispatchClient implements the client.* control methods. Secrets are
+// returned only by add and rotate — once — and never by list.
+func (s *SocketServer) dispatchClient(req Request) Response {
+	if s.clients == nil {
+		return errResp(req.ID, ErrCodeInvalidParams, "client registry not configured", nil)
+	}
+	var p struct {
+		ID     string   `json:"id"`
+		Scopes []string `json:"scopes"`
+	}
+	if len(req.Params) > 0 {
+		if err := json.Unmarshal(req.Params, &p); err != nil {
+			return errResp(req.ID, ErrCodeInvalidParams, "invalid params", nil)
+		}
+	}
+	switch req.Method {
+	case "client.list":
+		return okResp(req.ID, s.clients.List())
+	case "client.add":
+		c, err := s.clients.Add(p.ID, p.Scopes)
+		if err != nil {
+			return errResp(req.ID, ErrCodeInvalidParams, err.Error(), nil)
+		}
+		return okResp(req.ID, c)
+	case "client.rotate":
+		c, err := s.clients.Rotate(p.ID)
+		if err != nil {
+			return errResp(req.ID, ErrCodeInvalidParams, err.Error(), nil)
+		}
+		return okResp(req.ID, c)
+	case "client.scopes":
+		info, err := s.clients.SetScopes(p.ID, p.Scopes)
+		if err != nil {
+			return errResp(req.ID, ErrCodeInvalidParams, err.Error(), nil)
+		}
+		return okResp(req.ID, info)
+	case "client.delete":
+		if err := s.clients.Delete(p.ID); err != nil {
+			return errResp(req.ID, ErrCodeInvalidParams, err.Error(), nil)
+		}
+		return okResp(req.ID, map[string]bool{"ok": true})
+	default: // client.disable / client.enable
+		if err := s.clients.SetDisabled(p.ID, req.Method == "client.disable"); err != nil {
+			return errResp(req.ID, ErrCodeInvalidParams, err.Error(), nil)
+		}
+		return okResp(req.ID, map[string]bool{"ok": true})
+	}
 }
