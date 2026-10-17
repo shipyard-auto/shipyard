@@ -143,3 +143,29 @@ func TestServeShutdownClosesIdleConnections(t *testing.T) {
 		t.Fatal("Serve did not return with an idle client connected")
 	}
 }
+
+func TestRPCRateLimitCarriesRetryAfterAndLimitsMethod(t *testing.T) {
+	h := newOutbox(t)
+	h.cfg.Humanize = false
+	h.cfg.Limits = SendLimits{PerChat: "1/10m", PerGroup: "20/1h", Global: "60/1h"}
+	sock := startRPC(t, h)
+	ctx := context.Background()
+	if err := CallRPC(ctx, sock, "send", SendRequest{Chat: "Vini Eduqo", Text: "1"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	err := CallRPC(ctx, sock, "send", SendRequest{Chat: "Vini Eduqo", Text: "2"}, nil)
+	var re *RPCError
+	if !errors.As(err, &re) || re.SendError() == nil || re.SendError().RetryAfter != 10*time.Minute {
+		t.Fatalf("rate limited over rpc: %#v", err)
+	}
+	var rep LimitsReport
+	if err := CallRPC(ctx, sock, "limits", map[string]string{"chat": "vini eduqo"}, &rep); err != nil {
+		t.Fatal(err)
+	}
+	if rep.Chat == nil || rep.Chat.CanSendNow || rep.Chat.RetryAfterSeconds != 600 || rep.Global.Used != 1 {
+		t.Fatalf("limits=%+v chat=%+v", rep, rep.Chat)
+	}
+	if err := CallRPC(ctx, sock, "limits", map[string]string{"chat": "ninguém"}, &rep); err == nil {
+		t.Fatal("unknown chat accepted")
+	}
+}

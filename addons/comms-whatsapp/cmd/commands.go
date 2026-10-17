@@ -140,8 +140,9 @@ func printReport(w io.Writer, r wa.Report, now time.Time) {
 	}
 	fmt.Fprintf(tw, "Archive:\t%d watched of %d chats, %d messages\n", r.Archive.Watched, r.Archive.Chats, r.Archive.Messages)
 	fmt.Fprintf(tw, "Default TTL:\t%s\n", r.Config.DefaultTTL)
-	sending := fmt.Sprintf("%d allowed chats, %d sent in the last hour (limits %s per chat, %s overall)",
-		r.Archive.SendAllowed, r.Archive.SentLastHour, r.Config.Limits.PerChat, r.Config.Limits.Global)
+	l := r.Config.ParsedLimits()
+	sending := fmt.Sprintf("%d allowed chats, %d sent in the last hour; limits: %s per contact, %s per group, %s overall (see 'limits')",
+		r.Archive.SendAllowed, r.Archive.SentLastHour, l.PerChat.Human(), l.PerGroup.Human(), l.Global.Human())
 	if r.Config.Paused {
 		sending = "PAUSED — " + sending
 	}

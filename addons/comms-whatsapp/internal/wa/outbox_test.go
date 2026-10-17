@@ -332,3 +332,78 @@ func TestSendResolvesNamesAndPhones(t *testing.T) {
 		}
 	}
 }
+
+func addGroup(t *testing.T, h *outboxHarness, jid, name string) {
+	t.Helper()
+	ctx := context.Background()
+	mustDo(t, h.arch.UpsertChat(ctx, jid, name, archive.KindGroup))
+	mustDo(t, h.arch.SetSendAllowed(ctx, jid, true))
+	mustDo(t, h.arch.TouchActivity(ctx, jid, t0Send.Add(-time.Hour)))
+}
+
+func TestGroupsNeedPolicyAndUseTheirOwnLimit(t *testing.T) {
+	h := newOutbox(t)
+	h.cfg.Humanize = false
+	const promos = "120363000000000099@g.us"
+	addGroup(t, h, promos, "Minhas Promos")
+	ctx := context.Background()
+
+	if _, err := h.ob.Send(ctx, SendRequest{Chat: promos, Text: "promo"}); codeOf(err) != CodeGroupsDisabled {
+		t.Fatalf("policy off: %v", err)
+	}
+	h.cfg.AllowGroups = true
+	h.cfg.Limits = SendLimits{PerChat: "1/10m", PerGroup: "3/1h", Global: "60/1h"}
+	for i := 0; i < 3; i++ { // per-chat 1/10m must not apply to a group
+		if _, err := h.ob.Send(ctx, SendRequest{Chat: promos, Text: fmt.Sprintf("promo %d", i)}); err != nil {
+			t.Fatalf("group send %d: %v", i, err)
+		}
+		h.now = h.now.Add(time.Minute)
+	}
+	_, err := h.ob.Send(ctx, SendRequest{Chat: promos, Text: "promo 4"})
+	var se *SendError
+	if !errors.As(err, &se) || se.Code != CodeRateLimited || !strings.Contains(se.Msg, "3 per hour") {
+		t.Fatalf("group limit: %v", err)
+	}
+	// First send was at t0; window 1h; now is t0+3m → 57 minutes to wait.
+	if se.RetryAfter != 57*time.Minute {
+		t.Fatalf("retry_after=%v want 57m", se.RetryAfter)
+	}
+	// A contact still has its own (per-chat) budget.
+	if _, err := h.send("oi"); err != nil {
+		t.Fatalf("contact after group limit: %v", err)
+	}
+}
+
+func TestLimitsReport(t *testing.T) {
+	h := newOutbox(t)
+	h.cfg.Humanize = false
+	h.cfg.Limits = SendLimits{PerChat: "2/10m", PerGroup: "20/1h", Global: "5/1h"}
+	ctx := context.Background()
+	for i := 0; i < 2; i++ {
+		if _, err := h.send(fmt.Sprintf("m%d", i)); err != nil {
+			t.Fatal(err)
+		}
+		h.now = h.now.Add(time.Minute)
+	}
+	chat, _ := h.arch.GetChat(ctx, viniJID.String())
+	rep, err := BuildLimitsReport(ctx, h.arch, h.cfg, h.now, &chat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Global.Used != 2 || rep.Global.Remaining != 3 || !rep.Global.NextFreeAt.IsZero() || rep.Global.Human != "5 per hour" {
+		t.Fatalf("global=%+v", rep.Global)
+	}
+	c := rep.Chat
+	if c == nil || c.CanSendNow || c.Usage.Remaining != 0 || c.Usage.Scope != "per-chat" ||
+		len(c.Blockers) != 1 || c.Blockers[0] != string(CodeRateLimited) || c.RetryAfterSeconds != 8*60 {
+		t.Fatalf("chat=%+v", c)
+	}
+	// Policy blockers are listed too, and a fresh chat has full budget.
+	h.cfg.Paused = true
+	other := archive.Chat{JID: "5511977777777@s.whatsapp.net", Name: "Novo", Kind: archive.KindDM}
+	rep, _ = BuildLimitsReport(ctx, h.arch, h.cfg, h.now, &other)
+	want := []string{string(CodePaused), string(CodeNotAllowed), string(CodeNoHistory)}
+	if strings.Join(rep.Chat.Blockers, ",") != strings.Join(want, ",") || rep.Chat.Usage.Remaining != 2 || !rep.Paused {
+		t.Fatalf("blockers=%v usage=%+v", rep.Chat.Blockers, rep.Chat.Usage)
+	}
+}

@@ -572,6 +572,26 @@ func (s *Store) SentByKey(ctx context.Context, key string) (Sent, bool, error) {
 	return r, true, nil
 }
 
+// OldestSentSince returns the timestamp of the oldest send at or after
+// since, in one chat or (chatJID "") across all chats. It tells when a
+// full rate-limit window frees its next slot.
+func (s *Store) OldestSentSince(ctx context.Context, chatJID string, since time.Time) (time.Time, bool, error) {
+	q := `SELECT MIN(ts) FROM sent WHERE ts >= ?`
+	args := []any{since.Unix()}
+	if chatJID != "" {
+		q += ` AND chat_jid = ?`
+		args = append(args, chatJID)
+	}
+	var ts sql.NullInt64
+	if err := s.db.QueryRowContext(ctx, q, args...).Scan(&ts); err != nil {
+		return time.Time{}, false, fmt.Errorf("archive: oldest sent: %w", err)
+	}
+	if !ts.Valid {
+		return time.Time{}, false, nil
+	}
+	return time.Unix(ts.Int64, 0).UTC(), true, nil
+}
+
 // CountSent counts sends at or after since, in one chat or (chatJID "")
 // across all chats.
 func (s *Store) CountSent(ctx context.Context, chatJID string, since time.Time) (int, error) {

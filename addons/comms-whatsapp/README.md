@@ -44,7 +44,9 @@ shipyard-comms-whatsapp unwatch "Família"       # also deletes its archived mes
 shipyard-comms-whatsapp config set default-ttl 14d
 shipyard-comms-whatsapp logout [--local]
 
-shipyard-comms-whatsapp allow "Vini Eduqo"      # send allowlist (contacts only)
+shipyard-comms-whatsapp allow "Vini Eduqo"      # send allowlist (groups also need allow-groups)
+shipyard-comms-whatsapp limits ["Vini Eduqo"]   # limits, live usage, can I send now?
+shipyard-comms-whatsapp limits set per-group 30/h
 shipyard-comms-whatsapp send "Vini Eduqo" --text "oi" [--idempotency-key K] [--dry-run]
 shipyard-comms-whatsapp pause | resume          # emergency stop for all sending
 shipyard-comms-whatsapp route set "Vini Eduqo" /wa/vini   # deliver received messages to fairway
@@ -89,14 +91,21 @@ asks — a CLI user, a crew tool, or an agent with a shell:
 | longer than `max_chars` (default 4096) | `too_long` |
 | chat not in the catalog | `unknown_chat` |
 | `pause` in effect | `paused` |
-| chat not on the allowlist (`allow`; groups are never allowed) | `not_allowed` |
+| chat is a group and `allow-groups` is off | `groups_disabled` |
+| chat not on the allowlist (`allow`) | `not_allowed` |
 | no conversation ever seen in that chat | `no_history` |
-| more than `limits.per_chat` (6/10m) or `limits.global` (30/1h) | `rate_limited` |
+| over the chat's limit (`per_chat` 6/10m for contacts, `per_group` 20/1h for groups) or `global` (60/1h) | `rate_limited` (+ `retry_after_seconds`) |
 | daemon not connected | `not_connected` |
 | WhatsApp rejected the send | `send_failed` |
 
 - Limits count rows in the `sent` audit table (kept 30 days), not memory, so
-  a crash-looping daemon cannot reset them.
+  a crash-looping daemon cannot reset them. `limits` shows them in plain words
+  with usage, remaining slots and when the next opens; `limits <chat>` says
+  whether a send there would be accepted and why not; `limits set|reset`
+  changes them (`20/h`, `6/10m`, `100/day`). Agents read the same through the
+  `wa_limits` tool or the socket's `limits` method.
+- Sending to groups is off by default (`config set allow-groups true`); use it
+  for groups you run, such as your own promotions group.
 - With `humanize` (default on) the daemon shows "typing…" for
   1.5s + 40ms/char (max 8s) before sending.
 - Config is re-read on every send: `pause`, `resume` and limit changes apply

@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/shipyard-auto/shipyard/addons/comms-whatsapp/internal/wa/archive"
 	yardlogs "github.com/shipyard-auto/shipyard/internal/logs"
 )
 
@@ -21,6 +22,7 @@ import (
 //
 //	status → Status
 //	send   SendRequest → SendResult
+//	limits {chat?} → LimitsReport
 //
 // Refusals carry their SendCode in error.data.code so clients can branch
 // on it without parsing messages.
@@ -47,7 +49,8 @@ type RPCError struct {
 }
 
 type rpcErrData struct {
-	Code SendCode `json:"code"`
+	Code              SendCode `json:"code"`
+	RetryAfterSeconds int      `json:"retry_after_seconds,omitempty"`
 }
 
 func (e *RPCError) Error() string { return e.Message }
@@ -58,19 +61,20 @@ func (e *RPCError) SendError() *SendError {
 	if e.Data == nil || e.Data.Code == "" {
 		return nil
 	}
-	return &SendError{Code: e.Data.Code, Msg: e.Message}
+	return &SendError{Code: e.Data.Code, Msg: e.Message, RetryAfter: time.Duration(e.Data.RetryAfterSeconds) * time.Second}
 }
 
 var sendCodeNumbers = map[SendCode]int{
-	CodeInvalid:      -32602,
-	CodePaused:       -32010,
-	CodeNotAllowed:   -32011,
-	CodeNoHistory:    -32012,
-	CodeRateLimited:  -32014,
-	CodeTooLong:      -32015,
-	CodeNotConnected: -32016,
-	CodeUnknownChat:  -32017,
-	CodeSendFailed:   -32018,
+	CodeInvalid:        -32602,
+	CodePaused:         -32010,
+	CodeNotAllowed:     -32011,
+	CodeNoHistory:      -32012,
+	CodeRateLimited:    -32014,
+	CodeTooLong:        -32015,
+	CodeNotConnected:   -32016,
+	CodeUnknownChat:    -32017,
+	CodeSendFailed:     -32018,
+	CodeGroupsDisabled: -32019,
 }
 
 const (
@@ -163,6 +167,24 @@ func (s *RPCServer) dispatch(ctx context.Context, req rpcRequest) (any, *RPCErro
 	switch req.Method {
 	case "status":
 		return s.Tracker.Snapshot(), nil
+	case "limits":
+		var p struct {
+			Chat string `json:"chat"`
+		}
+		if len(req.Params) > 0 {
+			if err := json.Unmarshal(req.Params, &p); err != nil {
+				return nil, &RPCError{Code: sendCodeNumbers[CodeInvalid], Message: "invalid params: " + err.Error(), Data: &rpcErrData{Code: CodeInvalid}}
+			}
+		}
+		rep, err := s.limits(ctx, p.Chat)
+		if err != nil {
+			var se *SendError
+			if errors.As(err, &se) {
+				return nil, &RPCError{Code: sendCodeNumbers[se.Code], Message: se.Msg, Data: &rpcErrData{Code: se.Code}}
+			}
+			return nil, &RPCError{Code: rpcInternal, Message: err.Error()}
+		}
+		return rep, nil
 	case "send":
 		var sr SendRequest
 		if err := json.Unmarshal(req.Params, &sr); err != nil {
@@ -175,7 +197,8 @@ func (s *RPCServer) dispatch(ctx context.Context, req rpcRequest) (any, *RPCErro
 		}
 		var se *SendError
 		if errors.As(err, &se) {
-			return nil, &RPCError{Code: sendCodeNumbers[se.Code], Message: se.Msg, Data: &rpcErrData{Code: se.Code}}
+			return nil, &RPCError{Code: sendCodeNumbers[se.Code], Message: se.Msg,
+				Data: &rpcErrData{Code: se.Code, RetryAfterSeconds: int(se.RetryAfter.Seconds())}}
 		}
 		s.Log.Error(yardlogs.EventWARPCError, slog.String(yardlogs.KeyMessage, "send failed internally"),
 			slog.String(yardlogs.KeyError, err.Error()))
@@ -183,6 +206,23 @@ func (s *RPCServer) dispatch(ctx context.Context, req rpcRequest) (any, *RPCErro
 	default:
 		return nil, &RPCError{Code: rpcMethodNotFound, Message: "unknown method " + req.Method}
 	}
+}
+
+// limits builds the LimitsReport for an optional chat (name, phone or JID).
+func (s *RPCServer) limits(ctx context.Context, chatQuery string) (LimitsReport, error) {
+	cfg, err := s.Outbox.Config()
+	if err != nil {
+		return LimitsReport{}, err
+	}
+	var chat *archive.Chat
+	if chatQuery != "" {
+		c, err := ResolveChat(ctx, s.Outbox.Archive, chatQuery)
+		if err != nil {
+			return LimitsReport{}, refuse(CodeUnknownChat, "%v", err)
+		}
+		chat = &c
+	}
+	return BuildLimitsReport(ctx, s.Outbox.Archive, cfg, s.Outbox.Now(), chat)
 }
 
 // ErrDaemonNotRunning is returned by CallRPC when nothing listens on the

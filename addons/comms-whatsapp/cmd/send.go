@@ -54,7 +54,7 @@ func runSend(ctx context.Context, e env, args []string) error {
 	if err != nil {
 		var se *wa.SendError
 		if errors.As(err, &se) {
-			return &wa.ExitError{Code: ExitRefused, Err: fmt.Errorf("refused (%s): %s", se.Code, se.Msg)}
+			return &wa.ExitError{Code: ExitRefused, Err: errors.New(refusalMessage(se))}
 		}
 		return err
 	}
@@ -123,7 +123,14 @@ func runAllow(ctx context.Context, e env, args []string, allowed bool) error {
 		return err
 	}
 	if chat.Kind == archive.KindGroup && allowed {
-		return errors.New("groups cannot be added to the send allowlist: a bot posting in groups is the pattern WhatsApp bans most")
+		cfg, err := loadConfig(e)
+		if err != nil {
+			return err
+		}
+		if !cfg.AllowGroups {
+			return errors.New("sending to groups is off; enable it first with 'config set allow-groups true' " +
+				"(only for groups you run — posting into others' groups is what WhatsApp bans most)")
+		}
 	}
 	if err := arch.SetSendAllowed(ctx, chat.JID, allowed); err != nil {
 		return err
@@ -191,7 +198,7 @@ func runTool(ctx context.Context, e env, args []string) error {
 		return err
 	}
 	if len(pos) != 1 {
-		return errors.New("usage: tool <send|chats|history>  (JSON on stdin, envelope on stdout)")
+		return errors.New("usage: tool <send|chats|history|limits>  (JSON on stdin, envelope on stdout)")
 	}
 	raw, err := io.ReadAll(io.LimitReader(e.stdin, 1<<20))
 	if err != nil {
@@ -205,6 +212,8 @@ func runTool(ctx context.Context, e env, args []string) error {
 		out = toolChats(ctx, e, raw)
 	case "history":
 		out = toolHistory(ctx, e, raw)
+	case "limits":
+		out = toolLimits(ctx, e, raw)
 	default:
 		out = envelope{Error: "unknown tool " + pos[0]}
 	}
@@ -235,7 +244,11 @@ func toolSend(ctx context.Context, e env, raw []byte) envelope {
 	if err != nil {
 		var se *wa.SendError
 		if errors.As(err, &se) {
-			return envelope{Error: se.Msg, Details: map[string]string{"code": string(se.Code)}}
+			details := map[string]any{"code": string(se.Code)}
+			if se.RetryAfter > 0 {
+				details["retry_after_seconds"] = int(se.RetryAfter.Seconds())
+			}
+			return envelope{Error: se.Msg, Details: details}
 		}
 		return envelope{Error: err.Error()}
 	}
@@ -326,7 +339,8 @@ var toolDefs = []toolDef{
 	{
 		name: "wa_send",
 		description: "Send a WhatsApp text message from the linked number. The chat must be on the allowlist and have a prior conversation; " +
-			"refusals return details.code (not_allowed, no_history, rate_limited, paused, too_long, unknown_chat, not_connected) and must not be worked around. " +
+			"refusals return details.code (not_allowed, groups_disabled, no_history, rate_limited, paused, too_long, unknown_chat, not_connected) and must not be worked around; " +
+			"rate_limited also returns details.retry_after_seconds (check wa_limits before batches). " +
 			"Pass an idempotency_key so a retry never sends twice. Full rules: `shipyard-comms-whatsapp help sending`.",
 		input:  map[string]string{"chat": "string", "text": "string", "idempotency_key": "string", "dry_run": "boolean"},
 		output: map[string]string{"msg_id": "string", "chat": "string", "chat_name": "string", "sent_at": "string", "duplicate": "boolean", "dry_run": "boolean"},
@@ -336,6 +350,13 @@ var toolDefs = []toolDef{
 		description: "List known WhatsApp chats (name, jid, kind, watched, send_allowed). Optional search ignores case and accents.",
 		input:       map[string]string{"search": "string", "watched": "boolean"},
 		output:      map[string]string{"chats": "array", "total": "number", "truncated": "boolean"},
+	},
+	{
+		name: "wa_limits",
+		description: "Show WhatsApp send limits and live usage: per contact, per group and overall, with remaining slots and when the next opens. " +
+			"With chat, also says whether a send to it would be accepted now and which refusal codes apply.",
+		input:  map[string]string{"chat": "string"},
+		output: map[string]string{"per_chat": "object", "per_group": "object", "global": "object", "allow_groups": "boolean", "paused": "boolean", "chat": "object"},
 	},
 	{
 		name:        "wa_history",
