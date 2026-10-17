@@ -58,6 +58,9 @@ const (
 	AuthBearer    AuthType = "bearer"
 	AuthToken     AuthType = "token"
 	AuthLocalOnly AuthType = "local-only"
+	// AuthSigned requires a request signed by a registered client that holds
+	// the route's Scope (see internal/signing).
+	AuthSigned AuthType = "signed"
 )
 
 // ActionType enumerates dispatchable action types.
@@ -83,6 +86,23 @@ type Auth struct {
 	Value  string   `json:"value,omitempty"`
 	Header string   `json:"header,omitempty"`
 	Query  string   `json:"query,omitempty"`
+	Scope  string   `json:"scope,omitempty"`
+}
+
+// ClientInfo describes a signed-route client without its secret.
+type ClientInfo struct {
+	ID        string    `json:"id"`
+	Scopes    []string  `json:"scopes"`
+	CreatedAt time.Time `json:"createdAt"`
+	RotatedAt time.Time `json:"rotatedAt,omitzero"`
+	Disabled  bool      `json:"disabled,omitempty"`
+}
+
+// IssuedClient is a client together with its secret, returned only when
+// the secret is created or rotated.
+type IssuedClient struct {
+	ClientInfo
+	Secret string `json:"secret"`
 }
 
 // Action describes the operation executed when a Route is triggered.

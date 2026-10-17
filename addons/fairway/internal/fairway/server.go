@@ -47,6 +47,11 @@ type ServerConfig struct {
 
 	// Stats tracks per-route request counters. Optional.
 	Stats *Stats
+
+	// Clients is the registry signed routes authenticate against. Optional:
+	// without it, signed routes answer 500 (misconfiguration) rather than
+	// letting anything through.
+	Clients *ClientStore
 }
 
 // Server is the HTTP server for the fairway daemon. It matches incoming
@@ -66,6 +71,8 @@ type Server struct {
 
 	authCacheMu sync.RWMutex
 	authCache   map[string]Authenticator
+	authDeps    AuthDeps
+	clients     *ClientStore
 
 	// asyncWG tracks goroutines spawned for async routes so a graceful
 	// shutdown can wait for them to complete before returning.
@@ -81,6 +88,11 @@ func NewServer(cfg ServerConfig) *Server {
 		eventLogger: cfg.EventLogger,
 		stats:       cfg.Stats,
 		authCache:   make(map[string]Authenticator),
+		authDeps:    AuthDeps{Nonces: NewNonceCache()},
+		clients:     cfg.Clients,
+	}
+	if cfg.Clients != nil { // avoid a non-nil interface around a nil pointer
+		s.authDeps.Clients = cfg.Clients
 	}
 
 	if s.logger == nil {
@@ -183,6 +195,9 @@ func ServerHandlerForTest(s *Server) http.Handler {
 	return s.httpSrv.Handler
 }
 
+// ClientStore returns the client registry (nil when not configured).
+func (s *Server) ClientStore() *ClientStore { return s.clients }
+
 // InvalidateAuthCache clears the authenticator cache.
 // Must be called after a route is added, deleted, or replaced.
 func (s *Server) InvalidateAuthCache() {
@@ -201,6 +216,11 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 // and dispatches the action.
 func (s *Server) handleRouted(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
+
+	// Identity is asserted by fairway after verifying a signature, never
+	// by the caller: drop any copy that arrived from outside.
+	r.Header.Del(HeaderClientID)
+	r.Header.Del(HeaderClientScopes)
 
 	route, ok := s.router.Match(r.URL.Path)
 	if !ok {
@@ -229,7 +249,19 @@ func (s *Server) handleRouted(w http.ResponseWriter, r *http.Request) {
 
 	authType := string(route.Auth.Type)
 
-	if err := auth.Verify(r); err != nil {
+	var verr error
+	if ca, ok := auth.(ContextAuthenticator); ok {
+		var authed *http.Request
+		if authed, verr = ca.VerifyContext(r); verr == nil {
+			r = authed
+			if id, ok := IdentityFrom(r.Context()); ok {
+				yardlogs.MarkClient(r, id.ClientID)
+			}
+		}
+	} else {
+		verr = auth.Verify(r)
+	}
+	if err := verr; err != nil {
 		if ae, ok := IsAuthError(err); ok {
 			sc.Header().Set("Content-Type", "application/json")
 			sc.WriteHeader(ae.Status)
@@ -368,6 +400,9 @@ func (s *Server) dispatchAsync(sc *statusCapture, r *http.Request, route Route, 
 	// r.Context().
 	asyncCtx, cancel := context.WithTimeout(context.Background(), timeout)
 	asyncCtx = trace.WithID(asyncCtx, traceID)
+	if id, ok := IdentityFrom(r.Context()); ok {
+		asyncCtx = WithIdentity(asyncCtx, id)
+	}
 	reqCopy := r.Clone(asyncCtx)
 	if bodyBytes != nil {
 		reqCopy.Body = io.NopCloser(bytes.NewReader(bodyBytes))
@@ -586,7 +621,7 @@ func (s *Server) getOrCreateAuth(route Route) (Authenticator, error) {
 	if auth, ok := s.authCache[route.Path]; ok {
 		return auth, nil
 	}
-	auth, err := NewAuthenticator(route.Auth)
+	auth, err := NewAuthenticatorWith(route.Auth, s.authDeps)
 	if err != nil {
 		return nil, err
 	}

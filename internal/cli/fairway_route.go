@@ -48,6 +48,7 @@ type addRouteInput struct {
 	authValue  string
 	authHeader string
 	authQuery  string
+	authScope  string
 	actionType string
 	target     string
 	provider   string
@@ -155,11 +156,12 @@ daemon restarts.`,
 	}
 
 	cmd.Flags().StringVar(&input.path, "path", "", "Route path (must start with /)")
-	cmd.Flags().StringVar(&input.authType, "auth", "", "Auth type: bearer, token, local-only")
+	cmd.Flags().StringVar(&input.authType, "auth", "", "Auth type: bearer, token, local-only, signed")
 	cmd.Flags().StringVar(&input.authToken, "auth-token", "", "Bearer token secret")
 	cmd.Flags().StringVar(&input.authValue, "auth-value", "", "Token auth expected value")
 	cmd.Flags().StringVar(&input.authHeader, "auth-header", "", "Token auth header name")
 	cmd.Flags().StringVar(&input.authQuery, "auth-query", "", "Token auth query parameter name")
+	cmd.Flags().StringVar(&input.authScope, "scope", "", "Scope a client must hold for --auth signed (e.g. whatsapp.read, cron.run:backup)")
 	cmd.Flags().StringVar(&input.actionType, "action", "", "Action type: cron.run, service.restart, message.send, telegram.handle, http.forward, crew.run, ...")
 	cmd.Flags().StringVar(&input.target, "target", "", "Action target")
 	cmd.Flags().StringVar(&input.provider, "provider", "", "Optional provider name for message.send")
@@ -336,6 +338,7 @@ func buildRouteFromAddInput(input addRouteInput, deps routeDeps) (fairwayctl.Rou
 			Value:  input.authValue,
 			Header: input.authHeader,
 			Query:  input.authQuery,
+			Scope:  input.authScope,
 		},
 		Action: fairwayctl.Action{
 			Type:     fairwayctl.ActionType(input.actionType),
@@ -375,7 +378,11 @@ func renderRouteListHuman(w io.Writer, routes []fairwayctl.Route) {
 		if route.Async {
 			mode = "async"
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", route.Path, route.Auth.Type, formatRouteAction(route.Action), timeout, mode)
+		auth := string(route.Auth.Type)
+		if route.Auth.Scope != "" {
+			auth += "(" + route.Auth.Scope + ")"
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", route.Path, auth, formatRouteAction(route.Action), timeout, mode)
 	}
 	_ = tw.Flush()
 }

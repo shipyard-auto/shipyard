@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"time"
 )
 
 // AuthError is the error type returned by Authenticator.Verify.
@@ -38,10 +39,34 @@ type Authenticator interface {
 	Verify(r *http.Request) error
 }
 
+// AuthDeps are what stateful authenticators need. Only signed auth uses
+// them today.
+type AuthDeps struct {
+	Clients ClientLookup
+	Nonces  *NonceCache
+	Now     func() time.Time
+}
+
 // NewAuthenticator returns the Authenticator implementation that corresponds
 // to the given Auth configuration. Returns an error for unknown AuthType values.
+// Signed routes need NewAuthenticatorWith.
 func NewAuthenticator(a Auth) (Authenticator, error) {
+	return NewAuthenticatorWith(a, AuthDeps{})
+}
+
+// NewAuthenticatorWith is NewAuthenticator with the dependencies signed
+// routes need (client registry, nonce cache, clock).
+func NewAuthenticatorWith(a Auth, deps AuthDeps) (Authenticator, error) {
 	switch a.Type {
+	case AuthSigned:
+		if deps.Clients == nil || deps.Nonces == nil {
+			return nil, fmt.Errorf("signed auth needs a client registry")
+		}
+		now := deps.Now
+		if now == nil {
+			now = time.Now
+		}
+		return &signedAuth{clients: deps.Clients, scope: a.Scope, nonces: deps.Nonces, now: now}, nil
 	case AuthBearer:
 		return &bearerAuth{token: a.Token}, nil
 	case AuthToken:

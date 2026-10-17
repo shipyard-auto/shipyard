@@ -188,6 +188,37 @@ shipyard fairway route test /hooks/github --method POST --header X-Test=1
 shipyard fairway route test /hooks/github --body-file ./payload.json
 ```
 
+### Signed Routes and Clients
+
+For external systems (another service, a dashboard, a promotions manager),
+create routes with `--auth signed --scope <scope>` and register each system
+as a client:
+
+```bash
+shipyard fairway client add promo-manager --scope whatsapp.read --secret-file ./promo.secret
+shipyard fairway route add --path /api/wa/history --auth signed --scope whatsapp.read \
+  --action http.forward --url http://127.0.0.1:9000/history
+shipyard fairway client sign --client promo-manager --secret-file ./promo.secret \
+  --url http://127.0.0.1:9876/api/wa/history --body '{"chat":"Promo"}' --curl
+```
+
+Each request carries `X-Shipyard-Client`, `X-Shipyard-Timestamp` (±5 min),
+`X-Shipyard-Nonce` (single use) and `X-Shipyard-Signature`
+(`v1=` + hex HMAC-SHA256 of
+`v1\nMETHOD\npath\nrawquery\ntimestamp\nnonce\nhex(sha256(body))`, keyed with
+the client secret). Responses: 401 for unsigned, stale, replayed or invalid
+requests (one identical message for unknown clients and bad signatures), 403
+when the client lacks the route's scope.
+
+Scopes are opaque `<name>[:<resource>]` strings (`whatsapp.read`,
+`cron.run:backup`, `events.*`). Fairway checks the name; the service behind
+the route receives the identity — `X-Shipyard-Client-Id` /
+`X-Shipyard-Client-Scopes` headers for `http.forward`, `SHIPYARD_CLIENT_ID` /
+`SHIPYARD_CLIENT_SCOPES` for other actions — and narrows by resource.
+Identity headers sent by callers are always stripped. Client secrets live in
+`~/.shipyard/fairway/clients.json` (0600), separate from `routes.json`;
+`rotate` replaces a secret, `disable`/`rm` cut a client off immediately.
+
 ### Logs
 
 Read JSONL request logs directly from disk:

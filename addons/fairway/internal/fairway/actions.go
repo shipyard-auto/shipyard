@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"os/exec"
+	"strings"
 	"time"
 )
 
@@ -223,6 +225,13 @@ func (e *executor) executeSubprocessLocked(ctx context.Context, route Route, req
 	if stdin != nil {
 		cmd.Stdin = stdin
 	}
+	if id, ok := IdentityFrom(req.Context()); ok {
+		base := cmd.Env
+		if base == nil {
+			base = os.Environ()
+		}
+		cmd.Env = append(base, identityEnv(id)...)
+	}
 
 	runErr := cmd.Run()
 	duration := e.cfg.Now().Sub(start)
@@ -291,6 +300,10 @@ func (e *executor) executeHTTPForward(ctx context.Context, route Route, req *htt
 
 	for k, v := range route.Action.Headers {
 		outReq.Header.Set(k, v)
+	}
+	if id, ok := IdentityFrom(req.Context()); ok {
+		outReq.Header.Set(HeaderClientID, id.ClientID)
+		outReq.Header.Set(HeaderClientScopes, strings.Join(id.Scopes, ","))
 	}
 
 	resp, err := e.cfg.HTTP.Do(outReq)

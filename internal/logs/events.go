@@ -131,6 +131,9 @@ const (
 
 	KeyChatJID = "chat_jid"
 	KeyCount   = "count"
+	// KeyClientID names the authenticated API client of a signed fairway
+	// route.
+	KeyClientID = "client_id"
 
 	// Subprocess output capture. Emitted on completion events (cron_job_run_*,
 	// run_end, future runners) so operators can see the tail of stdout without
