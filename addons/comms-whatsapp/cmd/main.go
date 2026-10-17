@@ -67,21 +67,25 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		fmt.Fprintln(stdout, app.Version)
 		return nil
 	}
-	if len(args) == 0 || args[0] == "help" || args[0] == "--help" || args[0] == "-h" {
-		printHelp(stdout)
-		return nil
-	}
 	paths, err := wa.DefaultPaths()
 	if err != nil {
 		return err
 	}
 	e := env{paths: paths, stdin: stdin, stdout: stdout, stderr: stderr}
-	return dispatch(ctx, e, args)
+	if len(args) == 0 || args[0] == "--help" || args[0] == "-h" {
+		args = []string{"help"}
+	}
+	if err := dispatch(ctx, e, args); !errors.Is(err, errHelpShown) {
+		return err
+	}
+	return nil
 }
 
 func dispatch(ctx context.Context, e env, args []string) error {
 	rest := args[1:]
 	switch args[0] {
+	case "help":
+		return runHelp(ctx, e, rest)
 	case "pair":
 		return runPair(ctx, e, rest)
 	case "serve":
@@ -109,51 +113,12 @@ func dispatch(ctx context.Context, e env, args []string) error {
 	case "tool":
 		return runTool(ctx, e, rest)
 	case "tools":
-		if len(rest) == 0 || rest[0] != "install" {
-			return errors.New("usage: tools install [--dir D] [--force]")
-		}
-		return runToolsInstall(ctx, e, rest[1:])
+		return runToolsInstall(ctx, e, rest)
 	case "logout":
 		return runLogout(ctx, e, rest)
 	case "config":
 		return runConfig(ctx, e, rest)
 	default:
-		printHelp(e.stderr)
-		return fmt.Errorf("unknown command %q", args[0])
+		return fmt.Errorf("unknown command %q; run '%s help' for the list", args[0], progName())
 	}
-}
-
-func printHelp(w io.Writer) {
-	fmt.Fprintf(w, `%s
-
-Usage: shipyard comms whatsapp <command> [flags]
-
-Setup
-  pair [--phone +55...] [--force]   link this machine under "Linked devices"
-  logout [--local]                  unlink and delete the local keys
-  config                            show settings
-  config set <key> <value>          device-name | default-ttl | limit-per-chat |
-                                    limit-global | max-chars | humanize
-
-Daemon
-  serve                             run the daemon (normally as a service)
-  status [--json]                   pairing, daemon and archive summary
-
-Archive
-  chats [--search q] [--watched] [--json]
-  watch <chat> [--ttl 7d]           archive a chat (name, JID or phone number)
-  unwatch <chat>                    stop archiving and delete its history
-  history <chat> [--since 24h] [--limit 200] [--json]
-
-Sending (through the running daemon)
-  send <chat> (--text T | --stdin) [--idempotency-key K] [--dry-run] [--json]
-  allow <chat> | deny <chat>        send allowlist (contacts only, never groups)
-  pause | resume                    stop or restart all sending immediately
-  tools install [--force]           wa_send / wa_chats / wa_history for crew
-  tool <send|chats|history>         the crew exec contract (stdin → envelope)
-
-Messages are only archived for watched chats and expire after their TTL
-(default %s, max %s). A send needs the chat on the allowlist and a prior
-conversation; refusals exit with code 3.
-`, app.Info(), wa.FormatDuration(wa.DefaultTTL), wa.FormatDuration(wa.MaxTTL))
 }

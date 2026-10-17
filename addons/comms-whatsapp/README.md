@@ -17,6 +17,19 @@ runs under `shipyard service`.
 
 ## Commands
 
+Every command documents itself, written for people and for agents that
+arrive without context:
+
+```bash
+shipyard-comms-whatsapp help                 # overview, concepts, rules for agents
+shipyard-comms-whatsapp help send            # same as: send --help / send -h
+shipyard-comms-whatsapp help sending         # topics: sending, agent-tools, files, exit-codes
+```
+
+Flags in help come from the real flag definitions, so they never drift. When
+invoked through a wrapper (the core CLI's `shipyard comms whatsapp`), the
+wrapper sets `SHIPYARD_PROG` and help shows that name.
+
 ```bash
 shipyard-comms-whatsapp pair                    # QR code in the terminal
 shipyard-comms-whatsapp pair --phone +5511…     # 8-char code typed on the phone (headless servers)

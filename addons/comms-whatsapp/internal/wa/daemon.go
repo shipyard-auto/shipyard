@@ -33,7 +33,7 @@ type ExitError struct {
 func (e *ExitError) Error() string { return e.Err.Error() }
 func (e *ExitError) Unwrap() error { return e.Err }
 
-var errNoDevice = errors.New("no paired device: run 'shipyard comms whatsapp pair' first")
+var errNoDevice = errors.New("no paired device: run 'shipyard-comms-whatsapp pair' first")
 
 // PruneInterval is how often the daemon applies archive TTLs.
 const PruneInterval = time.Hour

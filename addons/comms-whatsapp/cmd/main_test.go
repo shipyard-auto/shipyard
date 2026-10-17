@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"flag"
 	"io"
 	"path/filepath"
 	"strings"
@@ -78,7 +77,7 @@ func TestVersionAndHelp(t *testing.T) {
 		t.Fatalf("version: %q %v", out, err)
 	}
 	out, _, err = cli(t)
-	if err != nil || !strings.Contains(out, "watch <chat>") {
+	if err != nil || !strings.Contains(out, "Concepts") || !strings.Contains(out, "watch") {
 		t.Fatalf("help: %q %v", out, err)
 	}
 	if _, _, err := cli(t, "nope"); err == nil {
@@ -182,8 +181,7 @@ func TestConfigAndStatus(t *testing.T) {
 }
 
 func TestParseInterspersed(t *testing.T) {
-	fs := flag.NewFlagSet("t", flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
+	fs := newFlags("watch", env{stdout: io.Discard, stderr: io.Discard})
 	ttl := fs.String("ttl", "", "")
 	pos, err := parse(fs, []string{"a", "--ttl", "3d", "b"})
 	if err != nil || *ttl != "3d" || strings.Join(pos, ",") != "a,b" {

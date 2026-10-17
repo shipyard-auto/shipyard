@@ -9,7 +9,7 @@ import (
 
 // ErrSessionBusy is returned by AcquireLock when another process (normally
 // the daemon) already owns the session.
-var ErrSessionBusy = errors.New("whatsapp session is in use by another process (is the daemon running? see 'shipyard comms whatsapp status')")
+var ErrSessionBusy = errors.New("whatsapp session is in use by another process (is the daemon running? see 'shipyard-comms-whatsapp status')")
 
 // Lock is an exclusive advisory lock on run/wa.lock. Only one process may
 // hold the linked-device session at a time: two connections with the same

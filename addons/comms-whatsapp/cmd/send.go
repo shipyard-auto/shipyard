@@ -142,8 +142,16 @@ func runAllow(ctx context.Context, e env, args []string, allowed bool) error {
 // ── pause / resume ───────────────────────────────────────────────────────
 
 func runPause(_ context.Context, e env, args []string, paused bool) error {
-	if len(args) != 0 {
-		return errors.New("usage: pause | resume")
+	name := "resume"
+	if paused {
+		name = "pause"
+	}
+	pos, err := parse(newFlags(name, e), args)
+	if err != nil {
+		return err
+	}
+	if len(pos) != 0 {
+		return fmt.Errorf("usage: %s", name)
 	}
 	cfg, err := loadConfig(e)
 	if err != nil {
@@ -178,7 +186,11 @@ type envelope struct {
 }
 
 func runTool(ctx context.Context, e env, args []string) error {
-	if len(args) != 1 {
+	pos, err := parse(newFlags("tool", e), args)
+	if err != nil {
+		return err
+	}
+	if len(pos) != 1 {
 		return errors.New("usage: tool <send|chats|history>  (JSON on stdin, envelope on stdout)")
 	}
 	raw, err := io.ReadAll(io.LimitReader(e.stdin, 1<<20))
@@ -186,7 +198,7 @@ func runTool(ctx context.Context, e env, args []string) error {
 		return writeJSON(e.stdout, envelope{Error: "read input: " + err.Error()})
 	}
 	var out envelope
-	switch args[0] {
+	switch pos[0] {
 	case "send":
 		out = toolSend(ctx, e, raw)
 	case "chats":
@@ -194,7 +206,7 @@ func runTool(ctx context.Context, e env, args []string) error {
 	case "history":
 		out = toolHistory(ctx, e, raw)
 	default:
-		out = envelope{Error: "unknown tool " + args[0]}
+		out = envelope{Error: "unknown tool " + pos[0]}
 	}
 	return writeJSON(e.stdout, out)
 }
@@ -314,8 +326,8 @@ var toolDefs = []toolDef{
 	{
 		name: "wa_send",
 		description: "Send a WhatsApp text message from the linked number. The chat must be on the allowlist and have a prior conversation; " +
-			"refusals return details.code (not_allowed, no_history, rate_limited, paused, too_long, unknown_chat, not_connected). " +
-			"Pass an idempotency_key so a retry never sends twice.",
+			"refusals return details.code (not_allowed, no_history, rate_limited, paused, too_long, unknown_chat, not_connected) and must not be worked around. " +
+			"Pass an idempotency_key so a retry never sends twice. Full rules: `shipyard-comms-whatsapp help sending`.",
 		input:  map[string]string{"chat": "string", "text": "string", "idempotency_key": "string", "dry_run": "boolean"},
 		output: map[string]string{"msg_id": "string", "chat": "string", "chat_name": "string", "sent_at": "string", "duplicate": "boolean", "dry_run": "boolean"},
 	},
@@ -334,11 +346,15 @@ var toolDefs = []toolDef{
 }
 
 func runToolsInstall(_ context.Context, e env, args []string) error {
-	fs := newFlags("tools install", e)
+	fs := newFlags("tools", e)
 	dir := fs.String("dir", "", "crew tools library (default $SHIPYARD_HOME/crew/tools or ~/.shipyard/crew/tools)")
 	force := fs.Bool("force", false, "overwrite existing wa_* tool files")
-	if _, err := parse(fs, args); err != nil {
+	pos, err := parse(fs, args)
+	if err != nil {
 		return err
+	}
+	if len(pos) != 1 || pos[0] != "install" {
+		return fmt.Errorf("usage: tools install [--dir D] [--force] (see '%s help tools')", progName())
 	}
 	if *dir == "" {
 		// e.paths.Dir is <shipyard home>/comms/whatsapp.

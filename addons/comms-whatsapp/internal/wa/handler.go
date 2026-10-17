@@ -53,7 +53,7 @@ type Handler struct {
 
 // Fatal errors passed to OnFatal.
 var (
-	ErrLoggedOut      = fmt.Errorf("the phone removed this linked device; run 'shipyard comms whatsapp pair' again")
+	ErrLoggedOut      = fmt.Errorf("the phone removed this linked device; run 'shipyard-comms-whatsapp pair' again")
 	ErrStreamReplaced = fmt.Errorf("another client connected with this session; only one daemon may run per session")
 )
 
