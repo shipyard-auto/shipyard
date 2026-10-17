@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"strconv"
 	"time"
 
 	"go.mau.fi/whatsmeow/types"
@@ -195,25 +194,8 @@ func (h *Handler) route(ctx context.Context, e *events.Message, chat types.JID, 
 		chatName = c.Name
 	}
 	pn, _ := h.Dir.Own()
-	ev := Event{
-		SchemaVersion: 1,
-		ID:            e.Info.ID,
-		TraceID:       newTraceID(),
-		Channel:       EventChannel,
-		Direction:     "inbound",
-		From:          EventAddress{Channel: EventChannel, Raw: sender.String(), Display: senderName},
-		To:            []EventAddress{{Channel: EventChannel, Raw: pn.String()}},
-		Body:          content.Text,
-		Metadata: map[string]string{
-			"chat_jid":  chat.String(),
-			"chat_name": chatName,
-			"chat_kind": string(kind),
-			"from_me":   strconv.FormatBool(e.Info.IsFromMe),
-			"kind":      content.Kind,
-			"reply_to":  content.ReplyTo,
-		},
-		Timestamp: e.Info.Timestamp.UTC(),
-	}
+	ev := messageEvent(e.Info.ID, newTraceID(), sender.String(), senderName, pn.String(), chat.String(), chatName, kind,
+		e.Info.IsFromMe, content.Kind, content.Text, content.ReplyTo, e.Info.Timestamp)
 	if path != "" {
 		h.Deliver(path, ev)
 	}

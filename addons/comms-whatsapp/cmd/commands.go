@@ -159,6 +159,13 @@ func printReport(w io.Writer, r wa.Report, now time.Time) {
 		receiving += fmt.Sprintf(", %d delivered, %d failed since daemon start", r.Daemon.Delivered, r.Daemon.DeliveryFailed)
 	}
 	fmt.Fprintf(tw, "Receiving:\t%s\n", receiving)
+	switch {
+	case r.Config.APIAddr == "":
+	case r.Running && r.Daemon.APIAddr == r.Config.APIAddr:
+		fmt.Fprintf(tw, "Query API:\tserving on %s (see 'api')\n", r.Config.APIAddr)
+	default:
+		fmt.Fprintf(tw, "Query API:\tenabled on %s, not serving — restart the daemon\n", r.Config.APIAddr)
+	}
 }
 
 // ── chats ────────────────────────────────────────────────────────────────

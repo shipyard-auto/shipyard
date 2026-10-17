@@ -43,7 +43,7 @@ type cmdDoc struct {
 	examples []string
 }
 
-var groups = []string{"Setup", "Daemon", "Archive", "Receiving", "Sending", "Agents"}
+var groups = []string{"Setup", "Daemon", "Archive", "Receiving", "Sending", "Agents", "External systems"}
 
 var cmdDocs = []cmdDoc{
 	{
@@ -95,6 +95,7 @@ Keys:
   include-own     true/false: also deliver messages the account itself sent
   publish-events  true/false: publish every new message to fairway's events
                   API for signed webhook subscribers (default false)
+  api-addr        loopback host:port of the query API, or "off" (prefer 'api')
 
 Pausing is not a key: use pause / resume.`,
 		examples: []string{"config", "config set default-ttl 7d", "config set allow-groups true"},
@@ -183,6 +184,53 @@ Routing is independent of watch: a routed chat is delivered whether or not it
 is archived. Messages the account sends itself are skipped unless
 'config set include-own true'. Changes apply live, without a restart.`,
 		examples: []string{`route set "Vini Eduqo" /wa/vini`, "route set default /wa/inbox", "route list", `route rm "Vini Eduqo"`},
+	},
+	{
+		name: "api", group: "External systems",
+		usage:   "api [status] [--json] | api enable [--addr 127.0.0.1:9877] [--prefix /api/whatsapp] | api disable | api rotate-token",
+		summary: "let signed external systems read chats through fairway (cursor-paginated)",
+		details: `Serves a small query API so another system (on this machine or elsewhere)
+can read the archive through fairway, limited to the chats it was granted.
+
+  client --signed request--> fairway route (auth signed, scope whatsapp.read)
+         --http.forward + API token--> daemon API on loopback
+
+enable  sets api_addr (loopback only), creates the API token (api.token, 0600)
+        and writes one fairway route definition per endpoint under api-routes/,
+        then prints the commands to register them. Restart the daemon after the
+        first enable; the API is read at start.
+disable turns it off (restart to apply) and lists the routes to delete.
+rotate-token replaces the token and rewrites the route files; re-add the
+        routes in fairway (the old token stops working at once).
+
+Fairway authenticates the client and forwards its id and scopes; the daemon
+enforces which chats it may read: whatsapp.read:<chat jid> for one chat, a
+glob such as whatsapp.read:120363*@g.us, or whatsapp.read / whatsapp.read:*
+for all. Only watched chats have messages (see 'watch').
+
+POST <prefix>/messages  body (all optional):
+  {"chat":"<jid|name|phone>", "since":"24h|7d|<RFC 3339>",
+   "after":"<next_cursor>", "limit":100}           (limit 1-500)
+  → {"messages":[<comms Message envelope>…], "next_cursor":"…", "has_more":false}
+  Messages come in archive arrival order (a history sync can add old ones
+  late). Keep next_cursor and send it as "after" next time; it advances even
+  when no message was visible to you. Page until has_more is false. Without
+  "chat" you get every chat you may read. The envelope is the same as routes
+  and events deliver (see 'help receiving'); ids are stable, so dedupe on id.
+POST <prefix>/chats  body (optional): {"search":"promo", "kind":"group",
+  "watched_only":true}  → {"chats":[{"jid","name","kind","watched",…}]}
+
+Errors: {"error":{"code":"…","message":"…"}} with 400 invalid/ambiguous,
+401 (token; fairway misconfigured), 403 forbidden (chat not in your scopes —
+also returned for chats that do not exist, unless you may read every chat),
+404 unknown_chat, 405, 503.
+
+Typical first sync, then catch-up after downtime:
+  {"since":"7d"} → page with "after" until has_more=false → store next_cursor
+  later: {"after":"<stored cursor>"}
+Pair it with publish-events for live delivery: events are the fast path,
+the cursor is how a consumer recovers what it missed.`,
+		examples: []string{"api enable", "api", "api enable --addr 127.0.0.1:9877 --prefix /api/whatsapp", "api rotate-token", "api disable"},
 	},
 	{
 		name: "send", group: "Sending",

@@ -127,6 +127,22 @@ func Serve(ctx context.Context, opts ServeOptions) error {
 		Tracker: tracker,
 		Log:     log,
 	}
+	// The query API is optional; failing to bind it is logged, not fatal:
+	// receiving and sending keep working.
+	if cfg, _ := cfgCache.Get(); cfg.APIAddr != "" {
+		api := &APIServer{
+			Archive: arch,
+			Token:   func() (string, error) { return ReadAPIToken(opts.Paths.APIToken) },
+			Self:    func() types.JID { pn, _ := sess.Directory().Own(); return pn },
+			Log:     log,
+		}
+		if stop, err := ServeAPI(ctx, cfg.APIAddr, api.Handler()); err != nil {
+			log.Error(yardlogs.EventWAAPIError, slog.String(yardlogs.KeyMessage, "query API not started"), slog.String(yardlogs.KeyError, err.Error()))
+		} else {
+			tracker.SetAPI(cfg.APIAddr)
+			defer stop()
+		}
+	}
 	rpcDone := make(chan struct{})
 	go func() {
 		defer close(rpcDone)
