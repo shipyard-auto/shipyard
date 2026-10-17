@@ -58,6 +58,7 @@ func runChannelAdd(_ context.Context, args []string, stdout, stderr io.Writer) e
 	name := fs.String("name", "", "human-friendly channel name (unique)")
 	telegramToken := fs.String("telegram-token", "", "Telegram bot token (required when --type=telegram)")
 	telegramBotUsername := fs.String("telegram-bot-username", "", "Telegram bot username (optional, stored on the channel)")
+	whatsappSocket := fs.String("whatsapp-socket", "", "override the shipyard-comms-whatsapp daemon socket (optional; default <comms home>/whatsapp/run/wa.sock)")
 	jsonOutput := fs.Bool("json", false, "emit the registered channel as JSON instead of human-readable text")
 
 	if err := fs.Parse(args); err != nil {
@@ -92,6 +93,13 @@ func runChannelAdd(_ context.Context, args []string, stdout, stderr io.Writer) e
 		if err != nil {
 			return fmt.Errorf("comms: encode telegram secret: %w", err)
 		}
+	case comms.ChannelTypeWhatsApp:
+		// No credentials: the linked-device session belongs to the
+		// shipyard-comms-whatsapp daemon, paired with its own `pair`.
+		if *whatsappSocket != "" {
+			settings = map[string]any{"socket": *whatsappSocket}
+		}
+		secretBytes = []byte("{}")
 	default:
 		return fmt.Errorf("comms: type %q is known but has no add-flow wired (internal bug)", ct)
 	}

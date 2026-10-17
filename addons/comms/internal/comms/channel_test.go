@@ -46,8 +46,8 @@ func TestKnownChannelTypes_StableAndIsolated(t *testing.T) {
 	if !reflect.DeepEqual(first, second) {
 		t.Errorf("KnownChannelTypes not stable across calls: %v vs %v", first, second)
 	}
-	// v1 contract: telegram is the only supported type.
-	want := []ChannelType{ChannelTypeTelegram}
+	// Catalog contract: telegram, then whatsapp (daemon-backed provider).
+	want := []ChannelType{ChannelTypeTelegram, ChannelTypeWhatsApp}
 	if !reflect.DeepEqual(first, want) {
 		t.Errorf("KnownChannelTypes() = %v, want %v", first, want)
 	}

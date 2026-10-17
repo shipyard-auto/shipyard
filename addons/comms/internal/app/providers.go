@@ -6,6 +6,7 @@ import (
 	"github.com/shipyard-auto/shipyard/addons/comms/internal/comms"
 	"github.com/shipyard-auto/shipyard/addons/comms/internal/comms/provider"
 	"github.com/shipyard-auto/shipyard/addons/comms/internal/comms/provider/telegram"
+	"github.com/shipyard-auto/shipyard/addons/comms/internal/comms/provider/whatsapp"
 )
 
 // defaultRegistry is the process-wide provider catalog. Built lazily so
@@ -34,6 +35,7 @@ func Providers() *provider.Registry {
 		defer registryMu.Unlock()
 		r := provider.NewRegistry()
 		r.Register(comms.ChannelTypeTelegram, telegram.New())
+		r.Register(comms.ChannelTypeWhatsApp, whatsapp.New())
 		registry = r
 	})
 

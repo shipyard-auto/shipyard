@@ -233,8 +233,8 @@ func TestChannelList_JSON_EmptyArrayWhenNoChannels(t *testing.T) {
 }
 
 func TestChannelAdd_HelpVisibleInListKnownTypes(t *testing.T) {
-	if got := listKnownTypes(); got != "telegram" {
-		t.Errorf("listKnownTypes() = %q, want 'telegram' (v1 contract)", got)
+	if got := listKnownTypes(); got != "telegram, whatsapp" {
+		t.Errorf("listKnownTypes() = %q, want 'telegram, whatsapp'", got)
 	}
 }
 
@@ -252,5 +252,26 @@ func TestChannelAdd_NameValidatedBeforeDiskWrite(t *testing.T) {
 	// channels.json must NOT exist.
 	if _, err := os.Stat(filepath.Join(tmp, "comms", "channels.json")); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("channels.json must not exist after rejected add, stat err=%v", err)
+	}
+}
+
+func TestChannelAdd_WhatsApp_NoCredentials(t *testing.T) {
+	tmp := isolateHome(t)
+	var stdout, stderr bytes.Buffer
+	args := []string{"--type", "whatsapp", "--name", "whatsapp", "--whatsapp-socket", "/tmp/custom.sock"}
+	if err := runChannelAdd(context.Background(), args, &stdout, &stderr); err != nil {
+		t.Fatalf("add: %v\nstderr=%s", err, stderr.String())
+	}
+	chans, err := comms.NewChannelStore(filepath.Join(tmp, "comms")).Load()
+	if err != nil || len(chans) != 1 {
+		t.Fatalf("channels=%v err=%v", chans, err)
+	}
+	c := chans[0]
+	if c.Type != comms.ChannelTypeWhatsApp || c.Settings["socket"] != "/tmp/custom.sock" {
+		t.Fatalf("channel=%+v", c)
+	}
+	raw, err := os.ReadFile(comms.SecretPath(filepath.Join(tmp, "comms"), c.ID))
+	if err != nil || string(raw) != "{}" {
+		t.Fatalf("secret=%q err=%v (whatsapp stores no credentials)", raw, err)
 	}
 }

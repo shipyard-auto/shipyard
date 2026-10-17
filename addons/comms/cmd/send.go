@@ -29,6 +29,7 @@ func runSend(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	stdinBody := fs.Bool("stdin-body", false, "read the message body from stdin instead of --text")
 	from := fs.String("from", "", "optional sender identifier (defaults to the channel id)")
 	traceID := fs.String("trace-id", "", "optional trace id, propagated into the envelope for log correlation")
+	idemKey := fs.String("idempotency-key", "", "providers that support it (whatsapp) return the first result for a repeated key instead of sending twice")
 	jsonOutput := fs.Bool("json", false, "emit the receipt as JSON")
 
 	if err := fs.Parse(args); err != nil {
@@ -92,6 +93,9 @@ func runSend(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 		To:            []comms.Address{{Channel: ch.ID, Raw: *to}},
 		Body:          body,
 		Timestamp:     time.Now().UTC(),
+	}
+	if *idemKey != "" {
+		msg.Metadata = map[string]string{"idempotency_key": *idemKey}
 	}
 	if err := msg.Validate(); err != nil {
 		return fmt.Errorf("comms: built invalid message: %w", err)
