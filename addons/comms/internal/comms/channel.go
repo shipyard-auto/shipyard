@@ -17,7 +17,10 @@ type ChannelType string
 
 const (
 	ChannelTypeTelegram ChannelType = "telegram"
-	// Future: ChannelTypeSlack, ChannelTypeWhatsApp, ChannelTypeEmail.
+	// ChannelTypeWhatsApp sends through the shipyard-comms-whatsapp
+	// daemon's control socket (no credentials stored here).
+	ChannelTypeWhatsApp ChannelType = "whatsapp"
+	// Future: ChannelTypeSlack, ChannelTypeEmail.
 )
 
 // knownChannelTypes lists every type this build of comms understands.
@@ -25,6 +28,7 @@ const (
 // accidentally mutate the slice.
 var knownChannelTypes = []ChannelType{
 	ChannelTypeTelegram,
+	ChannelTypeWhatsApp,
 }
 
 // IsKnown reports whether t is in the set of types this build of comms
