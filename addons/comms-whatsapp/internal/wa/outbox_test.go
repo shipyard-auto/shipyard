@@ -162,9 +162,11 @@ func TestSendRefusals(t *testing.T) {
 		{"empty text", nil, SendRequest{Chat: viniJID.String(), Text: "  \n"}, CodeInvalid},
 		{"invalid utf8", nil, SendRequest{Chat: viniJID.String(), Text: "\xff\xfe"}, CodeInvalid},
 		{"too long", func(h *outboxHarness) { h.cfg.MaxChars = 5 }, SendRequest{Chat: viniJID.String(), Text: "123456"}, CodeTooLong},
-		{"bad jid", nil, SendRequest{Chat: "not-a-jid", Text: "oi"}, CodeInvalid},
-		{"broadcast jid", nil, SendRequest{Chat: "status@broadcast", Text: "oi"}, CodeInvalid},
-		{"unknown chat", nil, SendRequest{Chat: "5511000000000@s.whatsapp.net", Text: "oi"}, CodeUnknownChat},
+		{"unknown name", nil, SendRequest{Chat: "not-a-chat", Text: "oi"}, CodeUnknownChat},
+		{"unknown jid", nil, SendRequest{Chat: "5511000000000@s.whatsapp.net", Text: "oi"}, CodeUnknownChat},
+		{"ambiguous name", func(h *outboxHarness) {
+			mustDo(t, h.arch.UpsertChat(context.Background(), "5511977777777@s.whatsapp.net", "vini eduqo", archive.KindDM))
+		}, SendRequest{Chat: "Vini Eduqo", Text: "oi"}, CodeInvalid},
 		{"paused", func(h *outboxHarness) { h.cfg.Paused = true }, SendRequest{}, CodePaused},
 		{"not allowed", func(h *outboxHarness) {
 			mustDo(t, h.arch.SetSendAllowed(context.Background(), viniJID.String(), false))
@@ -318,5 +320,15 @@ func TestConcurrentSendsRespectLimit(t *testing.T) {
 	wg.Wait()
 	if h.sender.sends() != 3 {
 		t.Fatalf("sent %d, want 3", h.sender.sends())
+	}
+}
+
+func TestSendResolvesNamesAndPhones(t *testing.T) {
+	for _, chat := range []string{"Vini Eduqo", "vini eduqo", "+55 (12) 98201-6477", viniJID.String()} {
+		h := newOutbox(t)
+		res, err := h.ob.Send(context.Background(), SendRequest{Chat: chat, Text: "oi"})
+		if err != nil || res.Chat != viniJID.String() {
+			t.Fatalf("%q: res=%+v err=%v", chat, res, err)
+		}
 	}
 }

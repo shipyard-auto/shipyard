@@ -4,10 +4,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -36,6 +38,40 @@ type Config struct {
 	// Paused blocks every send (archiving continues). Read on each send,
 	// so `pause` takes effect without restarting the daemon.
 	Paused bool `json:"paused"`
+
+	// Inbound delivery: received messages of routed chats are POSTed to
+	// fairway as comms Message envelopes, so agents can react to them.
+	Routes Routes `json:"routes"`
+	// FairwayAddr overrides where events go ("host:port"). Empty means
+	// "read bind/port from fairway's routes.json", defaulting to
+	// 127.0.0.1:9876.
+	FairwayAddr string `json:"fairway_addr,omitempty"`
+}
+
+// Routes maps chats to fairway paths.
+type Routes struct {
+	// ByChat maps a chat JID to a fairway path ("/wa/mae").
+	ByChat map[string]string `json:"by_chat,omitempty"`
+	// Default receives every other chat's messages; empty = none.
+	Default string `json:"default,omitempty"`
+	// IncludeOwn also delivers messages the account itself sent (from the
+	// phone). Off by default: agents usually react to others.
+	IncludeOwn bool `json:"include_own,omitempty"`
+}
+
+// PathFor returns the fairway path for chatJID, or "" when unrouted.
+func (r Routes) PathFor(chatJID string) string {
+	if p, ok := r.ByChat[chatJID]; ok {
+		return p
+	}
+	return r.Default
+}
+
+func validRoutePath(p string) error {
+	if !strings.HasPrefix(p, "/") || strings.ContainsAny(p, " ?#") || len(p) > 200 {
+		return fmt.Errorf("route path %q must start with / and contain no spaces, ? or #", p)
+	}
+	return nil
 }
 
 // SendLimits are rate limits written as "<count>/<window>", e.g. "6/10m".
@@ -105,6 +141,21 @@ func (c Config) Validate() error {
 	if c.MaxChars < 1 || c.MaxChars > MaxMessageChars {
 		return fmt.Errorf("config: max_chars must be between 1 and %d", MaxMessageChars)
 	}
+	for jid, p := range c.Routes.ByChat {
+		if err := validRoutePath(p); err != nil {
+			return fmt.Errorf("config: routes.by_chat[%s]: %w", jid, err)
+		}
+	}
+	if c.Routes.Default != "" {
+		if err := validRoutePath(c.Routes.Default); err != nil {
+			return fmt.Errorf("config: routes.default: %w", err)
+		}
+	}
+	if c.FairwayAddr != "" {
+		if _, _, err := net.SplitHostPort(c.FairwayAddr); err != nil {
+			return fmt.Errorf("config: fairway_addr %q: want host:port", c.FairwayAddr)
+		}
+	}
 	return nil
 }
 
@@ -142,6 +193,14 @@ func (c *Config) Set(key, value string) error {
 			return fmt.Errorf("config: max-chars: %q is not a number", value)
 		}
 		c.MaxChars = n
+	case "fairway-addr":
+		c.FairwayAddr = value
+	case "include-own":
+		b, err := strconv.ParseBool(value)
+		if err != nil {
+			return fmt.Errorf("config: include-own: %q is not true/false", value)
+		}
+		c.Routes.IncludeOwn = b
 	case "humanize":
 		b, err := strconv.ParseBool(value)
 		if err != nil {
@@ -156,7 +215,7 @@ func (c *Config) Set(key, value string) error {
 
 // ConfigKeys are the keys accepted by Set. `paused` is deliberately not
 // one of them: pause/resume have their own commands.
-var ConfigKeys = []string{"device-name", "default-ttl", "limit-per-chat", "limit-global", "max-chars", "humanize"}
+var ConfigKeys = []string{"device-name", "default-ttl", "limit-per-chat", "limit-global", "max-chars", "humanize", "fairway-addr", "include-own"}
 
 // LoadConfig reads path, returning DefaultConfig when it does not exist.
 func LoadConfig(path string) (Config, error) {
@@ -216,4 +275,48 @@ func writeFileAtomic(path string, data []byte) error {
 		return fmt.Errorf("write %s: %w", path, err)
 	}
 	return nil
+}
+
+// ConfigCache serves config.json, re-reading it only when the file's
+// modification time changes. The daemon consults it per message and per
+// send; this keeps CLI edits (route, pause, limits) live without a restart
+// and without a disk read for every event.
+type ConfigCache struct {
+	path  string
+	mu    sync.Mutex
+	mtime time.Time
+	size  int64
+	cfg   Config
+	err   error
+	ok    bool
+}
+
+// NewConfigCache returns a cache over path.
+func NewConfigCache(path string) *ConfigCache { return &ConfigCache{path: path} }
+
+// Get returns the current config. A missing file yields DefaultConfig. A
+// file that fails to parse keeps serving the last good config (and the
+// error), so a half-written edit never stops the daemon.
+func (c *ConfigCache) Get() (Config, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var mtime time.Time
+	var size int64
+	if info, err := os.Stat(c.path); err == nil {
+		mtime, size = info.ModTime(), info.Size()
+	}
+	if c.ok && mtime.Equal(c.mtime) && size == c.size {
+		return c.cfg, c.err
+	}
+	cfg, err := LoadConfig(c.path)
+	c.mtime, c.size = mtime, size
+	if err != nil {
+		if !c.ok {
+			return DefaultConfig(), err
+		}
+		c.err = err
+		return c.cfg, err
+	}
+	c.cfg, c.err, c.ok = cfg, nil, true
+	return cfg, nil
 }

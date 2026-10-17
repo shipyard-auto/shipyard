@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"time"
 
 	"go.mau.fi/whatsmeow/types"
@@ -49,6 +50,10 @@ type Handler struct {
 	// Async runs background work (catalog refresh). Defaults to `go f()`;
 	// tests make it synchronous.
 	Async func(func())
+	// Routes and Deliver forward received messages of routed chats to
+	// fairway. Both nil disables delivery (pairing, tests).
+	Routes  func() Routes
+	Deliver func(path string, ev Event) bool
 }
 
 // Fatal errors passed to OnFatal.
@@ -152,6 +157,9 @@ func (h *Handler) onMessage(ctx context.Context, e *events.Message) {
 			Text:       content.Text,
 			ReplyTo:    content.ReplyTo,
 		})
+		if err == nil {
+			h.route(ctx, e, chat, kind, sender, name, content)
+		}
 	case ActionEdit:
 		err = h.Archive.EditMessage(ctx, chatJID, content.TargetID, content.Kind, content.Text)
 	case ActionRevoke:
@@ -160,6 +168,44 @@ func (h *Handler) onMessage(ctx context.Context, e *events.Message) {
 	if err != nil {
 		h.archiveError(chatJID, err)
 	}
+}
+
+// route hands a new message to the deliverer when its chat is routed.
+// Edits and revokes are not forwarded: agents react to new messages.
+func (h *Handler) route(ctx context.Context, e *events.Message, chat types.JID, kind archive.ChatKind,
+	sender types.JID, senderName string, content Content) {
+	if h.Routes == nil || h.Deliver == nil {
+		return
+	}
+	routes := h.Routes()
+	path := routes.PathFor(chat.String())
+	if path == "" || (e.Info.IsFromMe && !routes.IncludeOwn) {
+		return
+	}
+	chatName := chat.String()
+	if c, err := h.Archive.GetChat(ctx, chat.String()); err == nil {
+		chatName = c.Name
+	}
+	pn, _ := h.Dir.Own()
+	h.Deliver(path, Event{
+		SchemaVersion: 1,
+		ID:            e.Info.ID,
+		TraceID:       newTraceID(),
+		Channel:       EventChannel,
+		Direction:     "inbound",
+		From:          EventAddress{Channel: EventChannel, Raw: sender.String(), Display: senderName},
+		To:            []EventAddress{{Channel: EventChannel, Raw: pn.String()}},
+		Body:          content.Text,
+		Metadata: map[string]string{
+			"chat_jid":  chat.String(),
+			"chat_name": chatName,
+			"chat_kind": string(kind),
+			"from_me":   strconv.FormatBool(e.Info.IsFromMe),
+			"kind":      content.Kind,
+			"reply_to":  content.ReplyTo,
+		},
+		Timestamp: e.Info.Timestamp.UTC(),
+	})
 }
 
 // ensureChat adds a chat seen for the first time to the catalog, so it can

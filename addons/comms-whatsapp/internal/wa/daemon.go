@@ -82,12 +82,21 @@ func Serve(ctx context.Context, opts ServeOptions) error {
 
 	ctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
+	// Config edits made by the CLI (routes, pause, limits) apply live.
+	cfgCache := NewConfigCache(opts.Paths.Config)
+	deliverer := NewDeliverer(func() string {
+		cfg, _ := cfgCache.Get()
+		return FairwayAddr(cfg.FairwayAddr, opts.Paths.FairwayDir)
+	}, log)
+	go deliverer.Run(ctx)
 	h := &Handler{
 		Archive: arch,
 		Dir:     sess.Directory(),
 		Tracker: tracker,
 		Log:     log,
 		OnFatal: func(err error) { cancel(err) },
+		Routes:  func() Routes { cfg, _ := cfgCache.Get(); return cfg.Routes },
+		Deliver: deliverer.Enqueue,
 	}
 	sess.Client.AddEventHandler(func(evt any) { h.Handle(ctx, evt) })
 
@@ -107,7 +116,7 @@ func Serve(ctx context.Context, opts ServeOptions) error {
 		Outbox: &Outbox{
 			Archive: arch,
 			Sender:  sess.Sender(),
-			Config:  func() (Config, error) { return LoadConfig(opts.Paths.Config) },
+			Config:  cfgCache.Get,
 			Self:    func() types.JID { pn, _ := sess.Directory().Own(); return pn },
 			Log:     log,
 			Now:     time.Now,
@@ -158,6 +167,7 @@ func Serve(ctx context.Context, opts ServeOptions) error {
 			}
 			return nil
 		case <-heartbeat.C:
+			tracker.SetDeliveries(deliverer.Counts())
 			// Log a status-file failure once, not every 30s.
 			msg := ""
 			if err := tracker.Heartbeat(); err != nil {

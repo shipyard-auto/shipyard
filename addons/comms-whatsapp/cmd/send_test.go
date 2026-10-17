@@ -258,3 +258,42 @@ func TestToolsInstallWritesDefinitions(t *testing.T) {
 		t.Fatalf("--force: %v", err)
 	}
 }
+
+func TestRouteCommands(t *testing.T) {
+	p, _ := daemonFixture(t)
+	out, _, err := cliIn(t, "", "route", "list")
+	if err != nil || !strings.Contains(out, "No routes") || !strings.Contains(out, "127.0.0.1:9876") {
+		t.Fatalf("empty list: %q %v", out, err)
+	}
+	out, _, err = cliIn(t, "", "route", "set", "vini eduqo", "/wa/vini")
+	if err != nil || !strings.Contains(out, "Vini Eduqo") || !strings.Contains(out, "shipyard fairway route add --path /wa/vini") {
+		t.Fatalf("set: %q %v", out, err)
+	}
+	if _, _, err := cliIn(t, "", "route", "set", "default", "/wa/inbox"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := cliIn(t, "", "route", "set", "Vini Eduqo", "no-slash"); err == nil {
+		t.Fatal("invalid path accepted")
+	}
+	cfg, err := wa.LoadConfig(p.Config)
+	if err != nil || cfg.Routes.ByChat[viniJID] != "/wa/vini" || cfg.Routes.Default != "/wa/inbox" {
+		t.Fatalf("saved routes=%+v %v", cfg.Routes, err)
+	}
+	out, _, _ = cliIn(t, "", "route", "list")
+	if !strings.Contains(out, "Vini Eduqo") || !strings.Contains(out, "(default)") {
+		t.Fatalf("list:\n%s", out)
+	}
+	out, _, _ = cliIn(t, "", "status")
+	if !strings.Contains(out, "2 routes to fairway") {
+		t.Fatalf("status:\n%s", out)
+	}
+	if _, _, err := cliIn(t, "", "route", "rm", "Vini Eduqo"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := cliIn(t, "", "route", "rm", "Vini Eduqo"); err == nil {
+		t.Fatal("removing a missing route must fail")
+	}
+	if _, _, err := cliIn(t, "", "route", "bogus"); err == nil {
+		t.Fatal("bad subcommand accepted")
+	}
+}

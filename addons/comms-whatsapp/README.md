@@ -47,6 +47,7 @@ shipyard-comms-whatsapp logout [--local]
 shipyard-comms-whatsapp allow "Vini Eduqo"      # send allowlist (contacts only)
 shipyard-comms-whatsapp send "Vini Eduqo" --text "oi" [--idempotency-key K] [--dry-run]
 shipyard-comms-whatsapp pause | resume          # emergency stop for all sending
+shipyard-comms-whatsapp route set "Vini Eduqo" /wa/vini   # deliver received messages to fairway
 shipyard-comms-whatsapp tools install           # wa_send / wa_chats / wa_history for crew
 ```
 
@@ -75,15 +76,16 @@ and counts.
 
 ## Sending
 
-Only the running daemon sends. It owns the session, so `send` (and the
-crew tool) are thin clients of its control socket (`run/wa.sock`, 0600,
-JSON-RPC). Every message passes the same checks, in this order, whoever
+Only the running daemon sends. It owns the session, so `send`, the crew
+tool and `shipyard comms send --channel <whatsapp>` are thin clients of its
+control socket (`run/wa.sock`, 0600, JSON-RPC). The `chat` may be a JID, a
+name or a phone number; the daemon resolves it. Every message passes the same checks, in this order, whoever
 asks — a CLI user, a crew tool, or an agent with a shell:
 
 | Check | Refusal code |
 |---|---|
 | idempotency key already used → return the first result, send nothing | — |
-| empty / invalid UTF-8 / not a user or group JID | `invalid` |
+| empty / invalid UTF-8 / ambiguous chat name / not a user or group JID | `invalid` |
 | longer than `max_chars` (default 4096) | `too_long` |
 | chat not in the catalog | `unknown_chat` |
 | `pause` in effect | `paused` |
@@ -106,6 +108,19 @@ asks — a CLI user, a crew tool, or an agent with a shell:
   returns `{ok:false, error, details:{code}}`.
 - Pass an idempotency key from agents: a tool retried after a timeout then
   returns the original message instead of sending it twice.
+
+## Receiving (inbound delivery)
+
+`route set <chat|default> <path>` makes the daemon POST every new message of
+that chat to fairway as a comms `Message` envelope (WhatsApp specifics in
+`metadata`: `chat_jid`, `chat_name`, `chat_kind`, `from_me`, `kind`,
+`reply_to`), with `X-Trace-Id`, so a crew agent can react — typically a
+`crew.run` route created with `--async`. Delivery runs on a 256-event queue so
+receiving never blocks; network errors, 5xx and 429 are retried 3 times
+(2s/4s/8s), 4xx are not. Own messages are skipped unless
+`config set include-own true`. The fairway address comes from fairway's
+`routes.json` (default `127.0.0.1:9876`) or `config set fairway-addr`. Full
+payload: `help receiving`.
 
 ## Crew tools
 
@@ -151,7 +166,5 @@ The SQLite driver is pure Go (`modernc.org/sqlite`); keep `CGO_ENABLED=0`.
 
 ## Roadmap
 
-Delivery of incoming messages to fairway, chat ownership (lease/handoff for
-flows), media sending and the `shipyard comms whatsapp` passthrough in the
-core CLI come in the next slices. See `docs/comms/whatsapp-design.md` (kept
+Chat ownership (lease/handoff for flows) and media come later. See `docs/comms/whatsapp-design.md` (kept
 locally).

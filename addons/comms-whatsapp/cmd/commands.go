@@ -11,7 +11,6 @@ import (
 	"strings"
 	"text/tabwriter"
 	"time"
-	"unicode"
 
 	"github.com/shipyard-auto/shipyard/addons/comms-whatsapp/internal/app"
 	"github.com/shipyard-auto/shipyard/addons/comms-whatsapp/internal/wa"
@@ -147,6 +146,15 @@ func printReport(w io.Writer, r wa.Report, now time.Time) {
 		sending = "PAUSED — " + sending
 	}
 	fmt.Fprintf(tw, "Sending:\t%s\n", sending)
+	routes := len(r.Config.Routes.ByChat)
+	if r.Config.Routes.Default != "" {
+		routes++
+	}
+	receiving := fmt.Sprintf("%d routes to fairway", routes)
+	if r.Daemon != nil && (r.Daemon.Delivered > 0 || r.Daemon.DeliveryFailed > 0) {
+		receiving += fmt.Sprintf(", %d delivered, %d failed since daemon start", r.Daemon.Delivered, r.Daemon.DeliveryFailed)
+	}
+	fmt.Fprintf(tw, "Receiving:\t%s\n", receiving)
 }
 
 // ── chats ────────────────────────────────────────────────────────────────
@@ -303,36 +311,11 @@ func runUnwatch(ctx context.Context, e env, args []string) error {
 
 // resolveChat accepts a JID, a chat name or a phone number.
 func resolveChat(ctx context.Context, arch *archive.Store, query string) (archive.Chat, error) {
-	chat, err := arch.Resolve(ctx, query)
-	if !errors.Is(err, archive.ErrNotFound) {
-		return chat, err
-	}
-	if jid, ok := phoneJID(query); ok {
-		if c, err := arch.GetChat(ctx, jid); err == nil {
-			return c, nil
-		}
-	}
-	return chat, err
+	return wa.ResolveChat(ctx, arch, query)
 }
 
-// phoneJID turns "+55 (11) 99999-9999" into "5511999999999@s.whatsapp.net".
-func phoneJID(s string) (string, bool) {
-	var digits strings.Builder
-	for _, r := range s {
-		switch {
-		case unicode.IsDigit(r):
-			digits.WriteRune(r)
-		case strings.ContainsRune("+ -().", r):
-		default:
-			return "", false
-		}
-	}
-	d := digits.String()
-	if len(d) < 8 || len(d) > 15 || strings.HasPrefix(d, "0") {
-		return "", false
-	}
-	return d + "@s.whatsapp.net", true
-}
+// phoneJID turns a phone number into a JID.
+func phoneJID(s string) (string, bool) { return wa.PhoneJID(s) }
 
 // ── history ──────────────────────────────────────────────────────────────
 

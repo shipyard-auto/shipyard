@@ -43,7 +43,7 @@ type cmdDoc struct {
 	examples []string
 }
 
-var groups = []string{"Setup", "Daemon", "Archive", "Sending", "Agents"}
+var groups = []string{"Setup", "Daemon", "Archive", "Receiving", "Sending", "Agents"}
 
 var cmdDocs = []cmdDoc{
 	{
@@ -89,6 +89,8 @@ Keys:
   limit-global    max sends across all chats, e.g. 30/1h
   max-chars       longest accepted message (1-4096)
   humanize        true/false: show "typing…" before each send
+  fairway-addr    host:port for inbound deliveries (default: from fairway)
+  include-own     true/false: also deliver messages the account itself sent
 
 Pausing is not a key: use pause / resume.`,
 		examples: []string{"config", "config set default-ttl 7d", "config set limit-per-chat 3/10m"},
@@ -160,6 +162,23 @@ newest --limit (0 = no limit). Media appears as [image] / [audio] / … plus the
 caption; files are not downloaded. Messages sent by Shipyard carry
 via_shipyard=true in JSON.`,
 		examples: []string{`history "Família" --since 2h`, "history 120363@g.us --limit 50 --json"},
+	},
+	{
+		name: "route", group: "Receiving",
+		usage:   "route list [--json] | route set <chat|default> <path> | route rm <chat|default>",
+		summary: "deliver received messages of a chat to a fairway route",
+		details: `Makes the daemon POST each new message received in a chat to fairway, so an
+agent can react (reply, summarize, alert). 'default' catches every chat without
+its own route. The payload is a comms Message envelope (see 'help receiving');
+fairway passes it to the route's action, typically crew.run.
+
+Create the fairway route as async so the daemon gets 202 at once:
+  shipyard fairway route add --path /wa/vini --auth local-only     --action crew.run --target <agent> --async
+
+Routing is independent of watch: a routed chat is delivered whether or not it
+is archived. Messages the account sends itself are skipped unless
+'config set include-own true'. Changes apply live, without a restart.`,
+		examples: []string{`route set "Vini Eduqo" /wa/vini`, "route set default /wa/inbox", "route list", `route rm "Vini Eduqo"`},
 	},
 	{
 		name: "send", group: "Sending",
@@ -234,13 +253,15 @@ and outputs.`,
 type topicDoc struct{ name, summary, body string }
 
 var topics = []topicDoc{
-	{"sending", "the send policy, refusal codes and how to send safely", `Only the running daemon sends. send and the wa_send tool are thin clients of
-its control socket (run/wa.sock); one place applies every check, whoever asks
-— a person, a crew tool, or an agent with a shell. Checks, in order (the first
-failure wins):
+	{"sending", "the send policy, refusal codes and how to send safely", `Only the running daemon sends. send, the wa_send tool and 'shipyard comms send
+--channel <whatsapp>' are thin clients of its control socket (run/wa.sock);
+one place applies every check, whoever asks — a person, a crew tool, or an
+agent with a shell. The chat may be a JID, a name or a phone number; the
+daemon resolves it against the catalog. Checks, in order (the first failure
+wins):
 
   1. idempotency key already used → return that send, send nothing    —
-  2. empty text, invalid UTF-8, not a user/group JID                   invalid
+  2. empty text, invalid UTF-8, ambiguous name, not a user/group JID   invalid
   3. longer than max_chars                                             too_long
   4. chat not in the catalog                                           unknown_chat
   5. sending paused                                                    paused
@@ -267,6 +288,33 @@ Safe sending from automation:
   - dry-run first when the text was generated, and have a person approve;
   - one message, short, no links or media from a new number;
   - check 'status' for temporary_ban and stop everything if present.`},
+	{"receiving", "how received messages reach agents (routes, payload, retries)", `The daemon receives every message of the account. For each new message it:
+  1. archives it if the chat is watched (see 'help files');
+  2. records the chat's last activity (unblocks sending, see 'help sending');
+  3. if the chat has a route ('route set'), POSTs an event to fairway at
+     http://<fairway_addr><path>, with header X-Trace-Id.
+
+Event (comms Message envelope, schema v1):
+  {"schema_version":1, "id":"<msg id>", "trace_id":"…", "channel":"whatsapp",
+   "direction":"inbound",
+   "from":{"channel":"whatsapp","raw":"5512…@s.whatsapp.net","display":"Vini Eduqo"},
+   "to":[{"channel":"whatsapp","raw":"<own number>@s.whatsapp.net"}],
+   "body":"<text or caption>",
+   "metadata":{"chat_jid":"…","chat_name":"…","chat_kind":"dm|group|self",
+               "from_me":"false","kind":"text|image|audio|…","reply_to":"…"},
+   "ts":"2026-10-17T17:13:36Z"}
+
+To answer, an agent sends to metadata.chat_jid with wa_send (the chat must be
+allowlisted). Use metadata.chat_jid as the crew conversation key for
+stateful agents: key: "{{input.metadata.chat_jid}}".
+
+Delivery runs on a background queue (256 events) so receiving never waits.
+Network errors, 5xx and 429 are retried 3 times (2s, 4s, 8s); a 4xx is a
+configuration error and is not retried. Undeliverable events are logged
+(wa_delivery_failed) and dropped; watched chats keep them in the archive.
+Edits and deletions are not delivered. fairway_addr defaults to the bind/port
+in fairway's routes.json (127.0.0.1:9876); override with
+'config set fairway-addr host:port'.`},
 	{"agent-tools", "crew tool contract for wa_send, wa_chats and wa_history", `'tools install' writes crew tool definitions that run '<binary> tool <name>'.
 Input: one JSON object on stdin. Output: an envelope on stdout, exit 0.
 
