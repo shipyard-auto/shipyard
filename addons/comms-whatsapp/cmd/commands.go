@@ -393,6 +393,17 @@ func formatMessage(m archive.Message) string {
 	if m.Kind != "text" {
 		body = strings.TrimSpace("[" + m.Kind + "] " + m.Text)
 	}
+	if md := m.Media; md != nil {
+		if md.Path != "" {
+			body += "  → " + md.Path
+		} else {
+			body += "  (file " + string(md.Status)
+			if md.Reason != "" {
+				body += ": " + md.Reason
+			}
+			body += ")"
+		}
+	}
 	return fmt.Sprintf("%s  %s: %s", m.Timestamp.Local().Format("2006-01-02 15:04"), who, body)
 }
 

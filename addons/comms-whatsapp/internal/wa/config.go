@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -59,7 +60,34 @@ type Config struct {
 	// reached by external systems through a signed fairway route. Empty =
 	// off. Loopback only. Read at daemon start.
 	APIAddr string `json:"api_addr,omitempty"`
+
+	// Media controls which attachments of watched chats are downloaded.
+	Media MediaConfig `json:"media"`
 }
+
+// MediaConfig is the attachment download policy. Files are kept next to
+// the archive and expire with their message (chat TTL).
+type MediaConfig struct {
+	// Download lists the message kinds whose files are fetched (see
+	// MediaKinds); empty turns downloads off.
+	Download []string `json:"download"`
+	// MaxBytes skips larger files (as declared by the sender).
+	MaxBytes int64 `json:"max_bytes"`
+}
+
+// MediaKinds are the message kinds that carry a downloadable file.
+var MediaKinds = []string{"image", "audio", "video", "file", "sticker"}
+
+// Media download defaults: everything but stickers, up to 25 MiB.
+const (
+	DefaultMediaMaxBytes = 25 << 20
+	MaxMediaBytes        = 100 << 20
+)
+
+func defaultMediaDownload() []string { return []string{"image", "audio", "video", "file"} }
+
+// Wants reports whether files of this message kind are downloaded.
+func (m MediaConfig) Wants(kind string) bool { return slices.Contains(m.Download, kind) }
 
 // DefaultAPIAddr is what 'api enable' uses without --addr.
 const DefaultAPIAddr = "127.0.0.1:9877"
@@ -194,6 +222,7 @@ func DefaultConfig() Config {
 		Limits:     SendLimits{PerChat: DefaultLimitPerChat, PerGroup: DefaultLimitPerGroup, Global: DefaultLimitGlobal},
 		MaxChars:   MaxMessageChars,
 		Humanize:   true,
+		Media:      MediaConfig{Download: defaultMediaDownload(), MaxBytes: DefaultMediaMaxBytes},
 	}
 }
 
@@ -240,7 +269,48 @@ func (c Config) Validate() error {
 			return fmt.Errorf("config: %w", err)
 		}
 	}
+	for _, k := range c.Media.Download {
+		if !slices.Contains(MediaKinds, k) {
+			return fmt.Errorf("config: media.download: unknown kind %q (known: %s)", k, strings.Join(MediaKinds, ", "))
+		}
+	}
+	if c.Media.MaxBytes < 1 || c.Media.MaxBytes > MaxMediaBytes {
+		return fmt.Errorf("config: media.max_bytes must be between 1 and %s", FormatBytes(MaxMediaBytes))
+	}
 	return nil
+}
+
+// ParseBytes parses a size: a byte count or a number with KB, MB or GB
+// (binary multiples, case-insensitive, the B optional): "25MB", "512k".
+func ParseBytes(s string) (int64, error) {
+	t := strings.ToUpper(strings.TrimSpace(s))
+	t = strings.TrimSuffix(t, "B")
+	mult := int64(1)
+	for suffix, m := range map[string]int64{"K": 1 << 10, "M": 1 << 20, "G": 1 << 30} {
+		if v, ok := strings.CutSuffix(t, suffix); ok {
+			t, mult = strings.TrimSpace(v), m
+			break
+		}
+	}
+	n, err := strconv.ParseFloat(t, 64)
+	if err != nil || n < 0 {
+		return 0, fmt.Errorf("invalid size %q: want e.g. 25MB, 512KB, 1048576", s)
+	}
+	return int64(n * float64(mult)), nil
+}
+
+// FormatBytes renders a size for people: "25 MB", "512 KB", "900 B".
+func FormatBytes(n int64) string {
+	switch {
+	case n >= 1<<30:
+		return fmt.Sprintf("%.1f GB", float64(n)/(1<<30))
+	case n >= 1<<20:
+		return fmt.Sprintf("%.1f MB", float64(n)/(1<<20))
+	case n >= 1<<10:
+		return fmt.Sprintf("%.0f KB", float64(n)/(1<<10))
+	default:
+		return fmt.Sprintf("%d B", n)
+	}
 }
 
 // ParsedLimits returns the parsed limits of a validated Config.
@@ -312,6 +382,21 @@ func (c *Config) Set(key, value string) error {
 			return fmt.Errorf("config: humanize: %q is not true/false", value)
 		}
 		c.Humanize = b
+	case "media-download":
+		c.Media.Download = []string{}
+		if v := strings.TrimSpace(value); v != "off" && v != "none" && v != "" {
+			for _, k := range strings.Split(v, ",") {
+				if k = strings.TrimSpace(k); k != "" && !slices.Contains(c.Media.Download, k) {
+					c.Media.Download = append(c.Media.Download, k)
+				}
+			}
+		}
+	case "media-max-size":
+		n, err := ParseBytes(value)
+		if err != nil {
+			return fmt.Errorf("config: media-max-size: %w", err)
+		}
+		c.Media.MaxBytes = n
 	default:
 		return fmt.Errorf("config: unknown key %q (known: %s)", key, strings.Join(ConfigKeys, ", "))
 	}
@@ -321,7 +406,8 @@ func (c *Config) Set(key, value string) error {
 // ConfigKeys are the keys accepted by Set. `paused` is deliberately not
 // one of them: pause/resume have their own commands.
 var ConfigKeys = []string{"device-name", "default-ttl", "limit-per-chat", "limit-per-group", "limit-global",
-	"allow-groups", "max-chars", "humanize", "fairway-addr", "include-own", "publish-events", "api-addr"}
+	"allow-groups", "max-chars", "humanize", "fairway-addr", "include-own", "publish-events", "api-addr",
+	"media-download", "media-max-size"}
 
 // LoadConfig reads path, returning DefaultConfig when it does not exist.
 func LoadConfig(path string) (Config, error) {

@@ -41,6 +41,7 @@ const (
 	APIChatsPath    = "/v1/chats"
 	APISendPath     = "/v1/send"
 	APILimitsPath   = "/v1/limits"
+	APIMediaPath    = "/v1/media"
 )
 
 // Query limits.
@@ -50,6 +51,10 @@ const (
 	apiBatch        = 500
 	apiMaxBody      = 64 << 10
 	apiTokenSize    = 32
+	// APIMediaChunk is the most file bytes one /v1/media response carries.
+	// Base64 makes it ~2.7 MB of JSON, under fairway's 4 MB cap on
+	// forwarded responses; larger files are read in several calls.
+	APIMediaChunk = 2 << 20
 )
 
 // apiMaxScan bounds the rows one request reads while skipping chats the
@@ -84,9 +89,10 @@ func (s *APIServer) Handler() http.Handler {
 	mux.HandleFunc(APIChatsPath, s.guard(s.chats))
 	mux.HandleFunc(APISendPath, s.guard(s.send))
 	mux.HandleFunc(APILimitsPath, s.guard(s.limits))
+	mux.HandleFunc(APIMediaPath, s.guard(s.media))
 	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
 		apiError(w, http.StatusNotFound, "not_found", "unknown endpoint; use POST "+
-			strings.Join([]string{APIMessagesPath, APIChatsPath, APISendPath, APILimitsPath}, ", "))
+			strings.Join([]string{APIMessagesPath, APIChatsPath, APISendPath, APILimitsPath, APIMediaPath}, ", "))
 	})
 	return mux
 }
@@ -441,6 +447,104 @@ func (s *APIServer) limits(w http.ResponseWriter, r *http.Request, c apiCaller, 
 	apiJSON(w, http.StatusOK, rep)
 }
 
+// MediaRequest is the body of POST /v1/media.
+type MediaRequest struct {
+	Chat string `json:"chat"` // JID, name or phone
+	ID   string `json:"id"`   // message id (the envelope's "id")
+	// Offset and Length select a byte range; Length 0 (or above
+	// APIMediaChunk) means "as much as one response carries".
+	Offset int64 `json:"offset,omitempty"`
+	Length int64 `json:"length,omitempty"`
+}
+
+// MediaResponse is one chunk of an attachment. Keep calling with
+// offset = offset + length until eof.
+type MediaResponse struct {
+	Chat     string `json:"chat"`
+	ID       string `json:"id"`
+	MimeType string `json:"mime_type,omitempty"`
+	FileName string `json:"file_name,omitempty"`
+	Size     int64  `json:"size"`   // whole file, bytes
+	SHA256   string `json:"sha256"` // whole file, hex
+	Offset   int64  `json:"offset"`
+	Length   int64  `json:"length"` // bytes in data
+	EOF      bool   `json:"eof"`
+	Data     []byte `json:"data"` // base64
+}
+
+func (s *APIServer) media(w http.ResponseWriter, r *http.Request, c apiCaller, body []byte) {
+	var req MediaRequest
+	if err := decodeBody(body, &req); err != nil {
+		apiError(w, http.StatusBadRequest, "invalid", err.Error())
+		return
+	}
+	switch {
+	case strings.TrimSpace(req.Chat) == "" || strings.TrimSpace(req.ID) == "":
+		apiError(w, http.StatusBadRequest, "invalid", "chat and id are required")
+		return
+	case req.Offset < 0 || req.Length < 0:
+		apiError(w, http.StatusBadRequest, "invalid", "offset and length must not be negative")
+		return
+	}
+	chat, ok := s.resolveFor(w, r, c, req.Chat, ReadScopeName)
+	if !ok {
+		return
+	}
+	m, err := s.Archive.GetMedia(r.Context(), chat.JID, req.ID)
+	switch {
+	case errors.Is(err, archive.ErrNoMedia):
+		apiError(w, http.StatusNotFound, "no_media", "no archived attachment for this message (only watched chats keep media)")
+		return
+	case err != nil:
+		apiError(w, http.StatusInternalServerError, "internal", "archive read failed")
+		return
+	case m.Status != archive.MediaStored:
+		msg := "attachment is " + string(m.Status)
+		if m.Reason != "" {
+			msg += ": " + m.Reason
+		}
+		status := http.StatusNotFound
+		if m.Status == archive.MediaPending {
+			status = http.StatusConflict // try again shortly
+		}
+		apiError(w, status, "media_"+string(m.Status), msg)
+		return
+	}
+	f, err := os.Open(m.Path)
+	if err != nil {
+		apiError(w, http.StatusNotFound, "media_missing", "the attachment file is gone (expired or deleted)")
+		return
+	}
+	defer func() { _ = f.Close() }()
+	info, err := f.Stat()
+	if err != nil {
+		apiError(w, http.StatusInternalServerError, "internal", "media read failed")
+		return
+	}
+	size := info.Size()
+	if req.Offset > size {
+		apiError(w, http.StatusBadRequest, "invalid", fmt.Sprintf("offset %d is past the end (size %d)", req.Offset, size))
+		return
+	}
+	n := req.Length
+	if n == 0 || n > APIMediaChunk {
+		n = APIMediaChunk
+	}
+	n = min(n, size-req.Offset)
+	data := make([]byte, n)
+	if _, err := f.ReadAt(data, req.Offset); err != nil && !errors.Is(err, io.EOF) {
+		apiError(w, http.StatusInternalServerError, "internal", "media read failed")
+		return
+	}
+	s.Log.Info(yardlogs.EventWAAPIQuery, slog.String(yardlogs.KeyMessage, "api media read"),
+		slog.String(yardlogs.KeyEntityID, c.ID), slog.String(yardlogs.KeyChatJID, chat.JID),
+		slog.Int64(yardlogs.KeySizeBytes, n))
+	apiJSON(w, http.StatusOK, MediaResponse{
+		Chat: chat.JID, ID: req.ID, MimeType: m.MimeType, FileName: m.FileName, Size: size, SHA256: m.SHA256,
+		Offset: req.Offset, Length: n, EOF: req.Offset+n >= size, Data: data,
+	})
+}
+
 func (s *APIServer) denied(r *http.Request, client, why string) {
 	s.Log.Warn(yardlogs.EventWAAPIDenied, slog.String(yardlogs.KeyMessage, why),
 		slog.String(yardlogs.KeyEntityID, client), slog.String(yardlogs.KeyHTTPPath, r.URL.Path))
@@ -450,13 +554,16 @@ func (s *APIServer) denied(r *http.Request, client, why string) {
 // envelope that routes and events carry, so consumers parse one shape.
 func archivedEvent(row archive.FeedRow, self string) Event {
 	return messageEvent(row.ID, "", row.SenderJID, row.SenderName, self, row.ChatJID, row.ChatName, row.ChatKind,
-		row.FromMe, row.Kind, row.Text, row.ReplyTo, row.Timestamp)
+		row.FromMe, row.Kind, row.Text, row.ReplyTo, row.Timestamp, row.Media)
 }
 
 // messageEvent builds the comms Message v1 envelope for a WhatsApp message.
+//
+// Attachment metadata rides in media_* keys; the file's local path does
+// not (see withMediaPath): this envelope also leaves the machine.
 func messageEvent(id, traceID, sender, senderName, self, chatJID, chatName string, chatKind archive.ChatKind,
-	fromMe bool, kind, text, replyTo string, ts time.Time) Event {
-	return Event{
+	fromMe bool, kind, text, replyTo string, ts time.Time, media *archive.Media) Event {
+	ev := Event{
 		SchemaVersion: 1,
 		ID:            id,
 		TraceID:       traceID,
@@ -475,6 +582,39 @@ func messageEvent(id, traceID, sender, senderName, self, chatJID, chatName strin
 		},
 		Timestamp: ts.UTC(),
 	}
+	if media != nil {
+		md := ev.Metadata
+		md["media_status"] = string(media.Status)
+		set := func(k, v string) {
+			if v != "" && v != "0" && v != "false" {
+				md[k] = v
+			}
+		}
+		set("media_reason", media.Reason)
+		set("media_mime_type", media.MimeType)
+		set("media_size", strconv.FormatInt(media.Size, 10))
+		set("media_seconds", strconv.Itoa(media.Seconds))
+		set("media_voice_note", strconv.FormatBool(media.VoiceNote))
+		set("media_file_name", media.FileName)
+		set("media_sha256", media.SHA256)
+	}
+	return ev
+}
+
+// withMediaPath adds the stored file's local path for route deliveries,
+// which reach agents on this machine. Published events and the query API
+// leave it out: their consumers fetch the bytes through /v1/media.
+func withMediaPath(ev Event, media *archive.Media) Event {
+	if media == nil || media.Path == "" {
+		return ev
+	}
+	md := make(map[string]string, len(ev.Metadata)+1)
+	for k, v := range ev.Metadata {
+		md[k] = v
+	}
+	md["media_path"] = media.Path
+	ev.Metadata = md
+	return ev
 }
 
 // Cursors are opaque to clients: "v1:<seq>" in URL-safe base64, so the
