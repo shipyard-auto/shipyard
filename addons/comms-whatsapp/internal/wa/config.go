@@ -47,10 +47,14 @@ type Config struct {
 	// Inbound delivery: received messages of routed chats are POSTed to
 	// fairway as comms Message envelopes, so agents can react to them.
 	Routes Routes `json:"routes"`
-	// PublishEvents also publishes every new message (any chat) to fairway's
-	// events API as "whatsapp.message", scoped "whatsapp.read:<chat>", for
-	// signed webhook subscribers. Off by default.
-	PublishEvents bool `json:"publish_events"`
+	// Publish selects the chats whose new messages are published to
+	// fairway's events API as "whatsapp.message", scoped
+	// "whatsapp.read:<chat>", for signed webhook subscribers: chat JIDs,
+	// PublishWatched (every watched chat) or PublishAll. Empty = off.
+	Publish PublishSelection `json:"publish,omitempty"`
+	// LegacyPublishEvents is the pre-0.9.2 on/off switch, read once and
+	// converted to Publish by LoadConfig (true → watched).
+	LegacyPublishEvents *bool `json:"publish_events,omitempty"`
 	// FairwayAddr overrides where events go ("host:port"). Empty means
 	// "read bind/port from fairway's routes.json", defaulting to
 	// 127.0.0.1:9876.
@@ -234,6 +238,9 @@ func DefaultConfig() Config {
 
 // Validate checks every field.
 func (c Config) Validate() error {
+	if err := c.Publish.Validate(); err != nil {
+		return fmt.Errorf("config: publish: %w", err)
+	}
 	if c.Version != ConfigVersion {
 		return fmt.Errorf("config: unsupported version %d (expected %d)", c.Version, ConfigVersion)
 	}
@@ -374,11 +381,23 @@ func (c *Config) Set(key, value string) error {
 		}
 		c.APIAddr = value
 	case "publish-events":
-		b, err := strconv.ParseBool(value)
-		if err != nil {
-			return fmt.Errorf("config: publish-events: %q is not true/false", value)
+		// Kept for scripts: true = watched chats, false = off, or a
+		// selector. 'publish add|rm' edits the list item by item.
+		switch v := strings.TrimSpace(value); v {
+		case PublishAll, PublishWatched:
+			c.Publish = PublishSelection{v}
+		case "off", "none":
+			c.Publish = nil
+		default:
+			b, err := strconv.ParseBool(v)
+			if err != nil {
+				return fmt.Errorf("config: publish-events: %q is not true/false, watched, '*' or off (see 'publish')", value)
+			}
+			c.Publish = nil
+			if b {
+				c.Publish = PublishSelection{PublishWatched}
+			}
 		}
-		c.PublishEvents = b
 	case "include-own":
 		b, err := strconv.ParseBool(value)
 		if err != nil {
@@ -439,6 +458,7 @@ func LoadConfig(path string) (Config, error) {
 	if err := json.Unmarshal(raw, &c); err != nil {
 		return Config{}, fmt.Errorf("config: parse %s: %w", path, err)
 	}
+	c.migratePublish()
 	if err := c.Validate(); err != nil {
 		return Config{}, err
 	}

@@ -3,6 +3,7 @@ package wa
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -259,13 +260,14 @@ func TestPublishPostsScopedEvent(t *testing.T) {
 	}
 }
 
-func TestHandlerPublishesWhenEnabled(t *testing.T) {
+func TestHandlerPublishesSelectedChats(t *testing.T) {
 	hs := newHarness(t)
 	ctx := context.Background()
 	var mu sync.Mutex
-	var published []Event
+	var published []string
 	var delivered []string
-	enabled, routes := false, Routes{ByChat: map[string]string{momPN.String(): "/wa/mae"}}
+	var sel PublishSelection
+	routes := Routes{ByChat: map[string]string{momPN.String(): "/wa/mae"}}
 	hs.h.Routes = func() Routes { return routes }
 	hs.h.Deliver = func(path string, _ Event) bool {
 		mu.Lock()
@@ -273,29 +275,60 @@ func TestHandlerPublishesWhenEnabled(t *testing.T) {
 		delivered = append(delivered, path)
 		return true
 	}
-	hs.h.Events = func() bool { return enabled }
-	hs.h.Publish = func(ev Event) bool { mu.Lock(); defer mu.Unlock(); published = append(published, ev); return true }
+	hs.h.Publishes = func() PublishSelection { return sel }
+	hs.h.Publish = func(ev Event) bool {
+		mu.Lock()
+		defer mu.Unlock()
+		published = append(published, ev.ID+"@"+ev.Metadata["chat_jid"])
+		return true
+	}
+	hs.watch(t, family, "Família", archive.KindGroup)
+	n := 0
+	send := func(chat types.JID, group bool) {
+		n++
+		hs.h.Handle(ctx, message(types.MessageSource{Chat: chat, Sender: momPN, IsGroup: group}, fmt.Sprintf("m%d", n), text("oi")))
+	}
+	check := func(label string, want ...string) {
+		t.Helper()
+		mu.Lock()
+		defer mu.Unlock()
+		if strings.Join(published, ",") != strings.Join(want, ",") {
+			t.Fatalf("%s: published=%v want %v", label, published, want)
+		}
+		published = nil
+	}
 
-	// Disabled: only the route fires.
-	hs.h.Handle(ctx, message(types.MessageSource{Chat: momPN, Sender: momPN}, "m1", text("oi")))
-	if len(published) != 0 || len(delivered) != 1 {
-		t.Fatalf("disabled: published=%d delivered=%v", len(published), delivered)
+	// Off: nothing is published; routes still fire.
+	send(momPN, false)
+	check("off")
+	if len(delivered) != 1 {
+		t.Fatalf("route did not fire: %v", delivered)
 	}
-	// Enabled: every chat is published, routed or not; routes still fire.
-	enabled = true
-	hs.h.Handle(ctx, message(types.MessageSource{Chat: momPN, Sender: momPN}, "m2", text("oi de novo")))
-	hs.h.Handle(ctx, message(types.MessageSource{Chat: family, Sender: momPN, IsGroup: true}, "m3", text("promo")))
-	// Own messages follow include_own.
-	hs.h.Handle(ctx, message(types.MessageSource{Chat: family, Sender: ownPN, IsFromMe: true, IsGroup: true}, "m4", text("meu")))
-	if len(published) != 2 || published[0].ID != "m2" || published[1].ID != "m3" || published[1].Metadata["chat_jid"] != family.String() {
-		t.Fatalf("published=%+v", published)
+	// watched: the watched group only, not the unwatched DM.
+	sel = PublishSelection{PublishWatched}
+	send(momPN, false)
+	send(family, true)
+	check("watched", "m3@"+family.String())
+	// Unwatching stops it without touching the selection.
+	if _, err := hs.arch.Unwatch(ctx, family.String()); err != nil {
+		t.Fatal(err)
 	}
-	if len(delivered) != 2 {
-		t.Fatalf("delivered=%v", delivered)
-	}
+	send(family, true)
+	check("after unwatch")
+	// An explicit chat, watched or not.
+	sel = PublishSelection{momPN.String()}
+	send(momPN, false)
+	send(family, true)
+	check("explicit", "m5@"+momPN.String())
+	// Everything.
+	sel = PublishSelection{PublishAll}
+	send(momPN, false)
+	send(family, true)
+	check("all", "m7@"+momPN.String(), "m8@"+family.String())
+	// Own messages follow include_own, whatever the selection.
+	hs.h.Handle(ctx, message(types.MessageSource{Chat: family, Sender: ownPN, IsFromMe: true, IsGroup: true}, "own1", text("meu")))
+	check("own skipped")
 	routes.IncludeOwn = true
-	hs.h.Handle(ctx, message(types.MessageSource{Chat: family, Sender: ownPN, IsFromMe: true, IsGroup: true}, "m5", text("meu")))
-	if len(published) != 3 || published[2].Metadata["from_me"] != "true" {
-		t.Fatalf("include_own published=%+v", published)
-	}
+	hs.h.Handle(ctx, message(types.MessageSource{Chat: family, Sender: ownPN, IsFromMe: true, IsGroup: true}, "own2", text("meu")))
+	check("include_own", "own2@"+family.String())
 }

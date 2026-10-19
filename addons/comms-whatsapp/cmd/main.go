@@ -112,6 +112,8 @@ func dispatch(ctx context.Context, e env, args []string) error {
 		return runPause(ctx, e, rest, false)
 	case "route":
 		return runRoute(ctx, e, rest)
+	case "publish":
+		return runPublish(ctx, e, rest)
 	case "limits":
 		return runLimits(ctx, e, rest)
 	case "api":

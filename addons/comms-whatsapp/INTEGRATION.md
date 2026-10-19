@@ -14,7 +14,7 @@ covers both sides:
  WhatsApp ─(persistent WebSocket)─▶ shipyard-comms-whatsapp daemon
                                       │  archives watched chats, downloads media
                                       │
-              (1) every new message   ▼
+              (1) each new message of ▼ the chats selected by 'publish'
                      POST 127.0.0.1:9876/_shipyard/v1/events   (loopback only)
                                       │
                                    fairway ── the only network-facing component
@@ -30,6 +30,10 @@ covers both sides:
 - **Push, not polling.** The daemon holds a WebSocket to WhatsApp and
   publishes each new message as an event. Fairway delivers it to your
   webhook within seconds. Your client never asks "anything new?".
+- **Only selected chats are published.** The operator chooses them with
+  `publish` (usually `watched`). Nothing else reaches fairway, so a chat the
+  client posts into, such as its own broadcast group, can stay out of the
+  event stream entirely.
 - **One protocol for both directions.** Fairway signs what it sends you,
   and you sign what you send to fairway, with the same secret and the same
   scheme (§3).
@@ -47,8 +51,9 @@ running, and the chats of interest watched (`shipyard comms whatsapp watch
 <chat>`). Only watched chats have messages and media.
 
 ```bash
-# The daemon publishes every new message to fairway's event bus
-shipyard comms whatsapp config set publish-events true
+# Choose what is published to fairway's event bus. "watched" follows
+# 'watch'; a chat name/JID or '*' (everything) also work.
+shipyard comms whatsapp publish add watched
 
 # The daemon's API (loopback), plus ready fairway route definitions
 shipyard comms whatsapp api enable
@@ -306,6 +311,15 @@ POST /api/whatsapp/send
 - **Broadcast.** Send once per group, each with its own idempotency key.
   The daemon reuses the uploaded file for 30 minutes, so the bytes go to
   WhatsApp only once.
+- **Never read what you post.** If the client reposts what it receives
+  (for example into its own broadcast group), give it only
+  `whatsapp.send:<target>` and never `whatsapp.read:<target>`. Don't use
+  read globs that could match the target either: JIDs share prefixes, so
+  `whatsapp.read:120363*` matches many groups. Keep the target out of
+  `publish` and keep `include-own` off. In the client, also drop events
+  whose `metadata.chat_jid` is the target or whose `metadata.from_me` is
+  `"true"`. Any one of these stops a feedback loop; together they survive a
+  misconfiguration.
 - **Check before a batch:**
   `POST /api/whatsapp/limits {"chat": "<jid>"}` returns `can_send_now`,
   `blockers` and `retry_after_seconds`, plus each limit's usage.
@@ -341,7 +355,7 @@ There are two error shapes.
 | Symptom | Usual cause |
 |---|---|
 | Every request returns 401 | signature built over something else: re-encoded body, path with the host or query, missing `shps_` in the key, or the clock off by more than 5 min. Check your code against the test vector (§3). |
-| Webhooks never arrive | no subscription (`GET /_shipyard/v1/subscriptions`), `publish-events` off, chat not watched, or no `whatsapp.read:<chat>` scope. `shipyard fairway subscription list` shows delivery stats and the last error. |
+| Webhooks never arrive | no subscription (`GET /_shipyard/v1/subscriptions`), chat not selected by `publish list` (with `watched`: not watched), or no `whatsapp.read:<chat>` scope. `shipyard fairway subscription list` shows delivery stats and the last error. |
 | Webhook arrives twice | two subscriptions for the same URL; list and delete one |
 | Image event, but `/media` returns 404 | `media_status` is not `stored` (see `media_reason`), or the file expired with its message |
 | `/send` returns 413 from fairway | body over 4 MB: use `/upload` |
@@ -354,5 +368,6 @@ There are two error shapes.
 - [ ] Webhook: verify the signature, timestamp window and nonce; answer 2xx fast; process asynchronously.
 - [ ] Dedupe by message id; persist the cursor and recently seen ids.
 - [ ] Fetch `stored` media promptly and check its sha256.
+- [ ] Reposting: no read scope on the target chat, and own or target messages dropped in code (§5).
 - [ ] Sending: an idempotency key per message and destination; honour `Retry-After`; check `/limits` before batches; never work around `not_allowed` or `groups_disabled`.
 - [ ] Monitor `shipyard fairway subscription list` (failures) and `shipyard comms whatsapp status`.

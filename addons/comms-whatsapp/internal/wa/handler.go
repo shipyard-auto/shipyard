@@ -53,10 +53,10 @@ type Handler struct {
 	// fairway. Both nil disables delivery (pairing, tests).
 	Routes  func() Routes
 	Deliver func(path string, ev Event) bool
-	// Events reports whether to publish to fairway's events API, and
-	// Publish does it. Nil disables publishing.
-	Events  func() bool
-	Publish func(ev Event) bool
+	// Publishes returns the chats selected for fairway's events API, and
+	// Publish publishes one message. Either nil disables publishing.
+	Publishes func() PublishSelection
+	Publish   func(ev Event) bool
 	// Media returns the attachment download policy and Download queues one
 	// (false = queue full). Either nil disables downloads.
 	Media    func() MediaConfig
@@ -230,7 +230,13 @@ func (h *Handler) route(ctx context.Context, e *events.Message, chat types.JID, 
 	if h.Deliver != nil {
 		path = routes.PathFor(chat.String())
 	}
-	publish := h.Publish != nil && h.Events != nil && h.Events()
+	publish := false
+	if h.Publish != nil && h.Publishes != nil {
+		publish = h.Publishes().Wants(chat.String(), func() bool {
+			w, err := h.Archive.IsWatched(ctx, chat.String())
+			return err == nil && w
+		})
+	}
 	if (path == "" && !publish) || (e.Info.IsFromMe && !routes.IncludeOwn) {
 		return
 	}
