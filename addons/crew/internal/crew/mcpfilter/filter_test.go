@@ -3,13 +3,14 @@ package mcpfilter
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestUpstreamConfigValidate(t *testing.T) {
@@ -41,18 +42,22 @@ func TestUpstreamConfigValidate(t *testing.T) {
 	}
 }
 
-// fakeUpstream builds a tiny stdio MCP server fixture written as a sh
+// fakeUpstream builds a tiny stdio MCP server fixture written as a python
 // script. It echoes a pre-baked tools/list response, accepts tools/call
 // frames and answers with the requested name, and exits when stdin closes.
-// Returns the path to the script + a cleanup func.
-func fakeUpstream(t *testing.T) string {
+// Returns an UpstreamConfig that runs the script through python3.
+//
+// The script is passed to the interpreter as an argument and never exec'd
+// itself: exec'ing a freshly written file races with forks from parallel
+// tests, which can inherit the write fd and make execve fail with ETXTBSY
+// (golang/go#22315).
+func fakeUpstream(t *testing.T) UpstreamConfig {
 	t.Helper()
 	dir := t.TempDir()
-	script := filepath.Join(dir, "upstream.sh")
+	script := filepath.Join(dir, "upstream.py")
 	// Fake upstream: parses the request id (assumes simple numeric form) and
 	// echoes it back so the proxy can correlate responses to requests.
-	body := `#!/usr/bin/env python3
-import json, sys
+	body := `import json, sys
 for line in sys.stdin:
     line = line.strip()
     if not line:
@@ -70,29 +75,29 @@ for line in sys.stdin:
     elif method == "tools/call":
         print(json.dumps({"jsonrpc":"2.0","id":rid,"result":{"content":[{"type":"text","text":"forwarded"}]}}), flush=True)
 `
-	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+	if err := os.WriteFile(script, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	return script
+	return UpstreamConfig{Type: "stdio", Command: "python3", Args: []string{script}}
 }
 
 func TestProxy_ToolsListFilteredAndCallEnforced(t *testing.T) {
 	t.Parallel()
 
-	script := fakeUpstream(t)
+	upstream := fakeUpstream(t)
 
 	in, out := setupPipes(t)
 	defer out.Close()
 
 	p := Proxy{
 		Allowed:  []string{"safe"},
-		Upstream: UpstreamConfig{Type: "stdio", Command: script},
+		Upstream: upstream,
 		In:       in.reader,
 		Out:      out,
 		Err:      &bytes.Buffer{},
 	}
 
-	done := runProxyInBackground(t, p)
+	done := runProxyInBackground(t, p, in, out)
 
 	// 1. tools/list — upstream returns two tools; we only see "safe".
 	in.send(t, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
@@ -123,25 +128,25 @@ func TestProxy_ToolsListFilteredAndCallEnforced(t *testing.T) {
 	}
 
 	in.close()
-	<-done
+	waitProxy(t, done)
 }
 
 func TestProxy_InitializePassthrough(t *testing.T) {
 	t.Parallel()
 
-	script := fakeUpstream(t)
+	upstream := fakeUpstream(t)
 
 	in, out := setupPipes(t)
 	defer out.Close()
 
 	p := Proxy{
 		Allowed:  []string{"safe"},
-		Upstream: UpstreamConfig{Type: "stdio", Command: script},
+		Upstream: upstream,
 		In:       in.reader,
 		Out:      out,
 		Err:      &bytes.Buffer{},
 	}
-	done := runProxyInBackground(t, p)
+	done := runProxyInBackground(t, p, in, out)
 
 	in.send(t, `{"jsonrpc":"2.0","id":99,"method":"initialize","params":{}}`)
 	resp := out.readFrame(t)
@@ -150,25 +155,25 @@ func TestProxy_InitializePassthrough(t *testing.T) {
 	}
 
 	in.close()
-	<-done
+	waitProxy(t, done)
 }
 
 func TestProxy_WildcardDisablesFilter(t *testing.T) {
 	t.Parallel()
 
-	script := fakeUpstream(t)
+	upstream := fakeUpstream(t)
 
 	in, out := setupPipes(t)
 	defer out.Close()
 
 	p := Proxy{
 		Allowed:  []string{"*"},
-		Upstream: UpstreamConfig{Type: "stdio", Command: script},
+		Upstream: upstream,
 		In:       in.reader,
 		Out:      out,
 		Err:      &bytes.Buffer{},
 	}
-	done := runProxyInBackground(t, p)
+	done := runProxyInBackground(t, p, in, out)
 
 	in.send(t, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
 	resp := out.readFrame(t)
@@ -183,7 +188,7 @@ func TestProxy_WildcardDisablesFilter(t *testing.T) {
 	}
 
 	in.close()
-	<-done
+	waitProxy(t, done)
 }
 
 func TestProxy_UpstreamMissingFails(t *testing.T) {
@@ -214,17 +219,26 @@ type pipeReader struct {
 
 func (p *pipeReader) send(t *testing.T, frame string) {
 	t.Helper()
-	if _, err := io.WriteString(p.writer, frame+"\n"); err != nil {
-		t.Fatalf("send: %v", err)
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := io.WriteString(p.writer, frame+"\n")
+		errCh <- err
+	}()
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("send: %v", err)
+		}
+	case <-time.After(ioTimeout):
+		t.Fatalf("send: proxy did not consume %q within %s", frame, ioTimeout)
 	}
 }
 
 func (p *pipeReader) close() { _ = p.writer.Close() }
 
 type framedWriter struct {
-	buf chan string
-	pw  *io.PipeWriter
-	pr  *io.PipeReader
+	pw *io.PipeWriter
+	pr *io.PipeReader
 }
 
 func (f *framedWriter) Write(p []byte) (int, error) {
@@ -235,30 +249,49 @@ func (f *framedWriter) Close() error {
 	return f.pw.Close()
 }
 
+// ioTimeout bounds every pipe interaction in these tests, so a proxy that
+// stops answering fails fast with a message instead of hanging until the
+// package timeout.
+const ioTimeout = 10 * time.Second
+
 func (f *framedWriter) readFrame(t *testing.T) string {
 	t.Helper()
-	buf := make([]byte, 0, 256)
-	one := make([]byte, 1)
-	deadline := make(chan struct{})
+	type result struct {
+		frame string
+		err   error
+	}
+	resCh := make(chan result, 1)
 	go func() {
-		// Test-only timeout to avoid hanging forever on bug.
-		<-deadline
-	}()
-	for {
-		n, err := f.pr.Read(one)
-		if err != nil {
-			if errors.Is(err, io.EOF) {
-				t.Fatalf("readFrame: EOF, partial=%q", buf)
+		buf := make([]byte, 0, 256)
+		one := make([]byte, 1)
+		for {
+			n, err := f.pr.Read(one)
+			if err != nil {
+				resCh <- result{string(buf), err}
+				return
 			}
-			t.Fatalf("readFrame: %v", err)
+			if n == 0 {
+				continue
+			}
+			if one[0] == '\n' {
+				resCh <- result{string(buf), nil}
+				return
+			}
+			buf = append(buf, one[0])
 		}
-		if n == 0 {
-			continue
+	}()
+	select {
+	case res := <-resCh:
+		if res.err != nil {
+			if errors.Is(res.err, io.EOF) {
+				t.Fatalf("readFrame: EOF, partial=%q", res.frame)
+			}
+			t.Fatalf("readFrame: %v (partial=%q)", res.err, res.frame)
 		}
-		if one[0] == '\n' {
-			return string(buf)
-		}
-		buf = append(buf, one[0])
+		return res.frame
+	case <-time.After(ioTimeout):
+		t.Fatalf("readFrame: no frame from proxy within %s", ioTimeout)
+		return ""
 	}
 }
 
@@ -266,18 +299,45 @@ func setupPipes(t *testing.T) (*pipeReader, *framedWriter) {
 	t.Helper()
 	inPr, inPw := io.Pipe()
 	outPr, outPw := io.Pipe()
+	t.Cleanup(func() {
+		// Unblock any reader goroutine left behind by a failed test.
+		_ = outPr.Close()
+		_ = inPr.Close()
+	})
 	return &pipeReader{reader: inPr, writer: inPw}, &framedWriter{pw: outPw, pr: outPr}
 }
 
-func runProxyInBackground(t *testing.T, p Proxy) <-chan error {
+// runProxyInBackground runs p and, once Run returns, closes both test pipes
+// with its result, so a proxy that exits early (e.g. the upstream failed to
+// start) surfaces its error in send/readFrame instead of leaving them blocked.
+func runProxyInBackground(t *testing.T, p Proxy, in *pipeReader, out *framedWriter) <-chan error {
 	t.Helper()
 	done := make(chan error, 1)
 	go func() {
-		done <- p.Run(context.Background())
+		err := p.Run(context.Background())
+		closeErr := fmt.Errorf("proxy exited: %v (stderr: %s)", err, stderrOf(p))
+		_ = in.reader.CloseWithError(closeErr)
+		_ = out.pw.CloseWithError(closeErr)
+		done <- err
 	}()
 	return done
 }
 
-// ensure unused helper compiles in case the framedWriter buf channel is
-// removed in a refactor; this is a harmless reference.
-var _ = json.Marshal
+func stderrOf(p Proxy) string {
+	if b, ok := p.Err.(*bytes.Buffer); ok {
+		return strings.TrimSpace(b.String())
+	}
+	return ""
+}
+
+func waitProxy(t *testing.T, done <-chan error) {
+	t.Helper()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("proxy: %v", err)
+		}
+	case <-time.After(ioTimeout):
+		t.Fatalf("proxy did not exit within %s after stdin closed", ioTimeout)
+	}
+}
