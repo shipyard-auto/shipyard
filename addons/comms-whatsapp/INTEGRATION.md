@@ -8,10 +8,6 @@ covers both sides:
 - the operator, who sets up the machine;
 - the client developer, who writes code against the contract.
 
-A working reference client, in Python with the standard library only, is in
-[`examples/shipyard_wa_client.py`](examples/shipyard_wa_client.py). Every
-rule below is implemented there.
-
 ## 1. How it fits together
 
 ```
@@ -128,7 +124,9 @@ v1
   - secret `shps_secret`, `POST /api/wa/history?chat=x`
   - ts `1792267200`, nonce `abc123`, body `{"since":"1h"}`
   - expected signature `v1=2d813834e16ac500f0a133ec5270e201d086e40b0f96d7cf8e48db64f9a9b360`
-  - Check it with `python3 examples/shipyard_wa_client.py selftest`.
+  - Make it a unit test in your client. The CLI can also produce a valid
+    request to compare against: `shipyard fairway client sign --client <id>
+    --secret-file <f> --url <url> --body '<json>' --curl`.
 
 ```python
 def sign(secret, method, path, query, ts, nonce, body: bytes) -> str:
@@ -342,7 +340,7 @@ There are two error shapes.
 
 | Symptom | Usual cause |
 |---|---|
-| Every request returns 401 | signature built over something else: re-encoded body, path with the host or query, missing `shps_` in the key, or the clock off by more than 5 min. Run the selftest. |
+| Every request returns 401 | signature built over something else: re-encoded body, path with the host or query, missing `shps_` in the key, or the clock off by more than 5 min. Check your code against the test vector (§3). |
 | Webhooks never arrive | no subscription (`GET /_shipyard/v1/subscriptions`), `publish-events` off, chat not watched, or no `whatsapp.read:<chat>` scope. `shipyard fairway subscription list` shows delivery stats and the last error. |
 | Webhook arrives twice | two subscriptions for the same URL; list and delete one |
 | Image event, but `/media` returns 404 | `media_status` is not `stored` (see `media_reason`), or the file expired with its message |

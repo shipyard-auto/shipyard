@@ -160,8 +160,7 @@ are stable per message (`evt_wa_<msg id>`) for deduplication.
 ## API for external systems
 
 **Building a client?** Start with [INTEGRATION.md](INTEGRATION.md): the full
-protocol (signing, webhooks, catch-up, media, sending, errors) and a tested
-reference client in [examples/](examples/shipyard_wa_client.py).
+protocol (signing, webhooks, catch-up, media, sending, errors).
 
 `api enable` lets another system read the archive and send messages through
 fairway, limited to the chats it was granted. Reads are cursor-paginated —
