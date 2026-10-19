@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -19,6 +20,7 @@ import (
 	"github.com/shipyard-auto/shipyard/internal/commsctl"
 	"github.com/shipyard-auto/shipyard/internal/crewctl"
 	"github.com/shipyard-auto/shipyard/internal/fairwayctl"
+	"github.com/shipyard-auto/shipyard/internal/service"
 	"github.com/shipyard-auto/shipyard/internal/ui"
 	"github.com/shipyard-auto/shipyard/internal/update"
 )
@@ -63,16 +65,7 @@ installed, the new binary is invoked to reconcile them in the same run.`,
 			if skipCore {
 				ui.Printf(w, "%s\n", ui.SectionTitle("Reconciling addons"))
 				ui.Printf(w, "%s\n\n", ui.Muted("Running addon reconcilers from the freshly installed binary."))
-				if err := updateFairwayIfInstalled(cmd, w); err != nil {
-					return err
-				}
-				if err := updateCrewIfInstalled(cmd, w); err != nil {
-					return err
-				}
-				if err := updateCommsIfInstalled(cmd, w); err != nil {
-					return err
-				}
-				return updateCommsWhatsAppIfInstalled(cmd, w)
+				return reconcileAddons(cmd, w)
 			}
 
 			ui.Printf(w, "%s\n", ui.SectionTitle("Shipyard Update"))
@@ -103,16 +96,33 @@ installed, the new binary is invoked to reconcile them in the same run.`,
 				return runAddonReconcileSubprocess(cmd.Context(), executablePath, w)
 			}
 
-			if err := updateFairwayIfInstalled(cmd, w); err != nil {
-				return err
-			}
-			return updateCrewIfInstalled(cmd, w)
+			return reconcileAddons(cmd, w)
 		},
 	}
 
 	cmd.Flags().BoolVar(&skipCore, "skip-core", false, "Skip core update; only reconcile installed addons. Used internally by the parent process after a self-update.")
 
 	return cmd
+}
+
+// reconcileAddons upgrades every installed addon. A fairway daemon that was
+// upgraded but did not start does not stop the other addons from updating;
+// its error is returned once they are done, so the update still fails loudly.
+func reconcileAddons(cmd *cobra.Command, w io.Writer) error {
+	fairwayErr := updateFairwayIfInstalled(cmd, w)
+	if fairwayErr != nil && !errors.Is(fairwayErr, fairwayctl.ErrStartFailed) {
+		return fairwayErr
+	}
+	if err := updateCrewIfInstalled(cmd, w); err != nil {
+		return err
+	}
+	if err := updateCommsIfInstalled(cmd, w); err != nil {
+		return err
+	}
+	if err := updateCommsWhatsAppIfInstalled(cmd, w); err != nil {
+		return err
+	}
+	return fairwayErr
 }
 
 func updateFairwayIfInstalled(cmd *cobra.Command, w interface{ Write([]byte) (int, error) }) error {
@@ -153,6 +163,10 @@ func updateFairwayIfInstalled(cmd *cobra.Command, w interface{ Write([]byte) (in
 		if errors.Is(err, fairwayctl.ErrAlreadyAtVersion) {
 			ui.Printf(w, "%s\n", ui.Emphasis("Fairway is already up to date."))
 			return nil
+		}
+		if errors.Is(err, fairwayctl.ErrStartFailed) {
+			_ = addon.NewRegistry("").Record(addon.KindFairway, true, inst.BinPath(), inst.Version)
+			ui.Printf(w, "%s\n", ui.Emphasis("Fairway updated, but the daemon did not start."))
 		}
 		return err
 	}
@@ -200,7 +214,39 @@ func updateCrewIfInstalled(cmd *cobra.Command, w interface{ Write([]byte) (int, 
 	_ = addon.NewRegistry("").Record(addon.KindCrew, true, inst.BinPath(), inst.Version)
 
 	ui.Printf(w, "%s\n", ui.Emphasis("Crew updated successfully."))
+	printCrewRestartHint(w)
 	return nil
+}
+
+// printCrewRestartHint lists the service-mode agents, which keep running the
+// previous crew binary (and refuse runs with a version mismatch) until their
+// OS service restarts. Restarting is left to the user: it would cut off any
+// run in flight.
+func printCrewRestartHint(w io.Writer) {
+	agents, err := crewctl.ListAgents("")
+	if err != nil {
+		return
+	}
+	mgr, err := crewctl.NewManager()
+	if err != nil {
+		return
+	}
+	var cmds []string
+	for _, a := range agents {
+		if a.Mode != "service" {
+			continue
+		}
+		if c, err := mgr.RestartCommand(a.Name); err == nil {
+			cmds = append(cmds, c)
+		}
+	}
+	if len(cmds) == 0 {
+		return
+	}
+	ui.Printf(w, "%s\n", ui.Muted("Service-mode agents keep running the previous binary until restarted:"))
+	for _, c := range cmds {
+		ui.Printf(w, "  %s\n", c)
+	}
 }
 
 // updateCommsIfInstalled is the comms-side mirror of updateCrewIfInstalled.
@@ -277,8 +323,55 @@ func updateCommsWhatsAppIfInstalled(cmd *cobra.Command, w interface{ Write([]byt
 		return err
 	}
 	_ = addon.NewRegistry("").Record(addon.KindCommsWhatsApp, true, inst.BinPath(), inst.Version)
-	ui.Printf(w, "%s\n", ui.Emphasis("Comms WhatsApp updated. Restart its service so the daemon runs the new binary."))
+	ui.Printf(w, "%s\n", ui.Emphasis("Comms WhatsApp updated."))
+	printWhatsAppRestartHint(w, listServiceRecords)
 	return nil
+}
+
+// listServiceRecords is a package-level seam so tests can supply records.
+var listServiceRecords = func() ([]service.ServiceRecord, error) {
+	svc, err := service.NewService()
+	if err != nil {
+		return nil, err
+	}
+	return svc.List()
+}
+
+// printWhatsAppRestartHint tells the user how to restart the daemon. The
+// WhatsApp daemon runs as a service the user created ('comms whatsapp serve'
+// under 'shipyard service'), so the binary swap leaves the old process
+// running; Shipyard does not restart a service it did not create.
+func printWhatsAppRestartHint(w io.Writer, list func() ([]service.ServiceRecord, error)) {
+	records, _ := list()
+	var ids []string
+	for _, r := range records {
+		if isWhatsAppDaemonCommand(r.Command) {
+			ids = append(ids, r.ID)
+		}
+	}
+	if len(ids) == 0 {
+		ui.Printf(w, "%s\n", ui.Muted("Restart the service running 'shipyard comms whatsapp serve' so the daemon runs the new binary."))
+		return
+	}
+	ui.Printf(w, "%s\n", ui.Muted("The daemon keeps running the previous binary until its service restarts:"))
+	for _, id := range ids {
+		ui.Printf(w, "  shipyard service restart %s\n", id)
+	}
+}
+
+// isWhatsAppDaemonCommand matches both ways of running the daemon: through
+// the core passthrough or the addon binary directly.
+func isWhatsAppDaemonCommand(command string) bool {
+	f := strings.Fields(command)
+	for i := range f {
+		if i+2 < len(f) && f[i+1] == "whatsapp" && f[i+2] == "serve" && strings.HasSuffix(f[i], "comms") {
+			return true
+		}
+		if i+1 < len(f) && f[i+1] == "serve" && strings.HasSuffix(f[i], "shipyard-comms-whatsapp") {
+			return true
+		}
+	}
+	return false
 }
 
 // buildCommsInstallerForUpdate builds a production comms Installer for the

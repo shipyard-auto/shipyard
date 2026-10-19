@@ -51,3 +51,14 @@ type RuntimeStatus struct {
 	LastExit  int    `json:"lastExit"`
 	Raw       string `json:"raw"`
 }
+
+// Running reports whether the status describes a live (or starting) process.
+// systemd reports ActiveState (active, activating, reloading); launchd
+// reports "running" or, when parsed from the active count, "active".
+func (s RuntimeStatus) Running() bool {
+	switch s.State {
+	case "active", "activating", "reloading", "running":
+		return true
+	}
+	return s.PID > 0
+}

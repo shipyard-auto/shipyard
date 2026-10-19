@@ -109,6 +109,11 @@ to pin a specific release or --force to reinstall an existing one.`,
 			)))
 
 			if err := inst.Install(cmd.Context()); err != nil {
+				if errors.Is(err, fairwayctl.ErrStartFailed) {
+					_ = addon.NewRegistry("").Record(addon.KindFairway, true, inst.BinPath(), inst.Version)
+					ui.Printf(w, "%s\n", ui.Emphasis("shipyard-fairway installed, but the daemon did not start."))
+					return err
+				}
 				if errors.Is(err, fairwayctl.ErrAlreadyInstalled) {
 					ui.Printf(w, "%s\n", ui.Emphasis(
 						fmt.Sprintf("fairway %s is already installed.", inst.Version),
@@ -126,7 +131,7 @@ to pin a specific release or --force to reinstall an existing one.`,
 			_ = addon.NewRegistry("").Record(addon.KindFairway, true, inst.BinPath(), inst.Version)
 
 			ui.Printf(w, "%s\n", ui.Emphasis("shipyard-fairway installed successfully."))
-			ui.Printf(w, "%s\n", ui.Muted("Registered as a Shipyard service — starts automatically on login."))
+			ui.Printf(w, "%s\n", ui.Muted("Registered as a Shipyard service and started — it also starts automatically on login."))
 			return nil
 		},
 	}

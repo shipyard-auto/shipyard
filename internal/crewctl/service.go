@@ -200,6 +200,22 @@ func (m *Manager) UnregisterAgentService(ctx context.Context, agentName string) 
 	return nil
 }
 
+// RestartCommand returns the shell command that restarts agentName's OS
+// service, so callers can tell the user how to pick up a new binary.
+func (m *Manager) RestartCommand(agentName string) (string, error) {
+	if err := ValidateName(agentName); err != nil {
+		return "", err
+	}
+	paths, err := m.PathsFor(agentName)
+	if err != nil {
+		return "", err
+	}
+	if m.Platform == PlatformDarwin {
+		return "launchctl kickstart -k gui/" + strconv.Itoa(m.UID) + "/" + paths.Label, nil
+	}
+	return "systemctl --user restart " + paths.Label, nil
+}
+
 func (m *Manager) loadUnit(ctx context.Context, paths Paths) error {
 	switch m.Platform {
 	case PlatformDarwin:

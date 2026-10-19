@@ -120,7 +120,18 @@ type ServiceAdder interface {
 	AddFairway(execPath string) error
 	RemoveFairway() error
 	IsFairwayInstalled() (bool, error)
+	// IsFairwayRunning reports whether the fairway service is currently
+	// running. A missing service is reported as (false, nil).
+	IsFairwayRunning() (bool, error)
+	// StartFairway starts the registered fairway service. Registering it
+	// (AddFairway) only enables it at login; it does not start it.
+	StartFairway() error
 }
+
+// ErrStartFailed is returned by Install and Upgrade when the binary was
+// installed and registered but the daemon could not be started. The install
+// itself is kept: the wrapped error says how to start the service by hand.
+var ErrStartFailed = errors.New("fairway: installed but the daemon did not start")
 
 // Platform identifies the target OS and CPU architecture.
 type Platform struct {
@@ -227,8 +238,14 @@ func parseVersionOutput(raw string) string {
 	return trimmed
 }
 
-// Install downloads, verifies, installs and registers shipyard-fairway.
+// Install downloads, verifies, installs and registers shipyard-fairway, then
+// starts the daemon. A start failure returns ErrStartFailed and keeps the
+// install in place.
 func (i *Installer) Install(ctx context.Context) error {
+	return i.install(ctx, true)
+}
+
+func (i *Installer) install(ctx context.Context, start bool) error {
 	if !i.Force {
 		installed, err := i.InstalledVersion()
 		if err == nil {
@@ -296,6 +313,12 @@ func (i *Installer) Install(ctx context.Context) error {
 		return fmt.Errorf("fairway: register service: %w", err)
 	}
 
+	if start {
+		if err := i.ServiceAdder.StartFairway(); err != nil {
+			return fmt.Errorf("%w: %w", ErrStartFailed, err)
+		}
+	}
+
 	return nil
 }
 
@@ -336,17 +359,30 @@ func (i *Installer) uninstall(ctx context.Context, purge bool) error {
 
 // Upgrade uninstalls the current fairway (preserving state) and reinstalls at
 // the core version. Returns ErrAlreadyAtVersion when versions match.
+//
+// Removing the old service stops the daemon, and registering the new one only
+// enables it, so Upgrade starts the new daemon itself whenever the old one was
+// running. When the old state cannot be read, it starts it anyway: a gateway
+// left down until the next reboot is the worse failure.
 func (i *Installer) Upgrade(ctx context.Context) error {
 	current, err := i.InstalledVersion()
 	if err == nil && current == i.Version {
 		return ErrAlreadyAtVersion
 	}
 
+	wasRunning, err := i.ServiceAdder.IsFairwayRunning()
+	if err != nil {
+		wasRunning = true
+	}
+
 	if err := i.uninstall(ctx, false); err != nil {
 		return fmt.Errorf("fairway: upgrade uninstall: %w", err)
 	}
 
-	if err := i.Install(ctx); err != nil {
+	if err := i.install(ctx, wasRunning); err != nil {
+		if errors.Is(err, ErrStartFailed) {
+			return err
+		}
 		return fmt.Errorf("fairway: upgrade install failed — run 'shipyard fairway install' to recover: %w", err)
 	}
 
@@ -503,29 +539,56 @@ func (a *serviceAdderImpl) AddFairway(execPath string) error {
 }
 
 func (a *serviceAdderImpl) IsFairwayInstalled() (bool, error) {
-	records, err := a.svc.List()
-	if err != nil {
-		return false, err
-	}
-	for _, r := range records {
-		if r.Name == fairwayServiceName {
-			return true, nil
-		}
-	}
-	return false, nil
+	_, ok, err := a.find()
+	return ok, err
 }
 
 func (a *serviceAdderImpl) RemoveFairway() error {
-	records, err := a.svc.List()
+	r, ok, err := a.find()
+	if err != nil || !ok {
+		return err
+	}
+	return a.svc.Delete(r.ID)
+}
+
+func (a *serviceAdderImpl) IsFairwayRunning() (bool, error) {
+	r, ok, err := a.find()
+	if err != nil || !ok {
+		return false, err
+	}
+	_, status, err := a.svc.Status(r.ID)
+	if err != nil {
+		return false, err
+	}
+	return status.Running(), nil
+}
+
+func (a *serviceAdderImpl) StartFairway() error {
+	r, ok, err := a.find()
 	if err != nil {
 		return err
 	}
-	for _, r := range records {
-		if r.Name == fairwayServiceName {
-			return a.svc.Delete(r.ID)
-		}
+	if !ok {
+		return errors.New("fairway service is not registered")
+	}
+	if _, err := a.svc.Start(r.ID); err != nil {
+		return fmt.Errorf("start service %s (run 'shipyard service start %s'): %w", r.ID, r.ID, err)
 	}
 	return nil
+}
+
+// find returns the Shipyard service record named "fairway".
+func (a *serviceAdderImpl) find() (service.ServiceRecord, bool, error) {
+	records, err := a.svc.List()
+	if err != nil {
+		return service.ServiceRecord{}, false, err
+	}
+	for _, r := range records {
+		if r.Name == fairwayServiceName {
+			return r, true, nil
+		}
+	}
+	return service.ServiceRecord{}, false, nil
 }
 
 func strPtr(s string) *string { return &s }

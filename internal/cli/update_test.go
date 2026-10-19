@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	"github.com/spf13/cobra"
+
+	"github.com/shipyard-auto/shipyard/internal/service"
 )
 
 // isolateUpdateHome aponta $HOME para um diretório temporário antes do teste.
@@ -121,5 +123,46 @@ func TestShouldDelegate_notUpdated_doesNotDelegate(t *testing.T) {
 	stubUpdateHooks(t, true, nil)
 	if shouldDelegateToSubprocess(false) {
 		t.Errorf("must NOT delegate when core was not updated (same binary both ends)")
+	}
+}
+
+func TestIsWhatsAppDaemonCommand(t *testing.T) {
+	cases := map[string]bool{
+		"shipyard comms whatsapp serve":                       true,
+		"/home/u/.local/bin/shipyard comms whatsapp serve -v": true,
+		"/home/u/.local/bin/shipyard-comms-whatsapp serve":    true,
+		"shipyard comms whatsapp status":                      false,
+		"/home/u/.local/bin/shipyard-fairway":                 false,
+		"":                                                    false,
+	}
+	for cmd, want := range cases {
+		if got := isWhatsAppDaemonCommand(cmd); got != want {
+			t.Errorf("isWhatsAppDaemonCommand(%q) = %v, want %v", cmd, got, want)
+		}
+	}
+}
+
+func TestPrintWhatsAppRestartHint_namesTheService(t *testing.T) {
+	var buf bytes.Buffer
+	printWhatsAppRestartHint(&buf, func() ([]service.ServiceRecord, error) {
+		return []service.ServiceRecord{
+			{ID: "FW0001", Command: "/home/u/.local/bin/shipyard-fairway"},
+			{ID: "WA0001", Command: "shipyard comms whatsapp serve"},
+		}, nil
+	})
+	out := buf.String()
+	if !strings.Contains(out, "shipyard service restart WA0001") {
+		t.Errorf("hint missing restart command:\n%s", out)
+	}
+	if strings.Contains(out, "FW0001") {
+		t.Errorf("hint names an unrelated service:\n%s", out)
+	}
+}
+
+func TestPrintWhatsAppRestartHint_noServiceFound(t *testing.T) {
+	var buf bytes.Buffer
+	printWhatsAppRestartHint(&buf, func() ([]service.ServiceRecord, error) { return nil, nil })
+	if !strings.Contains(buf.String(), "comms whatsapp serve") {
+		t.Errorf("generic hint missing:\n%s", buf.String())
 	}
 }

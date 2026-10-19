@@ -367,3 +367,17 @@ func TestDefaultRunnerExecutes(t *testing.T) {
 		t.Errorf("out = %q", out)
 	}
 }
+
+func TestRestartCommand(t *testing.T) {
+	linux := &Manager{HomeDir: "/h", Platform: PlatformLinux, Runner: newFakeRunner(), UID: 501}
+	if got, _ := linux.RestartCommand("bot"); got != "systemctl --user restart shipyard-crew-bot.service" {
+		t.Errorf("linux = %q", got)
+	}
+	darwin := &Manager{HomeDir: "/h", Platform: PlatformDarwin, Runner: newFakeRunner(), UID: 501}
+	if got, _ := darwin.RestartCommand("bot"); got != "launchctl kickstart -k gui/501/com.shipyard.crew.bot" {
+		t.Errorf("darwin = %q", got)
+	}
+	if _, err := linux.RestartCommand("../x"); err == nil {
+		t.Error("invalid name accepted")
+	}
+}

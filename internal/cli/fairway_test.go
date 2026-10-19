@@ -28,6 +28,8 @@ type noopServiceAdder struct{}
 func (n *noopServiceAdder) AddFairway(_ string) error         { return nil }
 func (n *noopServiceAdder) RemoveFairway() error              { return nil }
 func (n *noopServiceAdder) IsFairwayInstalled() (bool, error) { return false, nil }
+func (n *noopServiceAdder) IsFairwayRunning() (bool, error)   { return false, nil }
+func (n *noopServiceAdder) StartFairway() error               { return nil }
 
 // newCLIInstaller builds a minimal Installer suitable for CLI tests.
 // The BinDir is set to dir; no real network or service calls are made.
