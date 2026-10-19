@@ -23,6 +23,8 @@ type Paths struct {
 	// APIRoutes the directory of generated fairway route definitions.
 	APIToken  string
 	APIRoutes string
+	// Uploads holds API uploads in progress (0700); emptied at start.
+	Uploads string
 	// FairwayDir is the sibling fairway addon's state, read (never
 	// written) to find where to deliver inbound events.
 	FairwayDir string
@@ -57,6 +59,7 @@ func PathsAt(dir string) Paths {
 		Socket:    filepath.Join(run, "wa.sock"),
 		APIToken:  filepath.Join(dir, "api.token"),
 		APIRoutes: filepath.Join(dir, "api-routes"),
+		Uploads:   filepath.Join(dir, "uploads"),
 		// dir is <shipyard home>/comms/whatsapp.
 		FairwayDir: filepath.Join(filepath.Dir(filepath.Dir(dir)), "fairway"),
 	}

@@ -42,6 +42,7 @@ const (
 	APISendPath     = "/v1/send"
 	APILimitsPath   = "/v1/limits"
 	APIMediaPath    = "/v1/media"
+	APIUploadPath   = "/v1/upload"
 )
 
 // Query limits.
@@ -50,6 +51,9 @@ const (
 	APIMaxLimit     = 500
 	apiBatch        = 500
 	apiMaxBody      = 64 << 10
+	// apiMaxMediaBody admits one base64 chunk of APIChunkMax plus JSON;
+	// fairway's own cap on forwarded bodies is 4 MB.
+	apiMaxMediaBody = 4 << 20
 	apiTokenSize    = 32
 	// APIMediaChunk is the most file bytes one /v1/media response carries.
 	// Base64 makes it ~2.7 MB of JSON, under fairway's 4 MB cap on
@@ -77,6 +81,8 @@ type APIServer struct {
 	// Self is the account's own phone JID, for the envelopes' "to".
 	Self func() types.JID
 	Log  *slog.Logger
+	// Uploads holds chunked uploads for /v1/upload; nil disables them.
+	Uploads *UploadStore
 	// Outbox sends for /v1/send (every policy check applies); /v1/limits
 	// reads its config. Nil disables both.
 	Outbox *Outbox
@@ -87,12 +93,13 @@ func (s *APIServer) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc(APIMessagesPath, s.guard(s.messages))
 	mux.HandleFunc(APIChatsPath, s.guard(s.chats))
-	mux.HandleFunc(APISendPath, s.guard(s.send))
+	mux.HandleFunc(APISendPath, s.guardBody(s.send, apiMaxMediaBody))
+	mux.HandleFunc(APIUploadPath, s.guardBody(s.upload, apiMaxMediaBody))
 	mux.HandleFunc(APILimitsPath, s.guard(s.limits))
 	mux.HandleFunc(APIMediaPath, s.guard(s.media))
 	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
 		apiError(w, http.StatusNotFound, "not_found", "unknown endpoint; use POST "+
-			strings.Join([]string{APIMessagesPath, APIChatsPath, APISendPath, APILimitsPath, APIMediaPath}, ", "))
+			strings.Join([]string{APIMessagesPath, APIChatsPath, APISendPath, APILimitsPath, APIMediaPath, APIUploadPath}, ", "))
 	})
 	return mux
 }
@@ -112,7 +119,10 @@ func (c apiCaller) canRead(chatJID string) bool { return c.can(ReadScopeName, ch
 type apiHandler func(w http.ResponseWriter, r *http.Request, c apiCaller, body []byte)
 
 // guard checks method, the fairway token and the forwarded identity.
-func (s *APIServer) guard(next apiHandler) http.HandlerFunc {
+func (s *APIServer) guard(next apiHandler) http.HandlerFunc { return s.guardBody(next, apiMaxBody) }
+
+// guardBody is guard with a body size limit of its own.
+func (s *APIServer) guardBody(next apiHandler, maxBody int) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			w.Header().Set("Allow", http.MethodPost)
@@ -141,8 +151,8 @@ func (s *APIServer) guard(next apiHandler) http.HandlerFunc {
 			apiError(w, http.StatusForbidden, "forbidden", "no client identity: the fairway route must use --auth signed")
 			return
 		}
-		body, err := io.ReadAll(io.LimitReader(r.Body, apiMaxBody+1))
-		if err != nil || len(body) > apiMaxBody {
+		body, err := io.ReadAll(io.LimitReader(r.Body, int64(maxBody)+1))
+		if err != nil || len(body) > maxBody {
 			apiError(w, http.StatusBadRequest, "invalid", "unreadable or oversized body")
 			return
 		}
@@ -345,6 +355,104 @@ type SendAPIRequest struct {
 	// per client: two clients may use the same key independently.
 	IdempotencyKey string `json:"idempotency_key,omitempty"`
 	DryRun         bool   `json:"dry_run,omitempty"`
+	// Media attaches a file: inline (data, up to 2 MiB) or a finished
+	// upload (upload_id, see /v1/upload). Text becomes the caption.
+	Media *SendAPIMedia `json:"media,omitempty"`
+}
+
+// SendAPIMedia is the attachment of an API send. Exactly one of Data and
+// UploadID.
+type SendAPIMedia struct {
+	Data      string `json:"data,omitempty"` // base64
+	UploadID  string `json:"upload_id,omitempty"`
+	MimeType  string `json:"mime_type,omitempty"`
+	FileName  string `json:"file_name,omitempty"`
+	VoiceNote bool   `json:"voice_note,omitempty"`
+}
+
+// UploadAPIRequest is the body of POST /v1/upload: one chunk.
+type UploadAPIRequest struct {
+	UploadID string `json:"upload_id,omitempty"` // empty on the first chunk
+	Offset   int64  `json:"offset"`
+	Data     string `json:"data"` // base64, up to 2 MiB decoded
+}
+
+func (s *APIServer) upload(w http.ResponseWriter, r *http.Request, c apiCaller, body []byte) {
+	if s.Outbox == nil || s.Uploads == nil {
+		apiError(w, http.StatusServiceUnavailable, "unavailable", "sending is not available on this daemon")
+		return
+	}
+	if !grants(c.Scopes, SendScopeName) {
+		s.denied(r, c.ID, "upload without "+SendScopeName)
+		apiError(w, http.StatusForbidden, "forbidden", "uploading needs scope "+SendScopeName)
+		return
+	}
+	var req UploadAPIRequest
+	if err := decodeBody(body, &req); err != nil {
+		apiError(w, http.StatusBadRequest, "invalid", err.Error())
+		return
+	}
+	data, err := base64.StdEncoding.DecodeString(req.Data)
+	switch {
+	case err != nil:
+		apiError(w, http.StatusBadRequest, "invalid", "data is not standard base64")
+		return
+	case len(data) == 0 || len(data) > APIChunkMax:
+		apiError(w, http.StatusBadRequest, "invalid", fmt.Sprintf("a chunk carries 1 byte to %s", FormatBytes(APIChunkMax)))
+		return
+	}
+	cfg, err := s.Outbox.Config()
+	if err != nil {
+		apiError(w, http.StatusInternalServerError, "internal", "config unreadable")
+		return
+	}
+	info, err := s.Uploads.Append(c.ID, req.UploadID, req.Offset, data, cfg.Media.SendMaxBytes)
+	switch {
+	case err == nil:
+		apiJSON(w, http.StatusOK, info)
+	case errors.Is(err, ErrUploadUnknown):
+		apiError(w, http.StatusNotFound, "unknown_upload", err.Error())
+	case errors.Is(err, ErrUploadOffset):
+		apiError(w, http.StatusConflict, "offset_mismatch",
+			fmt.Sprintf("%v: the upload has %d bytes; send offset %d", err, info.Size, info.Size))
+	case errors.Is(err, ErrUploadTooLarge):
+		apiError(w, http.StatusRequestEntityTooLarge, "too_long",
+			fmt.Sprintf("%v (%s)", err, FormatBytes(cfg.Media.SendMaxBytes)))
+	case errors.Is(err, ErrUploadTooMany):
+		apiError(w, http.StatusTooManyRequests, "too_many_uploads",
+			fmt.Sprintf("%v: at most %d per client; unused ones expire after %s", err, MaxUploadsPerClient, UploadTTL))
+	default:
+		apiError(w, http.StatusInternalServerError, "internal", "upload failed")
+	}
+}
+
+// outMedia turns an API attachment into the Outbox's.
+func (s *APIServer) outMedia(c apiCaller, m *SendAPIMedia) (*OutMedia, string, error) {
+	out := &OutMedia{MimeType: m.MimeType, FileName: m.FileName, VoiceNote: m.VoiceNote}
+	switch {
+	case (m.Data == "") == (m.UploadID == ""):
+		return nil, "invalid", errors.New("media needs exactly one of data and upload_id")
+	case m.Data != "":
+		data, err := base64.StdEncoding.DecodeString(m.Data)
+		if err != nil {
+			return nil, "invalid", errors.New("media.data is not standard base64")
+		}
+		if len(data) > APIChunkMax {
+			return nil, "too_long", fmt.Errorf("inline media is limited to %s; send larger files through %s and pass upload_id",
+				FormatBytes(APIChunkMax), APIUploadPath)
+		}
+		out.Data = data
+	default:
+		if s.Uploads == nil {
+			return nil, "unknown_upload", ErrUploadUnknown
+		}
+		p, err := s.Uploads.Path(c.ID, m.UploadID)
+		if err != nil {
+			return nil, "unknown_upload", err
+		}
+		out.Path = p
+	}
+	return out, "", nil
 }
 
 // sendStatus maps refusal codes to HTTP statuses; the body always carries
@@ -384,9 +492,20 @@ func (s *APIServer) send(w http.ResponseWriter, r *http.Request, c apiCaller, bo
 	if req.IdempotencyKey != "" {
 		key = c.ID + "/" + req.IdempotencyKey
 	}
-	res, err := s.Outbox.Send(r.Context(), SendRequest{
-		Chat: chat.JID, Text: req.Text, IdempotencyKey: key, DryRun: req.DryRun, Client: c.ID,
-	})
+	sr := SendRequest{Chat: chat.JID, Text: req.Text, IdempotencyKey: key, DryRun: req.DryRun, Client: c.ID}
+	if req.Media != nil {
+		m, code, err := s.outMedia(c, req.Media)
+		if err != nil {
+			status := map[string]int{"unknown_upload": http.StatusNotFound, "too_long": http.StatusRequestEntityTooLarge}[code]
+			if status == 0 {
+				status = http.StatusBadRequest
+			}
+			apiError(w, status, code, err.Error())
+			return
+		}
+		sr.Media = m
+	}
+	res, err := s.Outbox.Send(r.Context(), sr)
 	if err != nil {
 		var se *SendError
 		if !errors.As(err, &se) {

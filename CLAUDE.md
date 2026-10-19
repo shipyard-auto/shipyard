@@ -634,7 +634,8 @@ shipyard comms send --channel <n> --to <recipient> --text "…" [--idempotency-k
 
 The WhatsApp provider (`shipyard-comms-whatsapp`): a linked-device daemon with
 a TTL-bound archive of watched chats, inbound delivery to fairway and
-policy-checked sending (allowlist, prior conversation, rate limits, pause).
+policy-checked sending of text and files (allowlist, prior conversation, rate
+limits, pause; `send --file`, API `media` + `/v1/upload`).
 install/update/uninstall are handled by the core; everything else passes
 through to the addon, whose `help` is the full reference (written for agents):
 

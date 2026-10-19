@@ -45,6 +45,7 @@ func TestAPICommands(t *testing.T) {
 		"chats":    {wa.APIChatsPath, "whatsapp.read", 30 * time.Second},
 		"send":     {wa.APISendPath, "whatsapp.send", 60 * time.Second},
 		"limits":   {wa.APILimitsPath, "whatsapp.send", 30 * time.Second},
+		"upload":   {wa.APIUploadPath, "whatsapp.send", 60 * time.Second},
 	} {
 		file := filepath.Join(p.APIRoutes, name+".json")
 		st, err := os.Stat(file)

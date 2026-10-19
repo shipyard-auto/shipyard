@@ -1,11 +1,16 @@
 package wa
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -35,6 +40,11 @@ func newSendFixture(t *testing.T) (*apiFixture, *outboxHarness) {
 		Log:     slog.New(yardlogs.NopHandler()),
 		Outbox:  h.ob,
 	}
+	up, err := NewUploadStore(filepath.Join(t.TempDir(), "uploads"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	api.Uploads = up
 	srv := httptest.NewServer(api.Handler())
 	t.Cleanup(srv.Close)
 	return &apiFixture{arch: h.arch, srv: srv}, h
@@ -191,5 +201,78 @@ func TestSocketCannotClaimAClient(t *testing.T) {
 	}
 	if req.Client != "" {
 		t.Fatalf("client taken from the wire: %q", req.Client)
+	}
+}
+
+func TestAPISendMediaInlineAndUploaded(t *testing.T) {
+	f, h := newSendFixture(t)
+	jpg := testJPEG(t, 32, 32)
+	b64 := base64.StdEncoding.EncodeToString
+
+	// Inline: one call.
+	var res SendResult
+	code := f.call(t, APISendPath, "promo", "whatsapp.send:"+promoA,
+		SendAPIRequest{Chat: promoA, Text: "Oferta do dia", IdempotencyKey: "img-1", Media: &SendAPIMedia{Data: b64(jpg)}}, &res)
+	if code != 200 || res.Kind != SendKindImage || len(h.sender.media) != 1 || h.sender.media[0].Caption != "Oferta do dia" {
+		t.Fatalf("inline → %d %+v", code, res)
+	}
+
+	// Chunked upload, then one send per group referencing it.
+	pdf := append(append([]byte{}, testPDF...), bytes.Repeat([]byte("x"), 300)...)
+	var up UploadInfo
+	if code := f.call(t, APIUploadPath, "promo", "whatsapp.send:"+promoA, UploadAPIRequest{Data: b64(pdf[:100])}, &up); code != 200 || up.Size != 100 {
+		t.Fatalf("chunk 1 → %d %+v", code, up)
+	}
+	var e apiErrorBody
+	if code := f.call(t, APIUploadPath, "promo", "whatsapp.send:"+promoA,
+		UploadAPIRequest{UploadID: up.UploadID, Offset: 50, Data: b64(pdf[100:])}, &e); code != 409 || e.Error.Code != "offset_mismatch" {
+		t.Fatalf("bad offset → %d %+v", code, e)
+	}
+	if code := f.call(t, APIUploadPath, "promo", "whatsapp.send:"+promoA,
+		UploadAPIRequest{UploadID: up.UploadID, Offset: 100, Data: b64(pdf[100:])}, &up); code != 200 || up.Size != int64(len(pdf)) {
+		t.Fatalf("chunk 2 → %d %+v", code, up)
+	}
+	sum := sha256.Sum256(pdf)
+	if up.SHA256 != hex.EncodeToString(sum[:]) {
+		t.Fatal("upload sha256")
+	}
+	res = SendResult{}
+	if code := f.call(t, APISendPath, "promo", "whatsapp.send:"+promoA,
+		SendAPIRequest{Chat: promoA, Text: "Tabela", Media: &SendAPIMedia{UploadID: up.UploadID, FileName: "tabela.pdf"}}, &res); code != 200 || res.Kind != SendKindFile {
+		t.Fatalf("send upload → %d %+v", code, res)
+	}
+	if got := h.sender.media[1]; !bytes.Equal(got.Data, pdf) || got.FileName != "tabela.pdf" || got.MimeType != "application/pdf" {
+		t.Fatalf("sent document=%s %q", got.MimeType, got.FileName)
+	}
+
+	// Another client cannot use it; it looks like it never existed.
+	e = apiErrorBody{}
+	if code := f.call(t, APISendPath, "other", "whatsapp.send",
+		SendAPIRequest{Chat: promoA, Media: &SendAPIMedia{UploadID: up.UploadID}}, &e); code != 404 || e.Error.Code != "unknown_upload" {
+		t.Fatalf("foreign upload → %d %+v", code, e)
+	}
+	// Inline is capped at one chunk; bigger files must be uploaded.
+	e = apiErrorBody{}
+	big := make([]byte, APIChunkMax+1)
+	if code := f.call(t, APISendPath, "promo", "whatsapp.send",
+		SendAPIRequest{Chat: promoA, Media: &SendAPIMedia{Data: b64(big)}}, &e); code != 413 || !strings.Contains(e.Error.Message, APIUploadPath) {
+		t.Fatalf("inline too big → %d %+v", code, e)
+	}
+	e = apiErrorBody{}
+	if code := f.call(t, APISendPath, "promo", "whatsapp.send",
+		SendAPIRequest{Chat: promoA, Media: &SendAPIMedia{Data: b64(jpg), UploadID: up.UploadID}}, &e); code != 400 {
+		t.Fatalf("data and upload_id → %d", code)
+	}
+	// Uploading needs a send scope.
+	e = apiErrorBody{}
+	if code := f.call(t, APIUploadPath, "reader", "whatsapp.read", UploadAPIRequest{Data: b64(jpg)}, &e); code != 403 {
+		t.Fatalf("upload without send scope → %d", code)
+	}
+	// Policy refusals keep their codes for media too.
+	h.cfg.AllowGroups = false
+	e = apiErrorBody{}
+	if code := f.call(t, APISendPath, "promo", "whatsapp.send",
+		SendAPIRequest{Chat: promoA, Media: &SendAPIMedia{Data: b64(jpg)}}, &e); code != 403 || e.Error.Code != "groups_disabled" {
+		t.Fatalf("groups off → %d %+v", code, e)
 	}
 }

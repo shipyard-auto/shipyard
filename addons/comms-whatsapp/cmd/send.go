@@ -30,13 +30,21 @@ func runSend(ctx context.Context, e env, args []string) error {
 	fromStdin := fs.Bool("stdin", false, "read the message text from stdin")
 	key := fs.String("idempotency-key", "", "makes retries safe: a repeated key returns the first result instead of sending again")
 	dryRun := fs.Bool("dry-run", false, "run every check without sending")
+	file := fs.String("file", "", "attach an image (JPEG/PNG), video (MP4), audio or any file; --text becomes the caption")
+	voiceNote := fs.Bool("voice-note", false, "send an Ogg/Opus --file as a voice note")
+	mimeType := fs.String("mime", "", "MIME type of --file (default: from its name, then its content)")
+	fileName := fs.String("file-name", "", "name the recipient sees for a document (default: the file's name)")
 	asJSON := fs.Bool("json", false, "emit JSON")
 	pos, err := parse(fs, args)
 	if err != nil {
 		return err
 	}
 	if len(pos) != 1 {
-		return errors.New("usage: send <chat> (--text T | --stdin) [--idempotency-key K] [--dry-run] [--json]")
+		return errors.New("usage: send <chat> (--text T | --stdin | --file F [--text caption]) [--idempotency-key K] [--dry-run] [--json]")
+	}
+	media, err := cliMedia(*file, *mimeType, *fileName, *voiceNote)
+	if err != nil {
+		return err
 	}
 	body := *text
 	if *fromStdin {
@@ -50,7 +58,7 @@ func runSend(ctx context.Context, e env, args []string) error {
 		body = strings.TrimRight(string(raw), "\n")
 	}
 
-	res, err := sendVia(ctx, e, pos[0], wa.SendRequest{Text: body, IdempotencyKey: *key, DryRun: *dryRun})
+	res, err := sendVia(ctx, e, pos[0], wa.SendRequest{Text: body, Media: media, IdempotencyKey: *key, DryRun: *dryRun})
 	if err != nil {
 		var se *wa.SendError
 		if errors.As(err, &se) {
@@ -58,18 +66,44 @@ func runSend(ctx context.Context, e env, args []string) error {
 		}
 		return err
 	}
+	what := "a message"
+	switch res.Kind {
+	case wa.SendKindImage, wa.SendKindAudio:
+		what = "an " + res.Kind
+	case wa.SendKindVideo, wa.SendKindFile:
+		what = "a " + res.Kind
+	}
 	if *asJSON {
 		return writeJSON(e.stdout, res)
 	}
 	switch {
 	case res.DryRun:
-		fmt.Fprintf(e.stdout, "Dry run: a message to %s would be accepted.\n", res.ChatName)
+		fmt.Fprintf(e.stdout, "Dry run: %s to %s would be accepted.\n", what, res.ChatName)
 	case res.Duplicate:
 		fmt.Fprintf(e.stdout, "Already sent to %s at %s (id %s); not sent again.\n", res.ChatName, res.SentAt.Local().Format("15:04:05"), res.MsgID)
 	default:
-		fmt.Fprintf(e.stdout, "Sent to %s (id %s).\n", res.ChatName, res.MsgID)
+		fmt.Fprintf(e.stdout, "Sent %s to %s (id %s).\n", what, res.ChatName, res.MsgID)
 	}
 	return nil
+}
+
+// cliMedia builds the attachment of a local send. The daemon reads the
+// file, so the path is made absolute here (its working directory differs).
+func cliMedia(file, mimeType, fileName string, voiceNote bool) (*wa.OutMedia, error) {
+	if file == "" {
+		if mimeType != "" || fileName != "" || voiceNote {
+			return nil, errors.New("--mime, --file-name and --voice-note need --file")
+		}
+		return nil, nil
+	}
+	abs, err := filepath.Abs(file)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := os.Stat(abs); err != nil {
+		return nil, fmt.Errorf("--file: %w", err)
+	}
+	return &wa.OutMedia{Path: abs, MimeType: mimeType, FileName: fileName, VoiceNote: voiceNote}, nil
 }
 
 // sendVia resolves a chat name/phone/JID locally, then asks the daemon to
@@ -231,16 +265,22 @@ func toolSend(ctx context.Context, e env, raw []byte) envelope {
 	var in struct {
 		Chat           string `json:"chat"`
 		Text           string `json:"text"`
+		File           string `json:"file"`
+		VoiceNote      bool   `json:"voice_note"`
 		IdempotencyKey string `json:"idempotency_key"`
 		DryRun         bool   `json:"dry_run"`
 	}
 	if err := decodeInput(raw, &in); err != nil {
 		return envelope{Error: "invalid input: " + err.Error()}
 	}
-	if in.Chat == "" || in.Text == "" {
-		return envelope{Error: "chat and text are required"}
+	if in.Chat == "" || (in.Text == "" && in.File == "") {
+		return envelope{Error: "chat and text (or file) are required"}
 	}
-	res, err := sendVia(ctx, e, in.Chat, wa.SendRequest{Text: in.Text, IdempotencyKey: in.IdempotencyKey, DryRun: in.DryRun})
+	media, err := cliMedia(in.File, "", "", in.VoiceNote)
+	if err != nil {
+		return envelope{Error: err.Error()}
+	}
+	res, err := sendVia(ctx, e, in.Chat, wa.SendRequest{Text: in.Text, Media: media, IdempotencyKey: in.IdempotencyKey, DryRun: in.DryRun})
 	if err != nil {
 		var se *wa.SendError
 		if errors.As(err, &se) {
@@ -338,12 +378,13 @@ type toolDef struct {
 var toolDefs = []toolDef{
 	{
 		name: "wa_send",
-		description: "Send a WhatsApp text message from the linked number. The chat must be on the allowlist and have a prior conversation; " +
+		description: "Send a WhatsApp message from the linked number: text, or a file (absolute path: image JPEG/PNG, video MP4, audio, document) with text as its caption. " +
+			"The chat must be on the allowlist and have a prior conversation; " +
 			"refusals return details.code (not_allowed, groups_disabled, no_history, rate_limited, paused, too_long, unknown_chat, not_connected) and must not be worked around; " +
 			"rate_limited also returns details.retry_after_seconds (check wa_limits before batches). " +
 			"Pass an idempotency_key so a retry never sends twice. Full rules: `shipyard-comms-whatsapp help sending`.",
-		input:  map[string]string{"chat": "string", "text": "string", "idempotency_key": "string", "dry_run": "boolean"},
-		output: map[string]string{"msg_id": "string", "chat": "string", "chat_name": "string", "sent_at": "string", "duplicate": "boolean", "dry_run": "boolean"},
+		input:  map[string]string{"chat": "string", "text": "string", "file": "string", "voice_note": "boolean", "idempotency_key": "string", "dry_run": "boolean"},
+		output: map[string]string{"msg_id": "string", "kind": "string", "chat": "string", "chat_name": "string", "sent_at": "string", "duplicate": "boolean", "dry_run": "boolean"},
 	},
 	{
 		name:        "wa_chats",

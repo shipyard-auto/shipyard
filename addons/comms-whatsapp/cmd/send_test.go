@@ -24,6 +24,18 @@ const viniJID = "5512982016477@s.whatsapp.net"
 type stubSender struct {
 	mu    sync.Mutex
 	texts []string
+	media []*wa.MediaMessage
+}
+
+func (s *stubSender) Upload(_ context.Context, data []byte, _ string) (wa.UploadedMedia, error) {
+	return wa.UploadedMedia{FileLength: uint64(len(data))}, nil
+}
+
+func (s *stubSender) SendMedia(_ context.Context, _ types.JID, _ wa.UploadedMedia, m *wa.MediaMessage) (string, time.Time, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.media = append(s.media, m)
+	return "MED" + string(rune('0'+len(s.media))), time.Now(), nil
 }
 
 func (s *stubSender) Connected() bool                               { return true }
@@ -366,5 +378,48 @@ func TestLimitsCommandForPeople(t *testing.T) {
 	out, _, _ = cliIn(t, "", "limits", "--json")
 	if !strings.Contains(out, `"per_group"`) || !strings.Contains(out, `"human": "60 per hour"`) {
 		t.Fatalf("json:\n%s", out)
+	}
+}
+
+func TestSendFileThroughDaemon(t *testing.T) {
+	_, sender := daemonFixture(t)
+	if _, _, err := cliIn(t, "", "allow", "Vini Eduqo"); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	pdf := filepath.Join(dir, "tabela.pdf")
+	if err := os.WriteFile(pdf, []byte("%PDF-1.4\n1 0 obj\n<<>>\nendobj\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := cliIn(t, "", "send", "Vini Eduqo", "--voice-note"); err == nil {
+		t.Fatal("--voice-note without --file accepted")
+	}
+	if _, _, err := cliIn(t, "", "send", "Vini Eduqo", "--file", filepath.Join(dir, "missing.pdf")); err == nil {
+		t.Fatal("missing file accepted")
+	}
+
+	// A relative path works: the CLI resolves it before the daemon reads it.
+	t.Chdir(dir)
+	out, _, err := cliIn(t, "", "send", "Vini Eduqo", "--file", "tabela.pdf", "--text", "segue a tabela")
+	if err != nil || !strings.Contains(out, "Sent a file to Vini Eduqo") {
+		t.Fatalf("send file: %q %v", out, err)
+	}
+	if len(sender.media) != 1 || sender.media[0].Kind != wa.SendKindFile || sender.media[0].FileName != "tabela.pdf" ||
+		sender.media[0].Caption != "segue a tabela" || len(sender.texts) != 0 {
+		t.Fatalf("media=%+v texts=%v", sender.media, sender.texts)
+	}
+
+	// The crew tool takes a file too.
+	env := toolCall(t, "send", `{"chat":"Vini Eduqo","file":"`+pdf+`","idempotency_key":"t1"}`)
+	if env["ok"] != true || env["data"].(map[string]any)["kind"] != "file" {
+		t.Fatalf("tool: %v", env)
+	}
+	env = toolCall(t, "send", `{"chat":"Vini Eduqo"}`)
+	if env["ok"] != false {
+		t.Fatalf("tool without text or file: %v", env)
+	}
+	out, _, _ = cliIn(t, "", "sent")
+	if !strings.Contains(out, "KIND") || strings.Count(out, " file ") != 2 {
+		t.Fatalf("sent:\n%s", out)
 	}
 }

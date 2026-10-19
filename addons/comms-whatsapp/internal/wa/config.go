@@ -73,6 +73,10 @@ type MediaConfig struct {
 	Download []string `json:"download"`
 	// MaxBytes skips larger files (as declared by the sender).
 	MaxBytes int64 `json:"max_bytes"`
+	// SendMaxBytes caps one attachment the daemon sends (send --file, the
+	// API). WhatsApp re-encodes large images and videos anyway; 16 MiB
+	// covers what a phone would send.
+	SendMaxBytes int64 `json:"send_max_bytes"`
 }
 
 // MediaKinds are the message kinds that carry a downloadable file.
@@ -80,8 +84,9 @@ var MediaKinds = []string{"image", "audio", "video", "file", "sticker"}
 
 // Media download defaults: everything but stickers, up to 25 MiB.
 const (
-	DefaultMediaMaxBytes = 25 << 20
-	MaxMediaBytes        = 100 << 20
+	DefaultMediaMaxBytes     = 25 << 20
+	DefaultMediaSendMaxBytes = 16 << 20
+	MaxMediaBytes            = 100 << 20
 )
 
 func defaultMediaDownload() []string { return []string{"image", "audio", "video", "file"} }
@@ -222,7 +227,8 @@ func DefaultConfig() Config {
 		Limits:     SendLimits{PerChat: DefaultLimitPerChat, PerGroup: DefaultLimitPerGroup, Global: DefaultLimitGlobal},
 		MaxChars:   MaxMessageChars,
 		Humanize:   true,
-		Media:      MediaConfig{Download: defaultMediaDownload(), MaxBytes: DefaultMediaMaxBytes},
+		Media: MediaConfig{Download: defaultMediaDownload(), MaxBytes: DefaultMediaMaxBytes,
+			SendMaxBytes: DefaultMediaSendMaxBytes},
 	}
 }
 
@@ -276,6 +282,9 @@ func (c Config) Validate() error {
 	}
 	if c.Media.MaxBytes < 1 || c.Media.MaxBytes > MaxMediaBytes {
 		return fmt.Errorf("config: media.max_bytes must be between 1 and %s", FormatBytes(MaxMediaBytes))
+	}
+	if c.Media.SendMaxBytes < 1 || c.Media.SendMaxBytes > MaxMediaBytes {
+		return fmt.Errorf("config: media.send_max_bytes must be between 1 and %s", FormatBytes(MaxMediaBytes))
 	}
 	return nil
 }
@@ -397,6 +406,12 @@ func (c *Config) Set(key, value string) error {
 			return fmt.Errorf("config: media-max-size: %w", err)
 		}
 		c.Media.MaxBytes = n
+	case "media-send-max-size":
+		n, err := ParseBytes(value)
+		if err != nil {
+			return fmt.Errorf("config: media-send-max-size: %w", err)
+		}
+		c.Media.SendMaxBytes = n
 	default:
 		return fmt.Errorf("config: unknown key %q (known: %s)", key, strings.Join(ConfigKeys, ", "))
 	}
@@ -407,7 +422,7 @@ func (c *Config) Set(key, value string) error {
 // one of them: pause/resume have their own commands.
 var ConfigKeys = []string{"device-name", "default-ttl", "limit-per-chat", "limit-per-group", "limit-global",
 	"allow-groups", "max-chars", "humanize", "fairway-addr", "include-own", "publish-events", "api-addr",
-	"media-download", "media-max-size"}
+	"media-download", "media-max-size", "media-send-max-size"}
 
 // LoadConfig reads path, returning DefaultConfig when it does not exist.
 func LoadConfig(path string) (Config, error) {
