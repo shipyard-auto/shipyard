@@ -67,7 +67,10 @@ func runSend(ctx context.Context, e env, args []string) error {
 		return err
 	}
 	what := "a message"
-	if res.Kind != "" && res.Kind != wa.SendKindText {
+	switch res.Kind {
+	case wa.SendKindImage, wa.SendKindAudio:
+		what = "an " + res.Kind
+	case wa.SendKindVideo, wa.SendKindFile:
 		what = "a " + res.Kind
 	}
 	if *asJSON {
