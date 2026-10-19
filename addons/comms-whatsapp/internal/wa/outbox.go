@@ -146,7 +146,7 @@ func (o *Outbox) Send(ctx context.Context, req SendRequest) (SendResult, error) 
 			event = yardlogs.EventWASendFailed
 		}
 		o.Log.Warn(event, slog.String(yardlogs.KeyMessage, "send refused or failed"),
-			slog.String(yardlogs.KeyChatJID, req.Chat), slog.String(yardlogs.KeyEntityID, req.Client), slog.String(yardlogs.KeyErrorKind, code),
+			slog.String(yardlogs.KeyChatJID, req.Chat), slog.String(yardlogs.KeyClientID, req.Client), slog.String(yardlogs.KeyErrorKind, code),
 			slog.String(yardlogs.KeyError, err.Error()))
 	}
 	return res, err
@@ -306,7 +306,7 @@ func (o *Outbox) send(ctx context.Context, req SendRequest) (SendResult, error) 
 		o.logArchiveError(chat.JID, err)
 	}
 	o.Log.Info(yardlogs.EventWAMessageSent, slog.String(yardlogs.KeyMessage, "message sent"),
-		slog.String(yardlogs.KeyChatJID, chat.JID), slog.String(yardlogs.KeyEntityID, req.Client),
+		slog.String(yardlogs.KeyChatJID, chat.JID), slog.String(yardlogs.KeyClientID, req.Client),
 		slog.String(yardlogs.KeyMediaKind, result.Kind), slog.Int(yardlogs.KeyCount, utf8.RuneCountInString(text)))
 	return result, nil
 }
