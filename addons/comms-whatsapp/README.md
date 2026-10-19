@@ -70,7 +70,17 @@ shipyard service add --name whatsapp --auto-restart \
   Messages from the initial history sync are not archived. Edits update the
   stored text; "delete for everyone" removes the row.
 - **TTL is mandatory**: 1h to 90d, default 14d. The daemon prunes hourly.
-- Media is recorded as kind + caption; files are not downloaded.
+- **Attachments of watched chats** (image, audio/voice note, video, document;
+  stickers opt-in) are downloaded in the background into `media/` next to
+  `archive.db` (0700/0600) and deleted with their message: TTL, `unwatch` and
+  "delete for everyone" all remove the file. `config set media-download
+  image,audio` picks the kinds (`off` disables), `config set media-max-size
+  50MB` the cap (default 25MB, max 100MB). Every media message records a
+  status — `stored`, `pending`, `skipped` (policy) or `failed` — shown by
+  `history` and carried in envelopes as `metadata.media_*`. Route deliveries
+  of a media message wait for its download and add `media_path`, the local
+  file. Receiving only: sending media is not supported. Full detail:
+  `help media`.
 - Status updates, broadcast lists and channels are ignored.
 
 Message bodies never go to the logs (`~/.shipyard/logs/comms/`), only chat ids
@@ -176,6 +186,10 @@ client ──signed──▶ fairway route (auth signed, scope whatsapp.read)
 - `POST <prefix>/limits` `{"chat"}` returns the `limits` report (usage,
   `can_send_now`, blockers, `retry_after_seconds`) to check before a
   broadcast.
+- `POST <prefix>/media` `{"chat", "id", "offset"}` (`whatsapp.read:<chat>`)
+  returns the attachment in base64 chunks of up to 2 MiB (fairway caps
+  forwarded responses at 4 MB): call again with `offset + length` until
+  `eof`, then check `sha256`.
 - `api rotate-token` replaces the token and rewrites the route files;
   `api disable` turns it off. Full contract: `help api`.
 
@@ -226,5 +240,5 @@ The SQLite driver is pure Go (`modernc.org/sqlite`); keep `CGO_ENABLED=0`.
 
 ## Roadmap
 
-Chat ownership (lease/handoff for flows) and media come later. See `docs/comms/whatsapp-design.md` (kept
+Chat ownership (lease/handoff for flows) and sending media come later. See `docs/comms/whatsapp-design.md` (kept
 locally).

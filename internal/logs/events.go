@@ -87,6 +87,8 @@ const (
 	EventWAAPIQuery         = "wa_api_query"
 	EventWAAPIDenied        = "wa_api_denied"
 	EventWAAPIError         = "wa_api_error"
+	EventWAMediaStored      = "wa_media_stored"
+	EventWAMediaFailed      = "wa_media_failed"
 
 	// Fairway events and webhooks.
 	EventEventPublished = "event_published"
@@ -133,8 +135,9 @@ const (
 	KeyTokensInput  = "tokens_input"
 	KeyTokensOutput = "tokens_output"
 
-	KeyChatJID = "chat_jid"
-	KeyCount   = "count"
+	KeyChatJID   = "chat_jid"
+	KeyCount     = "count"
+	KeySizeBytes = "size_bytes"
 	// KeyClientID names the authenticated API client of a signed fairway
 	// route.
 	KeyClientID = "client_id"

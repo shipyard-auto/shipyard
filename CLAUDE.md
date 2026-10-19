@@ -45,7 +45,7 @@ Shipyard stores all state under `~/.shipyard/`:
 | `~/.shipyard/crew/` | Crew addon state and agent definitions |
 | `~/.shipyard/crew/tools/` | Reusable tool definitions for crew agents |
 | `~/.shipyard/comms/` | Comms channels and per-channel secrets |
-| `~/.shipyard/comms/whatsapp/` | WhatsApp session keys, archive (SQLite, TTL-bound), daemon status |
+| `~/.shipyard/comms/whatsapp/` | WhatsApp session keys, archive (SQLite, TTL-bound), `media/` attachments of watched chats (deleted with their message), daemon status |
 
 ## Build and Test
 

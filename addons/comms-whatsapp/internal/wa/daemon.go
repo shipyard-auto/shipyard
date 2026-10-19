@@ -89,16 +89,24 @@ func Serve(ctx context.Context, opts ServeOptions) error {
 		return FairwayAddr(cfg.FairwayAddr, opts.Paths.FairwayDir)
 	}, log)
 	go deliverer.Run(ctx)
+	// Downloads queued before the last stop died with that process.
+	if _, err := arch.FailPendingMedia(ctx, "interrupted by a daemon restart"); err != nil {
+		log.Error(yardlogs.EventWAArchiveError, slog.String(yardlogs.KeyMessage, "cannot reset pending media"), slog.String(yardlogs.KeyError, err.Error()))
+	}
+	downloader := NewDownloader(arch, sess.Fetcher(), log)
+	go downloader.Run(ctx)
 	h := &Handler{
-		Archive: arch,
-		Dir:     sess.Directory(),
-		Tracker: tracker,
-		Log:     log,
-		OnFatal: func(err error) { cancel(err) },
-		Routes:  func() Routes { cfg, _ := cfgCache.Get(); return cfg.Routes },
-		Deliver: deliverer.Enqueue,
-		Events:  func() bool { cfg, _ := cfgCache.Get(); return cfg.PublishEvents },
-		Publish: deliverer.Publish,
+		Archive:  arch,
+		Dir:      sess.Directory(),
+		Tracker:  tracker,
+		Log:      log,
+		OnFatal:  func(err error) { cancel(err) },
+		Routes:   func() Routes { cfg, _ := cfgCache.Get(); return cfg.Routes },
+		Deliver:  deliverer.Enqueue,
+		Events:   func() bool { cfg, _ := cfgCache.Get(); return cfg.PublishEvents },
+		Publish:  deliverer.Publish,
+		Media:    func() MediaConfig { cfg, _ := cfgCache.Get(); return cfg.Media },
+		Download: downloader.Enqueue,
 	}
 	sess.Client.AddEventHandler(func(evt any) { h.Handle(ctx, evt) })
 
@@ -159,6 +167,13 @@ func Serve(ctx context.Context, opts ServeOptions) error {
 		}
 		if n > 0 {
 			log.Info(yardlogs.EventWAPruned, slog.String(yardlogs.KeyMessage, "expired messages pruned"), slog.Int64(yardlogs.KeyCount, n))
+		}
+		// Files left behind by a crash between a delete and its file
+		// removal, or by an interrupted download.
+		if n, err := arch.SweepMedia(ctx, MediaSweepGrace); err != nil {
+			h.archiveError("", err)
+		} else if n > 0 {
+			log.Info(yardlogs.EventWAPruned, slog.String(yardlogs.KeyMessage, "orphan media files removed"), slog.Int(yardlogs.KeyCount, n))
 		}
 	}
 	prune()

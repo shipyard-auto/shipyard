@@ -96,9 +96,14 @@ Keys:
   publish-events  true/false: publish every new message to fairway's events
                   API for signed webhook subscribers (default false)
   api-addr        loopback host:port of the query API, or "off" (prefer 'api')
+  media-download  kinds whose files are downloaded in watched chats, comma-
+                  separated from image,audio,video,file,sticker, or "off"
+                  (default image,audio,video,file)
+  media-max-size  skip larger files: 25MB, 512KB… (default 25MB, max 100MB)
 
 Pausing is not a key: use pause / resume.`,
-		examples: []string{"config", "config set default-ttl 7d", "config set allow-groups true"},
+		examples: []string{"config", "config set default-ttl 7d", "config set allow-groups true",
+			"config set media-download image,audio", "config set media-max-size 50MB"},
 	},
 	{
 		name: "serve", group: "Daemon",
@@ -164,8 +169,9 @@ stays in the catalog.`,
 		summary: "print archived messages of a watched chat, oldest first",
 		details: `Prints messages of a watched chat within --since (e.g. 2h, 3d), keeping the
 newest --limit (0 = no limit). Media appears as [image] / [audio] / … plus the
-caption; files are not downloaded. Messages sent by Shipyard carry
-via_shipyard=true in JSON.`,
+caption and the downloaded file's path, or why there is none (see 'help
+media'). Messages sent by Shipyard carry via_shipyard=true in JSON; media
+messages carry a "media" object (status, mime_type, size, path, …).`,
 		examples: []string{`history "Família" --since 2h`, "history 120363@g.us --limit 50 --json"},
 	},
 	{
@@ -235,11 +241,20 @@ POST <prefix>/send  (scope whatsapp.send:<chat>)
 POST <prefix>/limits  (scope whatsapp.send)  {"chat":"<jid>"} optional
   → the 'limits' report: configured limits, live usage and, for the chat,
   can_send_now / blockers / retry_after_seconds. Check before a broadcast.
+POST <prefix>/media  (scope whatsapp.read:<chat>)
+  {"chat":"<jid|name|phone>", "id":"<message id>", "offset":0}
+  → {"chat","id","mime_type","file_name","size","sha256","offset","length",
+     "eof","data":"<base64>"}
+  Returns up to 2 MiB of the attachment per call; while eof is false, call
+  again with offset = offset + length, then check sha256 over the whole
+  file. Envelopes with metadata.media_status "stored" have a file; others
+  answer 404 media_skipped / media_failed, or 409 media_pending (retry in a
+  few seconds). 404 no_media: the message is not archived (see 'help media').
 
 Errors: {"error":{"code":"…","message":"…"}} with 400 invalid/ambiguous,
 401 (token; fairway misconfigured), 403 forbidden (chat not in your scopes —
 also returned for chats that do not exist, unless you may read every chat),
-404 unknown_chat, 405, 503.
+404 unknown_chat / no_media / media_*, 405, 503.
 
 Typical first sync, then catch-up after downtime:
   {"since":"7d"} → page with "after" until has_more=false → store next_cursor
@@ -413,6 +428,12 @@ Event (comms Message envelope, schema v1):
                "from_me":"false","kind":"text|image|audio|…","reply_to":"…"},
    "ts":"2026-10-17T17:13:36Z"}
 
+Media messages add media_* metadata (see 'help media'): media_status,
+media_mime_type, media_size, media_seconds, media_voice_note, media_file_name,
+media_sha256, media_reason and, on route deliveries only, media_path — the
+local file, ready to read. A watched chat's media message is delivered after
+its download ends (a few seconds), so it can arrive after later text.
+
 To answer, an agent sends to metadata.chat_jid with wa_send (the chat must be
 allowlisted). Use metadata.chat_jid as the crew conversation key for
 stateful agents: key: "{{input.metadata.chat_jid}}".
@@ -455,7 +476,8 @@ wa_limits   in:  chat?
                  chat {can_send_now, blockers[], usage, retry_after_seconds}
 wa_history  in:  chat, since? (default 24h), limit? (default 200, max 500)
             out: chat{jid,name}, messages[{id,sender_jid,sender_name,from_me,
-                 ts,kind,text,reply_to,via_shipyard}]  (watched chats only)
+                 ts,kind,text,reply_to,via_shipyard,media?}]  (watched chats only;
+                 media.path is the downloaded file, see 'help media')
 
 Agents that send should also set 'builtin_tools: []' in agent.yaml (crew ≥
 0.7.0) so the policy-checked tool is their only way out. The daemon enforces
@@ -475,8 +497,37 @@ whatsapp), mode 0700:
 
 Message content is stored only for watched chats and is deleted after its TTL
 (max 90d); unwatch deletes it at once. Message bodies never go to the logs
-(~/.shipyard/logs/comms/), only chat ids and counts. Media files are not
-downloaded.`},
+(~/.shipyard/logs/comms/), only chat ids and counts. Attachments of watched
+chats are files under media/ (see 'help media') and expire with their
+message.`},
+	{"media", "images, audio, video and files: download, retention, access", `Receiving only: the daemon does not send media.
+
+For each image, audio (voice notes included), video, document or sticker
+received in a WATCHED chat, the daemon downloads the file in the background
+into media/ next to archive.db (mode 0700/0600), named by a hash of chat and
+message id, with an extension from the MIME type (.jpg, .ogg, .mp4, .pdf…).
+Unwatched chats never get files, even when routed.
+
+What is downloaded is 'config set media-download' (default
+image,audio,video,file; "off" disables) up to 'config set media-max-size'
+(default 25MB, max 100MB). Changes apply live.
+
+Every media message records a status (history --json → "media", envelopes →
+metadata.media_status):
+  stored   the file is on disk (path / media_path, or POST <prefix>/media)
+  pending  download queued; a route delivery waits for it
+  skipped  not downloaded by policy; media_reason says which
+  failed   download failed or was interrupted by a restart; not retried
+
+Files are deleted with their message: TTL prune, unwatch, and "delete for
+everyone" all remove them, and the hourly prune also removes any file no
+message points to. Voice notes are Opus in Ogg (audio/ogg; codecs=opus):
+transcribe them before handing them to a model that cannot hear.
+
+Reading the files:
+  local agents   metadata.media_path of the routed event, or history --json
+  other systems  POST <prefix>/media through fairway ('help api'), with the
+                 envelope's id and chat`},
 	{"exit-codes", "exit codes of every command", `  0   success
   1   usage or runtime error (daemon not running, chat not found, …)
   3   send refused by the policy (send only; the code is in the message)

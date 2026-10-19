@@ -1,9 +1,13 @@
 package wa
 
 import (
+	"encoding/hex"
 	"strings"
 
+	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/proto/waE2E"
+
+	"github.com/shipyard-auto/shipyard/addons/comms-whatsapp/internal/wa/archive"
 )
 
 // Action says what an incoming message means for the archive.
@@ -23,6 +27,33 @@ type Content struct {
 	Text     string // body, caption or a short description of the payload
 	ReplyTo  string // quoted message ID, if any
 	TargetID string // for ActionEdit / ActionRevoke
+	// Media is set for image, video, audio, file and sticker messages.
+	Media *MediaRef
+}
+
+// MediaRef is what the archive records about an attachment plus what is
+// needed to fetch it. The download keys live only here, in memory: they
+// are never written to disk.
+type MediaRef struct {
+	Info   archive.Media // metadata; Status is decided by the handler
+	Source whatsmeow.DownloadableMessage
+}
+
+// mediaSource is the slice of a media proto both the metadata and the
+// download need; every waE2E media message implements it.
+type mediaSource interface {
+	whatsmeow.DownloadableMessage
+	GetMimetype() string
+	GetFileLength() uint64
+}
+
+func newMediaRef(src mediaSource, info archive.Media) *MediaRef {
+	info.MimeType = src.GetMimetype()
+	info.Size = int64(src.GetFileLength())
+	if sum := src.GetFileSHA256(); len(sum) > 0 {
+		info.SHA256 = hex.EncodeToString(sum)
+	}
+	return &MediaRef{Info: info, Source: src}
 }
 
 // ExtractContent classifies m, which must already be unwrapped (whatsmeow
@@ -61,24 +92,32 @@ func ExtractContent(m *waE2E.Message) Content {
 		im := m.GetImageMessage()
 		c.Kind, c.Text = "image", im.GetCaption()
 		c.ReplyTo = im.GetContextInfo().GetStanzaID()
+		c.Media = newMediaRef(im, archive.Media{Width: int(im.GetWidth()), Height: int(im.GetHeight())})
 	case m.GetVideoMessage() != nil:
 		vm := m.GetVideoMessage()
 		c.Kind, c.Text = "video", vm.GetCaption()
 		c.ReplyTo = vm.GetContextInfo().GetStanzaID()
-	case m.GetPtvMessage() != nil:
+		c.Media = newMediaRef(vm, videoInfo(vm))
+	case m.GetPtvMessage() != nil: // round "video note"
+		vm := m.GetPtvMessage()
 		c.Kind = "video"
-		c.ReplyTo = m.GetPtvMessage().GetContextInfo().GetStanzaID()
+		c.ReplyTo = vm.GetContextInfo().GetStanzaID()
+		c.Media = newMediaRef(vm, videoInfo(vm))
 	case m.GetAudioMessage() != nil:
 		am := m.GetAudioMessage()
 		c.Kind = "audio"
 		c.ReplyTo = am.GetContextInfo().GetStanzaID()
+		c.Media = newMediaRef(am, archive.Media{Seconds: int(am.GetSeconds()), VoiceNote: am.GetPTT()})
 	case m.GetDocumentMessage() != nil:
 		dm := m.GetDocumentMessage()
 		c.Kind = "file"
 		c.Text = joinNonEmpty(" — ", dm.GetFileName(), dm.GetCaption())
 		c.ReplyTo = dm.GetContextInfo().GetStanzaID()
+		c.Media = newMediaRef(dm, archive.Media{FileName: dm.GetFileName()})
 	case m.GetStickerMessage() != nil:
+		sm := m.GetStickerMessage()
 		c.Kind = "sticker"
+		c.Media = newMediaRef(sm, archive.Media{Width: int(sm.GetWidth()), Height: int(sm.GetHeight())})
 	case m.GetLocationMessage() != nil:
 		lm := m.GetLocationMessage()
 		c.Kind = "location"
@@ -111,6 +150,10 @@ func ExtractContent(m *waE2E.Message) Content {
 		c.Kind = "other"
 	}
 	return c
+}
+
+func videoInfo(vm *waE2E.VideoMessage) archive.Media {
+	return archive.Media{Seconds: int(vm.GetSeconds()), Width: int(vm.GetWidth()), Height: int(vm.GetHeight())}
 }
 
 func joinNonEmpty(sep string, parts ...string) string {

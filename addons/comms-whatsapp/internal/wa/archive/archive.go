@@ -6,6 +6,11 @@
 // inside the INSERT itself so a concurrent `unwatch` cannot race a write.
 // Rows older than the chat's TTL are removed by Prune.
 //
+// Attachments of archived messages are files under media/, next to the
+// database, described by the media table. Every path that deletes messages
+// (Prune, Unwatch, DeleteMessage) deletes their files too, and SweepMedia
+// removes files no row points to (a crash between the two).
+//
 // The driver is modernc.org/sqlite (pure Go): releases are cross-compiled
 // for four targets from one runner with CGO disabled.
 package archive
@@ -16,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 	"unicode"
@@ -66,6 +72,36 @@ type Message struct {
 	// ViaShipyard marks messages this daemon sent, as opposed to ones the
 	// user typed on the phone.
 	ViaShipyard bool `json:"via_shipyard,omitempty"`
+	// Media describes the attachment of image, video, audio, file and
+	// sticker messages.
+	Media *Media `json:"media,omitempty"`
+}
+
+// MediaStatus says whether an attachment's bytes are on disk.
+type MediaStatus string
+
+const (
+	MediaPending MediaStatus = "pending" // download queued
+	MediaStored  MediaStatus = "stored"  // file on disk (Media.Path)
+	MediaSkipped MediaStatus = "skipped" // not downloaded by policy (Reason)
+	MediaFailed  MediaStatus = "failed"  // download failed (Reason)
+)
+
+// Media is the attachment of an archived message.
+type Media struct {
+	MimeType  string `json:"mime_type,omitempty"`
+	Size      int64  `json:"size,omitempty"` // bytes, as declared by the sender
+	Seconds   int    `json:"seconds,omitempty"`
+	Width     int    `json:"width,omitempty"`
+	Height    int    `json:"height,omitempty"`
+	VoiceNote bool   `json:"voice_note,omitempty"`
+	FileName  string `json:"file_name,omitempty"` // documents only
+	SHA256    string `json:"sha256,omitempty"`    // hex, of the plaintext
+	// Status and Reason (for skipped/failed) describe the download.
+	Status MediaStatus `json:"status"`
+	Reason string      `json:"reason,omitempty"`
+	// Path is the absolute path of the file when Status is stored.
+	Path string `json:"path,omitempty"`
 }
 
 // Sent is one row of the send audit log. It is written for every message
@@ -88,6 +124,9 @@ const SentRetention = 30 * 24 * time.Hour
 // ErrNotFound is returned when a chat lookup matches nothing.
 var ErrNotFound = errors.New("chat not found")
 
+// ErrNoMedia is returned when a message has no archived attachment.
+var ErrNoMedia = errors.New("no archived media for this message")
+
 // AmbiguousError is returned by Resolve when a name matches several chats.
 type AmbiguousError struct {
 	Query   string
@@ -105,8 +144,9 @@ func (e *AmbiguousError) Error() string {
 
 // Store wraps the archive database.
 type Store struct {
-	db  *sql.DB
-	now func() time.Time
+	db       *sql.DB
+	now      func() time.Time
+	mediaDir string
 }
 
 // migrations are applied in order; PRAGMA user_version records how many ran.
@@ -175,6 +215,27 @@ var migrations = []string{
 
 	// v4: who asked for each send (external client id; NULL = local).
 	`ALTER TABLE sent ADD COLUMN client TEXT;`,
+
+	// v5: attachments. file is a name under media/ (NULL until stored).
+	// The download keys are deliberately not stored: a file that failed to
+	// download is not retried later.
+	`CREATE TABLE media (
+		chat_jid    TEXT NOT NULL,
+		msg_id      TEXT NOT NULL,
+		mime_type   TEXT,
+		size        INTEGER NOT NULL DEFAULT 0,
+		seconds     INTEGER NOT NULL DEFAULT 0,
+		width       INTEGER NOT NULL DEFAULT 0,
+		height      INTEGER NOT NULL DEFAULT 0,
+		voice_note  INTEGER NOT NULL DEFAULT 0,
+		file_name   TEXT,
+		sha256      TEXT,
+		status      TEXT NOT NULL CHECK (status IN ('pending','stored','skipped','failed')),
+		reason      TEXT,
+		file        TEXT,
+		PRIMARY KEY (chat_jid, msg_id),
+		FOREIGN KEY (chat_jid, msg_id) REFERENCES messages(chat_jid, msg_id) ON DELETE CASCADE
+	);`,
 }
 
 // Open opens (creating if needed) the archive at path with mode 0600 and
@@ -197,7 +258,7 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	// pool instead of contending for SQLite's lock; contention between
 	// processes (CLI vs daemon) is left to busy_timeout.
 	db.SetMaxOpenConns(1)
-	s := &Store{db: db, now: time.Now}
+	s := &Store{db: db, now: time.Now, mediaDir: filepath.Join(filepath.Dir(path), "media")}
 	if err := s.migrate(ctx); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -293,6 +354,10 @@ func (s *Store) Unwatch(ctx context.Context, jid string) (int64, error) {
 	if err := requireRow(res, jid); err != nil {
 		return 0, err
 	}
+	files, err := mediaFiles(ctx, tx, `chat_jid = ?`, jid)
+	if err != nil {
+		return 0, fmt.Errorf("archive: unwatch %s: %w", jid, err)
+	}
 	del, err := tx.ExecContext(ctx, `DELETE FROM messages WHERE chat_jid = ?`, jid)
 	if err != nil {
 		return 0, fmt.Errorf("archive: unwatch %s: %w", jid, err)
@@ -301,7 +366,7 @@ func (s *Store) Unwatch(ctx context.Context, jid string) (int64, error) {
 	if err := tx.Commit(); err != nil {
 		return 0, fmt.Errorf("archive: unwatch %s: %w", jid, err)
 	}
-	return n, nil
+	return n, s.removeMediaFiles(files)
 }
 
 func requireRow(res sql.Result, jid string) error {
@@ -461,8 +526,16 @@ func (s *Store) queryChats(ctx context.Context, q string, args ...any) ([]Chat, 
 // InsertMessage stores m if, and only if, its chat is watched. Duplicate
 // IDs (redelivery, edits) overwrite the text. Returns whether a row was
 // written.
+//
+// m.Media, when set, is recorded alongside. A redelivered message keeps an
+// attachment already stored; any other state is replaced.
 func (s *Store) InsertMessage(ctx context.Context, m Message) (bool, error) {
-	res, err := s.db.ExecContext(ctx, `
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("archive: insert message %s/%s: %w", m.ChatJID, m.ID, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	res, err := tx.ExecContext(ctx, `
 		INSERT INTO messages (chat_jid, msg_id, sender_jid, sender_name, from_me, ts, kind, text, reply_to, via_shipyard)
 		SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
 		WHERE EXISTS (SELECT 1 FROM chats WHERE jid = ? AND watched = 1)
@@ -473,6 +546,22 @@ func (s *Store) InsertMessage(ctx context.Context, m Message) (bool, error) {
 		return false, fmt.Errorf("archive: insert message %s/%s: %w", m.ChatJID, m.ID, err)
 	}
 	n, _ := res.RowsAffected()
+	if n > 0 && m.Media != nil {
+		md := m.Media
+		_, err := tx.ExecContext(ctx, `
+			INSERT INTO media (chat_jid, msg_id, mime_type, size, seconds, width, height, voice_note, file_name, sha256, status, reason)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT (chat_jid, msg_id) DO UPDATE SET status = excluded.status, reason = excluded.reason
+			WHERE media.status <> 'stored'`,
+			m.ChatJID, m.ID, nullable(md.MimeType), md.Size, md.Seconds, md.Width, md.Height, boolInt(md.VoiceNote),
+			nullable(md.FileName), nullable(md.SHA256), string(md.Status), nullable(md.Reason))
+		if err != nil {
+			return false, fmt.Errorf("archive: insert media %s/%s: %w", m.ChatJID, m.ID, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("archive: insert message %s/%s: %w", m.ChatJID, m.ID, err)
+	}
 	return n > 0, nil
 }
 
@@ -489,19 +578,31 @@ func (s *Store) EditMessage(ctx context.Context, chatJID, id, kind, text string)
 
 // DeleteMessage removes an archived message ("delete for everyone").
 func (s *Store) DeleteMessage(ctx context.Context, chatJID, id string) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM messages WHERE chat_jid = ? AND msg_id = ?`, chatJID, id)
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("archive: delete message %s/%s: %w", chatJID, id, err)
 	}
-	return nil
+	defer func() { _ = tx.Rollback() }()
+	files, err := mediaFiles(ctx, tx, `chat_jid = ? AND msg_id = ?`, chatJID, id)
+	if err != nil {
+		return fmt.Errorf("archive: delete message %s/%s: %w", chatJID, id, err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM messages WHERE chat_jid = ? AND msg_id = ?`, chatJID, id); err != nil {
+		return fmt.Errorf("archive: delete message %s/%s: %w", chatJID, id, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("archive: delete message %s/%s: %w", chatJID, id, err)
+	}
+	return s.removeMediaFiles(files)
 }
 
 // History returns the newest `limit` messages of jid at or after since,
 // oldest first. limit <= 0 means no limit.
 func (s *Store) History(ctx context.Context, jid string, since time.Time, limit int) ([]Message, error) {
-	q := `SELECT chat_jid, msg_id, sender_jid, COALESCE(sender_name, ''), from_me, ts, kind,
-	             COALESCE(text, ''), COALESCE(reply_to, ''), via_shipyard
-	      FROM messages WHERE chat_jid = ? AND ts >= ? ORDER BY ts DESC, msg_id DESC`
+	q := `SELECT m.chat_jid, m.msg_id, m.sender_jid, COALESCE(m.sender_name, ''), m.from_me, m.ts, m.kind,
+	             COALESCE(m.text, ''), COALESCE(m.reply_to, ''), m.via_shipyard, ` + mediaColumns + `
+	      FROM messages m LEFT JOIN media d ON d.chat_jid = m.chat_jid AND d.msg_id = m.msg_id
+	      WHERE m.chat_jid = ? AND m.ts >= ? ORDER BY m.ts DESC, m.msg_id DESC`
 	args := []any{jid, since.Unix()}
 	if limit > 0 {
 		q += ` LIMIT ?`
@@ -517,12 +618,15 @@ func (s *Store) History(ctx context.Context, jid string, since time.Time, limit 
 		var m Message
 		var fromMe, via int
 		var ts int64
-		if err := rows.Scan(&m.ChatJID, &m.ID, &m.SenderJID, &m.SenderName, &fromMe, &ts, &m.Kind, &m.Text, &m.ReplyTo, &via); err != nil {
+		var md mediaRow
+		if err := rows.Scan(append([]any{&m.ChatJID, &m.ID, &m.SenderJID, &m.SenderName, &fromMe, &ts, &m.Kind, &m.Text, &m.ReplyTo, &via},
+			md.dest()...)...); err != nil {
 			return nil, fmt.Errorf("archive: scan message: %w", err)
 		}
 		m.FromMe = fromMe == 1
 		m.ViaShipyard = via == 1
 		m.Timestamp = time.Unix(ts, 0).UTC()
+		m.Media = md.media(s.mediaDir)
 		out = append(out, m)
 	}
 	if err := rows.Err(); err != nil {
@@ -537,20 +641,33 @@ func (s *Store) History(ctx context.Context, jid string, since time.Time, limit 
 // Prune deletes messages older than their chat's TTL (defaultTTL for chats
 // without one) and send-log rows older than SentRetention. Returns how
 // many messages were removed.
+//
+// Attachments of pruned messages are deleted with them.
 func (s *Store) Prune(ctx context.Context, defaultTTL time.Duration) (int64, error) {
 	now := s.now()
-	res, err := s.db.ExecContext(ctx, `
-		DELETE FROM messages WHERE ts < ? - COALESCE(
-			(SELECT ttl_seconds FROM chats c WHERE c.jid = messages.chat_jid), ?)`,
-		now.Unix(), int64(defaultTTL/time.Second))
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("archive: prune: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	const expired = `ts < ? - COALESCE((SELECT ttl_seconds FROM chats c WHERE c.jid = messages.chat_jid), ?)`
+	args := []any{now.Unix(), int64(defaultTTL / time.Second)}
+	files, err := mediaFiles(ctx, tx, `(chat_jid, msg_id) IN (SELECT chat_jid, msg_id FROM messages WHERE `+expired+`)`, args...)
+	if err != nil {
+		return 0, fmt.Errorf("archive: prune: %w", err)
+	}
+	res, err := tx.ExecContext(ctx, `DELETE FROM messages WHERE `+expired, args...)
 	if err != nil {
 		return 0, fmt.Errorf("archive: prune: %w", err)
 	}
 	n, _ := res.RowsAffected()
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM sent WHERE ts < ?`, now.Add(-SentRetention).Unix()); err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM sent WHERE ts < ?`, now.Add(-SentRetention).Unix()); err != nil {
 		return n, fmt.Errorf("archive: prune sent: %w", err)
 	}
-	return n, nil
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("archive: prune: %w", err)
+	}
+	return n, s.removeMediaFiles(files)
 }
 
 // SetSendAllowed adds jid to, or removes it from, the send allowlist.
@@ -702,8 +819,9 @@ func (s *Store) Feed(ctx context.Context, q FeedQuery) ([]FeedRow, error) {
 		return nil, errors.New("archive: feed: limit must be positive")
 	}
 	sqlq := `SELECT m.seq, c.name, c.kind, m.chat_jid, m.msg_id, m.sender_jid, COALESCE(m.sender_name, ''), m.from_me, m.ts,
-	                m.kind, COALESCE(m.text, ''), COALESCE(m.reply_to, ''), m.via_shipyard
+	                m.kind, COALESCE(m.text, ''), COALESCE(m.reply_to, ''), m.via_shipyard, ` + mediaColumns + `
 	         FROM messages m JOIN chats c ON c.jid = m.chat_jid
+	         LEFT JOIN media d ON d.chat_jid = m.chat_jid AND d.msg_id = m.msg_id
 	         WHERE m.seq > ?`
 	args := []any{q.After}
 	if !q.Since.IsZero() {
@@ -726,10 +844,12 @@ func (s *Store) Feed(ctx context.Context, q FeedQuery) ([]FeedRow, error) {
 		var r FeedRow
 		var fromMe, via int
 		var ts int64
-		if err := rows.Scan(&r.Seq, &r.ChatName, &r.ChatKind, &r.ChatJID, &r.ID, &r.SenderJID, &r.SenderName, &fromMe, &ts,
-			&r.Kind, &r.Text, &r.ReplyTo, &via); err != nil {
+		var md mediaRow
+		if err := rows.Scan(append([]any{&r.Seq, &r.ChatName, &r.ChatKind, &r.ChatJID, &r.ID, &r.SenderJID, &r.SenderName, &fromMe, &ts,
+			&r.Kind, &r.Text, &r.ReplyTo, &via}, md.dest()...)...); err != nil {
 			return nil, fmt.Errorf("archive: scan feed: %w", err)
 		}
+		r.Media = md.media(s.mediaDir)
 		r.FromMe = fromMe == 1
 		r.ViaShipyard = via == 1
 		r.Timestamp = time.Unix(ts, 0).UTC()

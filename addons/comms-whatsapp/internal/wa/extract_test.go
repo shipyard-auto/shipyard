@@ -6,6 +6,8 @@ import (
 	"go.mau.fi/whatsmeow/proto/waCommon"
 	"go.mau.fi/whatsmeow/proto/waE2E"
 	"google.golang.org/protobuf/proto"
+
+	"github.com/shipyard-auto/shipyard/addons/comms-whatsapp/internal/wa/archive"
 )
 
 func TestExtractContent(t *testing.T) {
@@ -52,9 +54,57 @@ func TestExtractContent(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := ExtractContent(tc.in); got != tc.want {
+			got := ExtractContent(tc.in)
+			got.Media = nil // covered by TestExtractMedia
+			if got != tc.want {
 				t.Fatalf("got %+v want %+v", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestExtractMedia(t *testing.T) {
+	dl := func(sha byte) (string, []byte, []byte, []byte) {
+		return "/v/t62/x", []byte("key"), []byte{sha, 0xff}, []byte("enc")
+	}
+	path, key, sum, enc := dl(0xab)
+	cases := []struct {
+		name string
+		in   *waE2E.Message
+		want archive.Media
+	}{
+		{"image", &waE2E.Message{ImageMessage: &waE2E.ImageMessage{Mimetype: proto.String("image/jpeg"), FileLength: proto.Uint64(1234),
+			Width: proto.Uint32(800), Height: proto.Uint32(600), DirectPath: &path, MediaKey: key, FileSHA256: sum, FileEncSHA256: enc}},
+			archive.Media{MimeType: "image/jpeg", Size: 1234, Width: 800, Height: 600, SHA256: "abff"}},
+		{"voice note", &waE2E.Message{AudioMessage: &waE2E.AudioMessage{Mimetype: proto.String("audio/ogg; codecs=opus"),
+			FileLength: proto.Uint64(9000), Seconds: proto.Uint32(7), PTT: proto.Bool(true), DirectPath: &path}},
+			archive.Media{MimeType: "audio/ogg; codecs=opus", Size: 9000, Seconds: 7, VoiceNote: true}},
+		{"video", &waE2E.Message{VideoMessage: &waE2E.VideoMessage{Mimetype: proto.String("video/mp4"), Seconds: proto.Uint32(12),
+			Width: proto.Uint32(720), Height: proto.Uint32(1280)}},
+			archive.Media{MimeType: "video/mp4", Seconds: 12, Width: 720, Height: 1280}},
+		{"video note", &waE2E.Message{PtvMessage: &waE2E.VideoMessage{Mimetype: proto.String("video/mp4"), Seconds: proto.Uint32(3)}},
+			archive.Media{MimeType: "video/mp4", Seconds: 3}},
+		{"document", &waE2E.Message{DocumentMessage: &waE2E.DocumentMessage{Mimetype: proto.String("application/pdf"),
+			FileName: proto.String("nota.pdf"), FileLength: proto.Uint64(50)}},
+			archive.Media{MimeType: "application/pdf", FileName: "nota.pdf", Size: 50}},
+		{"sticker", &waE2E.Message{StickerMessage: &waE2E.StickerMessage{Mimetype: proto.String("image/webp")}},
+			archive.Media{MimeType: "image/webp"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ExtractContent(tc.in)
+			if got.Media == nil || got.Media.Source == nil {
+				t.Fatalf("no media ref: %+v", got)
+			}
+			if got.Media.Info != tc.want {
+				t.Fatalf("info %+v want %+v", got.Media.Info, tc.want)
+			}
+		})
+	}
+	if c := ExtractContent(text("oi")); c.Media != nil {
+		t.Fatalf("text has media: %+v", c.Media)
+	}
+	if got := ExtractContent(&waE2E.Message{ImageMessage: &waE2E.ImageMessage{DirectPath: &path}}); got.Media.Source.GetDirectPath() != path {
+		t.Fatal("download source not kept")
 	}
 }

@@ -205,3 +205,20 @@ func TestPhoneJID(t *testing.T) {
 		}
 	}
 }
+
+func TestFormatMessageShowsMediaFileOrWhyNot(t *testing.T) {
+	base := archive.Message{SenderName: "Mãe", Timestamp: time.Now(), Kind: "image", Text: "cardápio"}
+	stored := base
+	stored.Media = &archive.Media{Status: archive.MediaStored, Path: "/x/media/ab.jpg"}
+	if got := formatMessage(stored); !strings.HasSuffix(got, "Mãe: [image] cardápio  → /x/media/ab.jpg") {
+		t.Fatalf("stored: %q", got)
+	}
+	skipped := base
+	skipped.Media = &archive.Media{Status: archive.MediaSkipped, Reason: "image downloads are off"}
+	if got := formatMessage(skipped); !strings.HasSuffix(got, "[image] cardápio  (file skipped: image downloads are off)") {
+		t.Fatalf("skipped: %q", got)
+	}
+	if got := formatMessage(base); !strings.HasSuffix(got, "Mãe: [image] cardápio") {
+		t.Fatalf("no media: %q", got)
+	}
+}

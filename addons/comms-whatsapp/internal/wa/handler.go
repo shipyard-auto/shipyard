@@ -57,6 +57,10 @@ type Handler struct {
 	// Publish does it. Nil disables publishing.
 	Events  func() bool
 	Publish func(ev Event) bool
+	// Media returns the attachment download policy and Download queues one
+	// (false = queue full). Either nil disables downloads.
+	Media    func() MediaConfig
+	Download func(MediaJob) bool
 }
 
 // Fatal errors passed to OnFatal.
@@ -149,7 +153,7 @@ func (h *Handler) onMessage(ctx context.Context, e *events.Message) {
 				name = e.Info.PushName
 			}
 		}
-		_, err = h.Archive.InsertMessage(ctx, archive.Message{
+		msg := archive.Message{
 			ChatJID:    chatJID,
 			ID:         e.Info.ID,
 			SenderJID:  sender.String(),
@@ -159,9 +163,31 @@ func (h *Handler) onMessage(ctx context.Context, e *events.Message) {
 			Kind:       content.Kind,
 			Text:       content.Text,
 			ReplyTo:    content.ReplyTo,
-		})
+		}
+		if content.Media != nil {
+			info := content.Media.Info
+			info.Status, info.Reason = archive.MediaSkipped, "downloads are disabled"
+			if h.Media != nil && h.Download != nil {
+				info.Status, info.Reason = mediaDecision(h.Media(), content.Kind, content.Media)
+			}
+			msg.Media = &info
+		}
+		var written bool
+		written, err = h.Archive.InsertMessage(ctx, msg)
 		if err == nil {
-			h.route(ctx, e, chat, kind, sender, name, content)
+			media := msg.Media
+			if media != nil && !written {
+				// Unwatched chat: nothing is archived, so nothing is fetched.
+				media.Status, media.Reason = archive.MediaSkipped, "chat is not watched"
+			}
+			if written && media != nil && media.Status == archive.MediaPending {
+				if h.queueDownload(ctx, e, chat, kind, sender, name, content) {
+					return // routed once the download ends
+				}
+				media.Status, media.Reason = archive.MediaFailed, "download queue full"
+				err = h.Archive.SetMediaStatus(ctx, chatJID, e.Info.ID, media.Status, media.Reason)
+			}
+			h.route(ctx, e, chat, kind, sender, name, content, media)
 		}
 	case ActionEdit:
 		err = h.Archive.EditMessage(ctx, chatJID, content.TargetID, content.Kind, content.Text)
@@ -173,10 +199,29 @@ func (h *Handler) onMessage(ctx context.Context, e *events.Message) {
 	}
 }
 
+// queueDownload schedules the attachment of an archived message and
+// routes the message when the download ends, so an agent receives the
+// file along with the event. False means the queue was full.
+func (h *Handler) queueDownload(ctx context.Context, e *events.Message, chat types.JID, kind archive.ChatKind,
+	sender types.JID, senderName string, content Content) bool {
+	chatJID := chat.String()
+	return h.Download(MediaJob{
+		ChatJID: chatJID, MsgID: e.Info.ID, Ref: content.Media,
+		Done: func() {
+			media, err := h.Archive.GetMedia(ctx, chatJID, e.Info.ID)
+			if err != nil {
+				media = content.Media.Info
+				media.Status, media.Reason = archive.MediaFailed, "message deleted before the download finished"
+			}
+			h.route(ctx, e, chat, kind, sender, senderName, content, &media)
+		},
+	})
+}
+
 // route hands a new message to the deliverer when its chat is routed.
 // Edits and revokes are not forwarded: agents react to new messages.
 func (h *Handler) route(ctx context.Context, e *events.Message, chat types.JID, kind archive.ChatKind,
-	sender types.JID, senderName string, content Content) {
+	sender types.JID, senderName string, content Content, media *archive.Media) {
 	var routes Routes
 	if h.Routes != nil {
 		routes = h.Routes()
@@ -195,9 +240,9 @@ func (h *Handler) route(ctx context.Context, e *events.Message, chat types.JID, 
 	}
 	pn, _ := h.Dir.Own()
 	ev := messageEvent(e.Info.ID, newTraceID(), sender.String(), senderName, pn.String(), chat.String(), chatName, kind,
-		e.Info.IsFromMe, content.Kind, content.Text, content.ReplyTo, e.Info.Timestamp)
+		e.Info.IsFromMe, content.Kind, content.Text, content.ReplyTo, e.Info.Timestamp, media)
 	if path != "" {
-		h.Deliver(path, ev)
+		h.Deliver(path, withMediaPath(ev, media))
 	}
 	if publish {
 		h.Publish(ev)
