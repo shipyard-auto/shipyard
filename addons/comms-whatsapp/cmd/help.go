@@ -93,8 +93,8 @@ Keys:
   humanize        true/false: show "typing…" before each send
   fairway-addr    host:port for inbound deliveries (default: from fairway)
   include-own     true/false: also deliver messages the account itself sent
-  publish-events  true/false: publish every new message to fairway's events
-                  API for signed webhook subscribers (default false)
+  publish-events  shortcut for the publish list: true (= watched), false/off,
+                  watched or '*' (prefer 'publish add|rm')
   api-addr        loopback host:port of the query API, or "off" (prefer 'api')
   media-download  kinds whose files are downloaded in watched chats, comma-
                   separated from image,audio,video,file,sticker, or "off"
@@ -272,7 +272,7 @@ also returned for chats that do not exist, unless you may read every chat),
 Typical first sync, then catch-up after downtime:
   {"since":"7d"} → page with "after" until has_more=false → store next_cursor
   later: {"after":"<stored cursor>"}
-Pair it with publish-events for live delivery: events are the fast path,
+Pair it with 'publish add' for live delivery: events are the fast path,
 the cursor is how a consumer recovers what it missed.`,
 		examples: []string{"api enable", "api", "api enable --addr 127.0.0.1:9877 --prefix /api/whatsapp", "api rotate-token", "api disable"},
 	},
@@ -286,6 +286,29 @@ through the API ('help api'), or "local" for the CLI and crew tools. KEY is
 the idempotency key (API keys are prefixed with "<client>/"). Text is not
 stored in the log; for watched chats it is in 'history'.`,
 		examples: []string{"sent", "sent --since 7d --client promo-manager", "sent --client local --json"},
+	},
+	{
+		name: "publish", group: "Receiving",
+		usage:   "publish list [--json] | publish add <chat|watched|*> | publish rm <chat|watched|*>",
+		summary: "choose which chats' messages become events for external systems",
+		details: `Selects the chats whose new messages the daemon publishes to fairway's
+events API (topic whatsapp.message, scope whatsapp.read:<chat jid>), where
+signed webhook subscribers receive them (see 'help receiving', 'help api').
+Nothing outside the selection reaches fairway at all, so it carries no
+traffic (and logs nothing) nobody may consume.
+
+  watched   every watched chat, following watch/unwatch — the usual choice:
+            'watch' then decides what is monitored and what is published
+  <chat>    one chat by name, phone or JID, watched or not
+  *         every chat the account is in
+
+An empty list publishes nothing (the default). Messages the account sends
+itself are left out unless 'config set include-own true' — keep it off
+when external systems post through this number, or their own posts come
+back to them. Changes apply live, without a restart. A subscriber still
+needs whatsapp.read for a chat to receive it: publishing is the daemon's
+filter, scopes are fairway's.`,
+		examples: []string{"publish add watched", `publish add "Herói da Promo #1213"`, "publish list", "publish rm watched", "publish add '*'"},
 	},
 	{
 		name: "send", group: "Sending",
@@ -432,7 +455,7 @@ Safe sending from automation:
   2. records the chat's last activity (unblocks sending, see 'help sending');
   3. if the chat has a route ('route set'), POSTs an event to fairway at
      http://<fairway_addr><path>, with header X-Trace-Id;
-  4. if 'config set publish-events true', publishes it to fairway's events
+  4. if the chat is selected by 'publish', publishes it to fairway's events
      API (see "Events for external systems" below).
 
 Event (comms Message envelope, schema v1):
@@ -464,8 +487,8 @@ in fairway's routes.json (127.0.0.1:9876); override with
 'config set fairway-addr host:port'.
 
 Events for external systems:
-With publish-events on, every new message of every chat (own messages only
-with include-own) is POSTed to http://<fairway_addr>/_shipyard/v1/events as
+Every new message of a chat selected by 'publish' (own messages only with
+include-own) is POSTed to http://<fairway_addr>/_shipyard/v1/events as
   {"id":"evt_wa_<msg id>", "topic":"whatsapp.message",
    "scope":"whatsapp.read:<chat_jid>", "source":"comms-whatsapp",
    "occurred_at":"…", "data":<the envelope above>}

@@ -150,9 +150,11 @@ receiving never blocks; network errors, 5xx and 429 are retried 3 times
 `routes.json` (default `127.0.0.1:9876`) or `config set fairway-addr`. Full
 payload: `help receiving`.
 
-For external systems, `config set publish-events true` also publishes every
-new message to fairway's events API as a `whatsapp.message` event with
-`scope: whatsapp.read:<chat_jid>`. Fairway delivers it as a signed webhook
+For external systems, `publish add watched` (or `publish add <chat>`, or
+`publish add '*'` for everything) publishes each new message of the selected
+chats to fairway's events API as a `whatsapp.message` event with
+`scope: whatsapp.read:<chat_jid>`; chats outside the selection never reach
+fairway. `publish list` shows the selection. Fairway delivers it as a signed webhook
 only to subscribed clients holding that scope — e.g. a client granted
 `whatsapp.read:<group jid>` receives that group and nothing else. Event ids
 are stable per message (`evt_wa_<msg id>`) for deduplication.
@@ -164,7 +166,7 @@ protocol (signing, webhooks, catch-up, media, sending, errors).
 
 `api enable` lets another system read the archive and send messages through
 fairway, limited to the chats it was granted. Reads are cursor-paginated —
-the pull-side complement to `publish-events`: events deliver live, the
+the pull-side complement to `publish`: events deliver live, the
 cursor recovers whatever a consumer missed while it was down.
 
 ```

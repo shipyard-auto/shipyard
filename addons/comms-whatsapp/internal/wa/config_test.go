@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -218,16 +219,64 @@ func TestLimitDefaultsAndKeys(t *testing.T) {
 	}
 }
 
-func TestPublishEventsKey(t *testing.T) {
+func TestPublishEventsKeyAndSelection(t *testing.T) {
 	c := DefaultConfig()
-	if c.PublishEvents {
-		t.Fatal("publish-events must default to off")
+	if c.Publish.Enabled() {
+		t.Fatal("publishing must default to off")
 	}
-	mustDo(t, c.Set("publish-events", "true"))
-	if !c.PublishEvents {
-		t.Fatal("set true")
+	for value, want := range map[string]string{
+		"true": "watched", "false": "", "watched": "watched", "*": "*", "off": "", "1": "watched",
+	} {
+		mustDo(t, c.Set("publish-events", value))
+		if got := strings.Join(c.Publish, ","); got != want {
+			t.Errorf("publish-events %s → %q, want %q", value, got, want)
+		}
 	}
 	if err := c.Set("publish-events", "sim"); err == nil {
-		t.Fatal("non-bool accepted")
+		t.Fatal("garbage accepted")
+	}
+	c.Publish = PublishSelection{"not-a-jid"}
+	if err := c.Validate(); err == nil {
+		t.Fatal("invalid selection item accepted")
+	}
+
+	sel := PublishSelection{}
+	if !sel.Add("a@g.us") || sel.Add("a@g.us") || !sel.Add(PublishWatched) || !sel.Remove("a@g.us") || sel.Remove("a@g.us") {
+		t.Fatalf("add/remove: %v", sel)
+	}
+	asked := false
+	watched := func() bool { asked = true; return true }
+	if !(PublishSelection{PublishAll}).Wants("x@g.us", nil) || !(PublishSelection{"x@g.us"}).Wants("x@g.us", nil) ||
+		(PublishSelection{"y@g.us"}).Wants("x@g.us", watched) || asked {
+		t.Fatal("Wants: explicit / all")
+	}
+	if !(PublishSelection{PublishWatched}).Wants("x@g.us", watched) || !asked {
+		t.Fatal("Wants: watched")
+	}
+	if (PublishSelection{PublishWatched}).Wants("x@g.us", func() bool { return false }) {
+		t.Fatal("Wants: unwatched")
+	}
+}
+
+func TestLegacyPublishEventsMigrates(t *testing.T) {
+	dir := t.TempDir()
+	for raw, want := range map[string]string{
+		`{"version":1,"device_name":"S","default_ttl":"14d","publish_events":true}`:                      "watched",
+		`{"version":1,"device_name":"S","default_ttl":"14d","publish_events":false}`:                     "",
+		`{"version":1,"device_name":"S","default_ttl":"14d"}`:                                            "",
+		`{"version":1,"device_name":"S","default_ttl":"14d","publish_events":true,"publish":["a@g.us"]}`: "a@g.us",
+	} {
+		path := filepath.Join(dir, "config.json")
+		mustDo(t, os.WriteFile(path, []byte(raw), 0o600))
+		c, err := LoadConfig(path)
+		if err != nil || strings.Join(c.Publish, ",") != want || c.LegacyPublishEvents != nil {
+			t.Fatalf("%s → %v legacy=%v err=%v", raw, c.Publish, c.LegacyPublishEvents, err)
+		}
+		// Saving drops the old key for good.
+		mustDo(t, SaveConfig(path, c))
+		saved, _ := os.ReadFile(path)
+		if strings.Contains(string(saved), "publish_events") {
+			t.Fatalf("old key kept: %s", saved)
+		}
 	}
 }

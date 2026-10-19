@@ -96,17 +96,17 @@ func Serve(ctx context.Context, opts ServeOptions) error {
 	downloader := NewDownloader(arch, sess.Fetcher(), log)
 	go downloader.Run(ctx)
 	h := &Handler{
-		Archive:  arch,
-		Dir:      sess.Directory(),
-		Tracker:  tracker,
-		Log:      log,
-		OnFatal:  func(err error) { cancel(err) },
-		Routes:   func() Routes { cfg, _ := cfgCache.Get(); return cfg.Routes },
-		Deliver:  deliverer.Enqueue,
-		Events:   func() bool { cfg, _ := cfgCache.Get(); return cfg.PublishEvents },
-		Publish:  deliverer.Publish,
-		Media:    func() MediaConfig { cfg, _ := cfgCache.Get(); return cfg.Media },
-		Download: downloader.Enqueue,
+		Archive:   arch,
+		Dir:       sess.Directory(),
+		Tracker:   tracker,
+		Log:       log,
+		OnFatal:   func(err error) { cancel(err) },
+		Routes:    func() Routes { cfg, _ := cfgCache.Get(); return cfg.Routes },
+		Deliver:   deliverer.Enqueue,
+		Publishes: func() PublishSelection { cfg, _ := cfgCache.Get(); return cfg.Publish },
+		Publish:   deliverer.Publish,
+		Media:     func() MediaConfig { cfg, _ := cfgCache.Get(); return cfg.Media },
+		Download:  downloader.Enqueue,
 	}
 	sess.Client.AddEventHandler(func(evt any) { h.Handle(ctx, evt) })
 
