@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -111,8 +112,7 @@ func (d *Downloader) process(ctx context.Context, j MediaJob) {
 		}
 	}
 
-	name := MediaFileName(j.ChatJID, j.MsgID, mediaExt(j.Ref.Info.MimeType, j.Ref.Info.FileName))
-	size, err := d.download(ctx, j, name)
+	size, name, sniffed, err := d.download(ctx, j)
 	if err != nil {
 		reason := "download failed: " + err.Error()
 		if ctx.Err() != nil {
@@ -121,7 +121,7 @@ func (d *Downloader) process(ctx context.Context, j MediaJob) {
 		d.fail(ctx, j, err, reason)
 		return
 	}
-	ok, err := d.Archive.SetMediaStored(context.WithoutCancel(ctx), j.ChatJID, j.MsgID, name)
+	ok, err := d.Archive.SetMediaStored(context.WithoutCancel(ctx), j.ChatJID, j.MsgID, name, sniffed)
 	if err != nil || !ok {
 		// The message went away while downloading; its file must too.
 		_ = os.Remove(filepath.Join(d.Archive.MediaDir(), name))
@@ -137,16 +137,20 @@ func (d *Downloader) process(ctx context.Context, j MediaJob) {
 }
 
 // download writes the attachment to a temporary file in the media
-// directory and renames it to name once complete and verified (whatsmeow
-// checks both SHA-256 sums), so a half-written file never has a final name.
-func (d *Downloader) download(ctx context.Context, j MediaJob, name string) (int64, error) {
+// directory and renames it once complete and verified (whatsmeow checks
+// both SHA-256 sums), so a half-written file never has a final name.
+//
+// The extension follows the bytes when they are a type we know: senders'
+// apps declare one type and WhatsApp may re-encode (a "PNG" arrives as
+// JPEG). sniffed is that detected type, "" when the declared one stands.
+func (d *Downloader) download(ctx context.Context, j MediaJob) (size int64, name, sniffed string, err error) {
 	dir := d.Archive.MediaDir()
 	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return 0, err
+		return 0, "", "", err
 	}
-	tmp, err := os.CreateTemp(dir, "."+name+".*.part") // mode 0600
+	tmp, err := os.CreateTemp(dir, ".media.*.part") // mode 0600
 	if err != nil {
-		return 0, err
+		return 0, "", "", err
 	}
 	tmpName := tmp.Name()
 	defer func() { _ = os.Remove(tmpName) }()
@@ -155,17 +159,24 @@ func (d *Downloader) download(ctx context.Context, j MediaJob, name string) (int
 	defer cancel()
 	if err := d.Fetcher.Fetch(ctx, j.Ref.Source, tmp); err != nil {
 		_ = tmp.Close()
-		return 0, err
+		return 0, "", "", err
 	}
 	info, err := tmp.Stat()
 	if err != nil {
 		_ = tmp.Close()
-		return 0, err
+		return 0, "", "", err
 	}
+	head := make([]byte, 512)
+	n, _ := tmp.ReadAt(head, 0)
 	if err := tmp.Close(); err != nil {
-		return 0, err
+		return 0, "", "", err
 	}
-	return info.Size(), os.Rename(tmpName, filepath.Join(dir, name))
+	ext := mediaExt(j.Ref.Info.MimeType, j.Ref.Info.FileName)
+	if t := http.DetectContentType(head[:n]); mimeExt[t] != "" && mimeExt[t] != ext {
+		ext, sniffed = mimeExt[t], t
+	}
+	name = MediaFileName(j.ChatJID, j.MsgID, ext)
+	return info.Size(), name, sniffed, os.Rename(tmpName, filepath.Join(dir, name))
 }
 
 func (d *Downloader) fail(ctx context.Context, j MediaJob, err error, reason string) {

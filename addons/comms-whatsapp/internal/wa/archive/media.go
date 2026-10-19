@@ -61,12 +61,14 @@ func (s *Store) GetMedia(ctx context.Context, chatJID, id string) (Media, error)
 }
 
 // SetMediaStored records that the attachment is on disk as file (a name
-// under MediaDir). It reports false when the message no longer exists
-// (pruned, unwatched or revoked while downloading): the caller then owns
-// the file and must delete it.
-func (s *Store) SetMediaStored(ctx context.Context, chatJID, id, file string) (bool, error) {
-	res, err := s.db.ExecContext(ctx, `UPDATE media SET status = 'stored', reason = NULL, file = ? WHERE chat_jid = ? AND msg_id = ?`,
-		file, chatJID, id)
+// under MediaDir). mimeType, when not empty, replaces the declared type
+// (the bytes turned out to be another). It reports false when the message
+// no longer exists (pruned, unwatched or revoked while downloading): the
+// caller then owns the file and must delete it.
+func (s *Store) SetMediaStored(ctx context.Context, chatJID, id, file, mimeType string) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `UPDATE media SET status = 'stored', reason = NULL, file = ?,
+		mime_type = COALESCE(?, mime_type) WHERE chat_jid = ? AND msg_id = ?`,
+		file, nullable(mimeType), chatJID, id)
 	if err != nil {
 		return false, fmt.Errorf("archive: media %s/%s: %w", chatJID, id, err)
 	}

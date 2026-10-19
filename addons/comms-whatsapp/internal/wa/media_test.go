@@ -120,6 +120,33 @@ func TestWatchedImageIsStoredThenRoutedWithItsPath(t *testing.T) {
 	}
 }
 
+func TestExtensionAndTypeFollowTheBytes(t *testing.T) {
+	mh := newMediaHarness(t)
+	mh.watch(t, family, "Família", archive.KindGroup)
+	// Declared PNG, delivered JPEG (WhatsApp re-encodes).
+	mh.fetch.payload = append([]byte{0xFF, 0xD8, 0xFF, 0xE0}, []byte("rest of a jpeg")...)
+	m := imageMsg("", 10)
+	m.ImageMessage.Mimetype = proto.String("image/png")
+	mh.receive("p1", m)
+	md := mh.history(t, family)[0].Media
+	if !strings.HasSuffix(md.Path, ".jpg") || md.MimeType != "image/jpeg" {
+		t.Fatalf("media %+v", md)
+	}
+	// Bytes of an unknown type keep the declared extension (Ogg is not
+	// in the sniff table as audio).
+	mh.fetch.payload = []byte("OggS\x00 opus")
+	mh.receive("a1", &waE2E.Message{AudioMessage: &waE2E.AudioMessage{Mimetype: proto.String("audio/ogg; codecs=opus"),
+		DirectPath: proto.String("/v/x"), FileLength: proto.Uint64(5)}})
+	for _, m := range mh.history(t, family) {
+		if m.ID == "a1" {
+			md = m.Media
+		}
+	}
+	if !strings.HasSuffix(md.Path, ".ogg") || md.MimeType != "audio/ogg; codecs=opus" {
+		t.Fatalf("audio media %+v", md)
+	}
+}
+
 func TestMediaPolicySkipsAndUnwatchedChatsNeverDownload(t *testing.T) {
 	mh := newMediaHarness(t)
 	mh.watch(t, family, "Família", archive.KindGroup)
@@ -295,7 +322,7 @@ func TestAPIMediaChunksAndScopes(t *testing.T) {
 	mustDo(t, os.MkdirAll(f.arch.MediaDir(), 0o700))
 	name := MediaFileName(promoA, "v1", ".mp4")
 	mustDo(t, os.WriteFile(filepath.Join(f.arch.MediaDir(), name), payload, 0o600))
-	if ok, err := f.arch.SetMediaStored(ctx, promoA, "v1", name); err != nil || !ok {
+	if ok, err := f.arch.SetMediaStored(ctx, promoA, "v1", name, ""); err != nil || !ok {
 		t.Fatalf("stored %v %v", ok, err)
 	}
 
