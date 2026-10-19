@@ -116,6 +116,8 @@ type Sent struct {
 	// Client is the external system that asked for the send (its fairway
 	// client id); empty for local senders (CLI, crew tools).
 	Client string `json:"client,omitempty"`
+	// Kind is what was sent: text, image, video, audio or file.
+	Kind string `json:"kind"`
 }
 
 // SentRetention is how long the send audit log is kept.
@@ -236,6 +238,9 @@ var migrations = []string{
 		PRIMARY KEY (chat_jid, msg_id),
 		FOREIGN KEY (chat_jid, msg_id) REFERENCES messages(chat_jid, msg_id) ON DELETE CASCADE
 	);`,
+
+	// v6: what each send carried (text, image, video, audio, file).
+	`ALTER TABLE sent ADD COLUMN kind TEXT NOT NULL DEFAULT 'text';`,
 }
 
 // Open opens (creating if needed) the archive at path with mode 0600 and
@@ -695,8 +700,8 @@ func (s *Store) TouchActivity(ctx context.Context, jid string, ts time.Time) err
 // RecordSent appends to the send audit log.
 func (s *Store) RecordSent(ctx context.Context, r Sent) error {
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO sent (msg_id, chat_jid, ts, chars, idempotency_key, client) VALUES (?, ?, ?, ?, ?, ?)`,
-		r.MsgID, r.ChatJID, r.Timestamp.Unix(), r.Chars, nullable(r.IdempotencyKey), nullable(r.Client))
+		`INSERT INTO sent (msg_id, chat_jid, ts, chars, idempotency_key, client, kind) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		r.MsgID, r.ChatJID, r.Timestamp.Unix(), r.Chars, nullable(r.IdempotencyKey), nullable(r.Client), sentKind(r.Kind))
 	if err != nil {
 		return fmt.Errorf("archive: record sent %s: %w", r.MsgID, err)
 	}
@@ -708,8 +713,8 @@ func (s *Store) SentByKey(ctx context.Context, key string) (Sent, bool, error) {
 	var r Sent
 	var ts int64
 	err := s.db.QueryRowContext(ctx,
-		`SELECT msg_id, chat_jid, ts, chars, COALESCE(idempotency_key, ''), COALESCE(client, '') FROM sent WHERE idempotency_key = ?`, key,
-	).Scan(&r.MsgID, &r.ChatJID, &ts, &r.Chars, &r.IdempotencyKey, &r.Client)
+		`SELECT msg_id, chat_jid, ts, chars, COALESCE(idempotency_key, ''), COALESCE(client, ''), kind FROM sent WHERE idempotency_key = ?`, key,
+	).Scan(&r.MsgID, &r.ChatJID, &ts, &r.Chars, &r.IdempotencyKey, &r.Client, &r.Kind)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Sent{}, false, nil
 	}
@@ -870,7 +875,7 @@ type SentEntry struct {
 // ListSent returns the send audit log since `since`, newest first.
 // client filters by requester: "" = everyone, "local" = local senders only.
 func (s *Store) ListSent(ctx context.Context, since time.Time, client string, limit int) ([]SentEntry, error) {
-	q := `SELECT s.msg_id, s.chat_jid, COALESCE(c.name, s.chat_jid), s.ts, s.chars, COALESCE(s.idempotency_key, ''), COALESCE(s.client, '')
+	q := `SELECT s.msg_id, s.chat_jid, COALESCE(c.name, s.chat_jid), s.ts, s.chars, COALESCE(s.idempotency_key, ''), COALESCE(s.client, ''), s.kind
 	      FROM sent s LEFT JOIN chats c ON c.jid = s.chat_jid WHERE s.ts >= ?`
 	args := []any{since.Unix()}
 	switch client {
@@ -895,11 +900,19 @@ func (s *Store) ListSent(ctx context.Context, since time.Time, client string, li
 	for rows.Next() {
 		var e SentEntry
 		var ts int64
-		if err := rows.Scan(&e.MsgID, &e.ChatJID, &e.ChatName, &ts, &e.Chars, &e.IdempotencyKey, &e.Client); err != nil {
+		if err := rows.Scan(&e.MsgID, &e.ChatJID, &e.ChatName, &ts, &e.Chars, &e.IdempotencyKey, &e.Client, &e.Kind); err != nil {
 			return nil, fmt.Errorf("archive: scan sent: %w", err)
 		}
 		e.Timestamp = time.Unix(ts, 0).UTC()
 		out = append(out, e)
 	}
 	return out, rows.Err()
+}
+
+// sentKind defaults an empty kind to text, the only kind before v6.
+func sentKind(k string) string {
+	if k == "" {
+		return "text"
+	}
+	return k
 }

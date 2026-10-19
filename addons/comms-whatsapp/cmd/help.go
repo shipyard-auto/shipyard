@@ -100,6 +100,8 @@ Keys:
                   separated from image,audio,video,file,sticker, or "off"
                   (default image,audio,video,file)
   media-max-size  skip larger files: 25MB, 512KB… (default 25MB, max 100MB)
+  media-send-max-size  largest file send --file / the API accept (default
+                  16MB, max 100MB)
 
 Pausing is not a key: use pause / resume.`,
 		examples: []string{"config", "config set default-ttl 7d", "config set allow-groups true",
@@ -228,7 +230,11 @@ POST <prefix>/chats  body (optional): {"search":"promo", "kind":"group",
   "watched_only":true}  → {"chats":[{"jid","name","kind","watched",…}]}
 POST <prefix>/send  (scope whatsapp.send:<chat>)
   {"chat":"<jid|name|phone>", "text":"…", "idempotency_key":"promo-123",
-   "dry_run":false}  → {"msg_id","chat","chat_name","sent_at","duplicate"}
+   "dry_run":false, "media":{…}?}
+  → {"msg_id","kind","chat","chat_name","sent_at","duplicate"}
+  media attaches a file, with text as its caption (see 'help media'):
+    {"data":"<base64, up to 2 MiB>"}  or  {"upload_id":"up_…"} (below),
+    plus optional "mime_type", "file_name" (documents), "voice_note".
   The scope is the client's permission; every rule of 'help sending' still
   applies on top (allowlist, allow-groups, limits, pause, humanize), so the
   owner keeps the last word. Always pass an idempotency_key: a retry with
@@ -250,6 +256,13 @@ POST <prefix>/media  (scope whatsapp.read:<chat>)
   file. Envelopes with metadata.media_status "stored" have a file; others
   answer 404 media_skipped / media_failed, or 409 media_pending (retry in a
   few seconds). 404 no_media: the message is not archived (see 'help media').
+POST <prefix>/upload  (scope whatsapp.send)  for files over 2 MiB
+  {"offset":0, "data":"<base64 chunk, up to 2 MiB>"}  → {"upload_id","size",
+  "sha256","expires_at"}; then {"upload_id":"up_…", "offset":<size>,
+  "data":"…"} per chunk (409 offset_mismatch tells the size to resume
+  from). Send it with media.upload_id — as many times as needed, e.g. one
+  image to several groups. An upload belongs to its client and expires an
+  hour after its last chunk; at most 10 open per client.
 
 Errors: {"error":{"code":"…","message":"…"}} with 400 invalid/ambiguous,
 401 (token; fairway misconfigured), 403 forbidden (chat not in your scopes —
@@ -276,19 +289,23 @@ stored in the log; for watched chats it is in 'history'.`,
 	},
 	{
 		name: "send", group: "Sending",
-		usage:   "send <chat> (--text T | --stdin) [--idempotency-key K] [--dry-run] [--json]",
-		summary: "send a text message through the daemon's policy",
-		details: `Asks the running daemon to send a text message. Every check of 'help sending'
-applies; refusals exit with code 3 and print the refusal code. --dry-run runs
-all checks without sending. --idempotency-key makes retries safe: a repeated
-key returns the first result (duplicate=true) instead of sending again —
-always pass one from automation. Shows "typing…" first when humanize is on.
+		usage:   "send <chat> (--text T | --stdin | --file F [--text caption]) [--idempotency-key K] [--dry-run] [--json]",
+		summary: "send a text message or a file through the daemon's policy",
+		details: `Asks the running daemon to send a text message or, with --file, an image,
+video, audio or document (--text becomes its caption; see 'help media').
+Every check of 'help sending' applies, files included; refusals exit with
+code 3 and print the refusal code. --dry-run runs all checks without
+sending. --idempotency-key makes retries safe: a repeated key returns the
+first result (duplicate=true) instead of sending again — always pass one
+from automation. Shows "typing…" first when humanize is on.
 
 The daemon must be running; with it stopped, send fails (exit 1).`,
 		examples: []string{
 			`send "Vini Eduqo" --text "Fala Vini!" --dry-run`,
 			`send "Vini Eduqo" --text "Fala Vini!" --idempotency-key alert-2026-10-17-1`,
 			`echo "texto longo" | {prog} send 5512982016477 --stdin --json`,
+			`send "Promos da Casa" --file ./oferta.jpg --text "Ração 30% off" --idempotency-key promo-881`,
+			`send "Vini Eduqo" --file ./audio.ogg --voice-note`,
 		},
 	},
 	{
@@ -465,8 +482,9 @@ Publishing uses the same queue and retries as routes.`},
 	{"agent-tools", "crew tool contract for wa_send, wa_chats and wa_history", `'tools install' writes crew tool definitions that run '<binary> tool <name>'.
 Input: one JSON object on stdin. Output: an envelope on stdout, exit 0.
 
-wa_send     in:  chat (name, phone or JID), text, idempotency_key?, dry_run?
-            out: msg_id, chat, chat_name, sent_at, duplicate, dry_run
+wa_send     in:  chat (name, phone or JID), text, file? (absolute path; text is
+                 the caption), voice_note?, idempotency_key?, dry_run?
+            out: msg_id, kind, chat, chat_name, sent_at, duplicate, dry_run
             refusal: {"ok":false,"error":"…","details":{"code":"no_history"}}
 wa_chats    in:  search?, watched?
             out: chats[{jid,name,kind,watched,send_allowed}] (≤50), total, truncated
@@ -500,10 +518,8 @@ Message content is stored only for watched chats and is deleted after its TTL
 (~/.shipyard/logs/comms/), only chat ids and counts. Attachments of watched
 chats are files under media/ (see 'help media') and expire with their
 message.`},
-	{"media", "images, audio, video and files: download, retention, access", `Receiving only: the daemon does not send media.
-
-For each image, audio (voice notes included), video, document or sticker
-received in a WATCHED chat, the daemon downloads the file in the background
+	{"media", "images, audio, video and files: receiving, retention, access, sending", `Receiving: for each image, audio (voice notes included), video, document or
+sticker received in a WATCHED chat, the daemon downloads the file in the background
 into media/ next to archive.db (mode 0700/0600), named by a hash of chat and
 message id, with an extension from the MIME type (.jpg, .ogg, .mp4, .pdf…).
 Unwatched chats never get files, even when routed.
@@ -527,7 +543,21 @@ transcribe them before handing them to a model that cannot hear.
 Reading the files:
   local agents   metadata.media_path of the routed event, or history --json
   other systems  POST <prefix>/media through fairway ('help api'), with the
-                 envelope's id and chat`},
+                 envelope's id and chat
+
+Sending (send --file, wa_send's file, POST <prefix>/send with media) goes
+through the same policy as text and counts as one message for the limits.
+The type comes from mime_type, else the file name, else the bytes:
+  image  JPEG or PNG (checked against the bytes), with a small preview
+  video  MP4
+  audio  any audio/*; Ogg/Opus can go as a voice note (voice_note); audio
+         takes no caption
+  file   anything else, as a document named file_name (default: its name)
+Up to 'config set media-send-max-size' (default 16MB). The upload to
+WhatsApp is reused for 30 minutes, so the same file sent to several chats
+(a broadcast) uploads once. In watched chats a copy is kept like a received
+attachment (history shows it) and expires with the message. 'sent' lists
+each send with its kind.`},
 	{"exit-codes", "exit codes of every command", `  0   success
   1   usage or runtime error (daemon not running, chat not found, …)
   3   send refused by the policy (send only; the code is in the message)

@@ -26,8 +26,10 @@ type fakeSender struct {
 	mu        sync.Mutex
 	connected bool
 	fail      error
-	calls     []string // "typing:on", "typing:off", "send:<text>"
+	calls     []string // "typing:on", "typing:off", "send:<text>", "upload:…", "media:…"
 	n         int
+	uploads   int
+	media     []*MediaMessage
 }
 
 func (f *fakeSender) Connected() bool { return f.connected }
@@ -47,6 +49,26 @@ func (f *fakeSender) SendText(_ context.Context, _ types.JID, text string) (stri
 	}
 	f.n++
 	f.calls = append(f.calls, "send:"+text)
+	return fmt.Sprintf("MSG%d", f.n), t0Send, nil
+}
+
+func (f *fakeSender) Upload(_ context.Context, data []byte, kind string) (UploadedMedia, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.fail != nil {
+		return UploadedMedia{}, f.fail
+	}
+	f.uploads++
+	f.calls = append(f.calls, fmt.Sprintf("upload:%s:%d", kind, len(data)))
+	return UploadedMedia{URL: "https://cdn/x", DirectPath: "/x", FileLength: uint64(len(data))}, nil
+}
+
+func (f *fakeSender) SendMedia(_ context.Context, _ types.JID, up UploadedMedia, m *MediaMessage) (string, time.Time, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.n++
+	f.media = append(f.media, m)
+	f.calls = append(f.calls, fmt.Sprintf("media:%s:%s", m.Kind, m.Caption))
 	return fmt.Sprintf("MSG%d", f.n), t0Send, nil
 }
 

@@ -79,14 +79,21 @@ shipyard service add --name whatsapp --auto-restart \
   status — `stored`, `pending`, `skipped` (policy) or `failed` — shown by
   `history` and carried in envelopes as `metadata.media_*`. Route deliveries
   of a media message wait for its download and add `media_path`, the local
-  file. Receiving only: sending media is not supported. Full detail:
-  `help media`.
+  file. Full detail: `help media`.
 - Status updates, broadcast lists and channels are ignored.
 
 Message bodies never go to the logs (`~/.shipyard/logs/comms/`), only chat ids
 and counts.
 
 ## Sending
+
+Text, or a file with `send <chat> --file F [--text caption]` (image JPEG/PNG
+with a preview, MP4 video, audio — Ogg/Opus as a voice note with
+`--voice-note` — or any document), up to `config set media-send-max-size`
+(default 16MB). Files pass the same checks as text and count as one message;
+the upload to WhatsApp is reused for 30 minutes, so a broadcast of one image
+to several groups uploads it once, and watched chats keep a copy like a
+received attachment. `sent` shows the kind of each send.
 
 Only the running daemon sends. It owns the session, so `send`, the crew
 tool and `shipyard comms send --channel <whatsapp>` are thin clients of its
@@ -183,6 +190,11 @@ client ──signed──▶ fairway route (auth signed, scope whatsapp.read)
   is the client's permission and the owner keeps the last word. Refusals
   carry the refusal code (429 `rate_limited` adds `Retry-After`). Keys are
   per client, and every send is audited with the client id: `sent`.
+- Files go with the send: `"media": {"data": "<base64>"}` up to 2 MiB, or
+  `{"upload_id": …}` after `POST <prefix>/upload` (`whatsapp.send`) took the
+  file in 2 MiB base64 chunks (`{"upload_id"?, "offset", "data"}`). An
+  upload belongs to its client, can be sent to several chats, and expires an
+  hour after its last chunk.
 - `POST <prefix>/limits` `{"chat"}` returns the `limits` report (usage,
   `can_send_now`, blockers, `retry_after_seconds`) to check before a
   broadcast.
@@ -240,5 +252,5 @@ The SQLite driver is pure Go (`modernc.org/sqlite`); keep `CGO_ENABLED=0`.
 
 ## Roadmap
 
-Chat ownership (lease/handoff for flows) and sending media come later. See `docs/comms/whatsapp-design.md` (kept
+Chat ownership (lease/handoff for flows) comes later. See `docs/comms/whatsapp-design.md` (kept
 locally).

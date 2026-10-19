@@ -49,13 +49,13 @@ func runSent(ctx context.Context, e env, args []string) error {
 		return nil
 	}
 	tw := tabwriter.NewWriter(e.stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "WHEN\tCHAT\tCHARS\tBY\tKEY")
+	fmt.Fprintln(tw, "WHEN\tCHAT\tKIND\tCHARS\tBY\tKEY")
 	for _, r := range rows {
 		by := r.Client
 		if by == "" {
 			by = "local"
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%d\t%s\t%s\n", r.Timestamp.Local().Format("2006-01-02 15:04:05"), r.ChatName, r.Chars, by, r.IdempotencyKey)
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%s\t%s\n", r.Timestamp.Local().Format("2006-01-02 15:04:05"), r.ChatName, r.Kind, r.Chars, by, r.IdempotencyKey)
 	}
 	return tw.Flush()
 }

@@ -29,6 +29,8 @@ var apiEndpoints = []struct {
 	{"send", wa.APISendPath, wa.SendScopeName, 60 * time.Second},
 	{"limits", wa.APILimitsPath, wa.SendScopeName, 30 * time.Second},
 	{"media", wa.APIMediaPath, wa.ReadScopeName, 60 * time.Second},
+
+	{"upload", wa.APIUploadPath, wa.SendScopeName, 60 * time.Second},
 }
 
 func runAPI(_ context.Context, e env, args []string) error {

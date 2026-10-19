@@ -138,6 +138,9 @@ const (
 	KeyChatJID   = "chat_jid"
 	KeyCount     = "count"
 	KeySizeBytes = "size_bytes"
+	// KeyMediaKind is what a WhatsApp send carried: text, image, video,
+	// audio or file.
+	KeyMediaKind = "media_kind"
 	// KeyClientID names the authenticated API client of a signed fairway
 	// route.
 	KeyClientID = "client_id"

@@ -132,15 +132,21 @@ func Serve(ctx context.Context, opts ServeOptions) error {
 		Sleep:   SleepCtx,
 	}
 	rpc := &RPCServer{Outbox: outbox, Tracker: tracker, Log: log}
+	var uploads *UploadStore
 	// The query API is optional; failing to bind it is logged, not fatal:
 	// receiving and sending keep working.
 	if cfg, _ := cfgCache.Get(); cfg.APIAddr != "" {
+		// Without an upload area the API still serves everything else.
+		if uploads, err = NewUploadStore(opts.Paths.Uploads); err != nil {
+			log.Error(yardlogs.EventWAAPIError, slog.String(yardlogs.KeyMessage, "uploads disabled"), slog.String(yardlogs.KeyError, err.Error()))
+		}
 		api := &APIServer{
 			Archive: arch,
 			Token:   func() (string, error) { return ReadAPIToken(opts.Paths.APIToken) },
 			Self:    func() types.JID { pn, _ := sess.Directory().Own(); return pn },
 			Log:     log,
 			Outbox:  outbox,
+			Uploads: uploads,
 		}
 		if stop, err := ServeAPI(ctx, cfg.APIAddr, api.Handler()); err != nil {
 			log.Error(yardlogs.EventWAAPIError, slog.String(yardlogs.KeyMessage, "query API not started"), slog.String(yardlogs.KeyError, err.Error()))
@@ -160,6 +166,9 @@ func Serve(ctx context.Context, opts ServeOptions) error {
 	}()
 
 	prune := func() {
+		if uploads != nil {
+			uploads.Sweep()
+		}
 		n, err := arch.Prune(ctx, opts.Config.DefaultTTLDuration())
 		if err != nil {
 			h.archiveError("", err)
