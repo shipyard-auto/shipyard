@@ -649,6 +649,12 @@ shipyard comms whatsapp send "Vini" --text "oi" --idempotency-key K
 Addon exit codes are preserved through the passthrough (e.g. 3 = send
 refused by policy).
 
+External systems integrate through fairway (signed requests, webhooks for
+new messages, cursor catch-up, media, sending): the contract and a tested
+reference client live in
+[`addons/comms-whatsapp/INTEGRATION.md`](addons/comms-whatsapp/INTEGRATION.md)
+and `addons/comms-whatsapp/examples/`. Keep both in sync when the API changes.
+
 ---
 
 ## Conversation lifecycle (stateful agents)
