@@ -77,29 +77,54 @@ func newFakeHTTPResponse(body []byte) *http.Response {
 	}
 }
 
-// fakeServiceAdder records calls for assertions.
+// fakeServiceAdder records calls for assertions. running is the service's
+// runtime state: RemoveFairway stops it and StartFairway starts it, like the
+// real service manager.
 type fakeServiceAdder struct {
-	addErr    error
-	removeErr error
-	installed bool
-	added     bool
-	removed   bool
-	addedPath string
+	addErr     error
+	removeErr  error
+	runningErr error
+	startErr   error
+	installed  bool
+	running    bool
+	added      bool
+	removed    bool
+	started    bool
+	addedPath  string
+	calls      []string
 }
 
 func (f *fakeServiceAdder) AddFairway(execPath string) error {
+	f.calls = append(f.calls, "add")
 	f.added = true
 	f.addedPath = execPath
 	return f.addErr
 }
 
 func (f *fakeServiceAdder) RemoveFairway() error {
+	f.calls = append(f.calls, "remove")
 	f.removed = true
+	f.running = false
 	return f.removeErr
 }
 
 func (f *fakeServiceAdder) IsFairwayInstalled() (bool, error) {
 	return f.installed, nil
+}
+
+func (f *fakeServiceAdder) IsFairwayRunning() (bool, error) {
+	f.calls = append(f.calls, "status")
+	return f.running, f.runningErr
+}
+
+func (f *fakeServiceAdder) StartFairway() error {
+	f.calls = append(f.calls, "start")
+	f.started = true
+	if f.startErr != nil {
+		return f.startErr
+	}
+	f.running = true
+	return nil
 }
 
 // newTestInstaller builds an Installer wired to the given fake HTTP and service adder.

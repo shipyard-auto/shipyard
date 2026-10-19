@@ -224,3 +224,23 @@ func TestServiceGetMissing(t *testing.T) {
 		t.Fatalf("expected ErrServiceNotFound, got %v", err)
 	}
 }
+
+func TestRuntimeStatusRunning(t *testing.T) {
+	cases := []struct {
+		status RuntimeStatus
+		want   bool
+	}{
+		{RuntimeStatus{State: "active"}, true},
+		{RuntimeStatus{State: "activating"}, true},
+		{RuntimeStatus{State: "running"}, true},
+		{RuntimeStatus{State: "inactive"}, false},
+		{RuntimeStatus{State: "failed"}, false},
+		{RuntimeStatus{State: "not running"}, false},
+		{RuntimeStatus{State: "unknown", PID: 99}, true},
+	}
+	for _, c := range cases {
+		if got := c.status.Running(); got != c.want {
+			t.Errorf("%+v.Running() = %v, want %v", c.status, got, c.want)
+		}
+	}
+}

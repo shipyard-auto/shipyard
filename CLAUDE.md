@@ -110,7 +110,7 @@ shipyard version
 
 ### `shipyard update`
 
-Download the latest published release for this platform and replace the running binary. Any installed addons (`shipyard-fairway`, `shipyard-crew`) are reconciled in the same run.
+Download the latest published release for this platform and replace the running binary. Any installed addons (`shipyard-fairway`, `shipyard-crew`, `shipyard-comms`, `shipyard-comms-whatsapp`) are reconciled in the same run. A fairway daemon that was running before the upgrade is started again afterwards; service-mode crew agents and the WhatsApp daemon keep the old binary until restarted, and the update prints the restart command for each.
 
 ```bash
 shipyard update
@@ -360,7 +360,7 @@ Manage the shipyard-fairway HTTP gateway addon. Fairway is a separate daemon tha
 
 #### `shipyard fairway install`
 
-Download and install the fairway daemon for this platform.
+Download and install the fairway daemon for this platform, register it as a Shipyard service and start it. If the start fails, the install is kept and the command exits non-zero with the `shipyard service start <id>` to run.
 
 ```bash
 shipyard fairway install
