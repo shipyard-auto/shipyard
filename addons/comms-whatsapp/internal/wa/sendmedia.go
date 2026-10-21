@@ -74,6 +74,8 @@ type UploadedMedia struct {
 	FileEncSHA256 []byte
 	FileSHA256    []byte
 	FileLength    uint64
+	// UploadedAt is when the Outbox uploaded it (link previews carry it).
+	UploadedAt time.Time
 }
 
 // thumbMaxSide is the longest side of image thumbnails, in pixels; about

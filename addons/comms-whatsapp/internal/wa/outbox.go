@@ -369,7 +369,7 @@ func (o *Outbox) logArchiveError(chatJID string, err error) {
 }
 
 func (o *Outbox) logPreviewUploadError(chatJID string, err error) {
-	o.Log.Warn(yardlogs.EventWASendFailed, slog.String(yardlogs.KeyMessage, "link preview image upload failed; sending the small thumbnail only"),
+	o.Log.Warn(yardlogs.EventWAMediaFailed, slog.String(yardlogs.KeyMessage, "link preview image upload failed; sending the small thumbnail only"),
 		slog.String(yardlogs.KeyChatJID, chatJID), slog.String(yardlogs.KeyError, err.Error()))
 }
 

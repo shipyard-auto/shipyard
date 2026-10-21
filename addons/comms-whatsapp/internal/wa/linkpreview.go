@@ -88,6 +88,10 @@ func preparePreview(p *OutLinkPreview, text string, maxBytes int64) (*LinkPrevie
 	if m.Kind != SendKindImage {
 		return nil, refuse(CodeInvalid, "link preview image must be JPEG or PNG (got %s)", m.MimeType)
 	}
+	// A small, well-compressed PNG can still decode to gigabytes.
+	if m.Width*m.Height > maxThumbPixels {
+		return nil, refuse(CodeTooLong, "link preview image is %dx%d; the limit is %d pixels", m.Width, m.Height, maxThumbPixels)
+	}
 	src, _, err := image.Decode(bytes.NewReader(m.Data))
 	if err != nil {
 		return nil, refuse(CodeInvalid, "link preview image does not decode")
@@ -118,7 +122,8 @@ func (o *Outbox) sendLink(ctx context.Context, jid types.JID, text string, p *Li
 		if !ok {
 			var err error
 			if cached, err = o.Sender.Upload(ctx, p.Image, linkThumbKind); err == nil {
-				o.uploads.put(key, cached, o.Now())
+				cached.UploadedAt = o.Now()
+				o.uploads.put(key, cached, cached.UploadedAt)
 				ok = true
 			} else {
 				o.logPreviewUploadError(jid.String(), err)
@@ -132,7 +137,7 @@ func (o *Outbox) sendLink(ctx context.Context, jid types.JID, text string, p *Li
 }
 
 func (c clientSender) SendLink(ctx context.Context, chat types.JID, text string, p *LinkPreview, up *UploadedMedia) (string, time.Time, error) {
-	resp, err := c.cli.SendMessage(ctx, chat, buildLinkMessage(text, p, up, time.Now()))
+	resp, err := c.cli.SendMessage(ctx, chat, buildLinkMessage(text, p, up))
 	if err != nil {
 		return "", time.Time{}, err
 	}
@@ -141,7 +146,7 @@ func (c clientSender) SendLink(ctx context.Context, chat types.JID, text string,
 
 // buildLinkMessage renders the protobuf of a text with a preview card.
 // up is the uploaded large image, nil when there is none.
-func buildLinkMessage(text string, p *LinkPreview, up *UploadedMedia, now time.Time) *waE2E.Message {
+func buildLinkMessage(text string, p *LinkPreview, up *UploadedMedia) *waE2E.Message {
 	opt := func(s string) *string {
 		if s == "" {
 			return nil
@@ -161,7 +166,8 @@ func buildLinkMessage(text string, p *LinkPreview, up *UploadedMedia, now time.T
 		et.ThumbnailSHA256 = up.FileSHA256
 		et.ThumbnailEncSHA256 = up.FileEncSHA256
 		et.MediaKey = up.MediaKey
-		et.MediaKeyTimestamp = proto.Int64(now.Unix())
+		// The key's age, not the send's: a cached upload can be 30 min old.
+		et.MediaKeyTimestamp = proto.Int64(up.UploadedAt.Unix())
 		et.ThumbnailWidth = proto.Uint32(uint32(p.Width))
 		et.ThumbnailHeight = proto.Uint32(uint32(p.Height))
 	}

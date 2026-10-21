@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"image"
+	"image/png"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -25,6 +27,7 @@ type stubSender struct {
 	mu    sync.Mutex
 	texts []string
 	media []*wa.MediaMessage
+	links []*wa.LinkPreview
 }
 
 func (s *stubSender) Upload(_ context.Context, data []byte, _ string) (wa.UploadedMedia, error) {
@@ -38,11 +41,11 @@ func (s *stubSender) SendMedia(_ context.Context, _ types.JID, _ wa.UploadedMedi
 	return "MED" + string(rune('0'+len(s.media))), time.Now(), nil
 }
 
-func (s *stubSender) SendLink(_ context.Context, _ types.JID, text string, _ *wa.LinkPreview, _ *wa.UploadedMedia) (string, time.Time, error) {
+func (s *stubSender) SendLink(_ context.Context, _ types.JID, _ string, p *wa.LinkPreview, _ *wa.UploadedMedia) (string, time.Time, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.texts = append(s.texts, text)
-	return "LNK" + string(rune('0'+len(s.texts))), time.Now(), nil
+	s.links = append(s.links, p)
+	return "LNK" + string(rune('0'+len(s.links))), time.Now(), nil
 }
 
 func (s *stubSender) Connected() bool                               { return true }
@@ -428,5 +431,43 @@ func TestSendFileThroughDaemon(t *testing.T) {
 	out, _, _ = cliIn(t, "", "sent")
 	if !strings.Contains(out, "KIND") || strings.Count(out, " file ") != 2 {
 		t.Fatalf("sent:\n%s", out)
+	}
+}
+
+func TestSendLinkPreviewThroughDaemon(t *testing.T) {
+	_, sender := daemonFixture(t)
+	if _, _, err := cliIn(t, "", "allow", "Vini Eduqo"); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"--text", "x", "--link-title", "sem url"},
+		{"--text", "x", "--link-image", "foto.jpg"},
+		{"--text", "https://amzn.to/x", "--link-url", "https://amzn.to/x", "--link-image", filepath.Join(t.TempDir(), "missing.jpg")},
+	} {
+		if _, _, err := cliIn(t, "", append([]string{"send", "Vini Eduqo"}, args...)...); err == nil {
+			t.Fatalf("%v accepted", args)
+		}
+	}
+	if len(sender.links)+len(sender.texts) != 0 {
+		t.Fatalf("sent on a usage error: links=%v texts=%v", sender.links, sender.texts)
+	}
+
+	// A relative image path works, as with --file.
+	dir := t.TempDir()
+	var img bytes.Buffer
+	if err := png.Encode(&img, image.NewRGBA(image.Rect(0, 0, 60, 30))); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "foto.png"), img.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+	out, _, err := cliIn(t, "", "send", "Vini Eduqo", "--text", "Ração 30% off https://amzn.to/x",
+		"--link-url", "https://amzn.to/x", "--link-title", "Ração 15kg", "--link-image", "foto.png")
+	if err != nil || !strings.Contains(out, "Sent a message to Vini Eduqo") {
+		t.Fatalf("send: %q %v", out, err)
+	}
+	if len(sender.links) != 1 || sender.links[0].Title != "Ração 15kg" || sender.links[0].Width != 60 || len(sender.texts) != 0 {
+		t.Fatalf("links=%+v texts=%v", sender.links, sender.texts)
 	}
 }

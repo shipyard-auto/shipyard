@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/binary"
 	"errors"
+	"hash/crc32"
 	"image"
 	"image/jpeg"
 	"strings"
@@ -40,12 +42,14 @@ func TestSendLinkPreviewUploadsImageOnce(t *testing.T) {
 	if err != nil || thumb.Width != linkThumbMaxSide || thumb.Height != 153 {
 		t.Fatalf("thumbnail %+v %v", thumb, err)
 	}
-	// The same image to another chat (or again) reuses the upload.
+	// The same image again reuses the upload, and with it the key's
+	// timestamp.
+	h.now = h.now.Add(10 * time.Minute)
 	if _, err := h.sendLink(text+" ", p); err != nil {
 		t.Fatal(err)
 	}
-	if h.sender.uploads != 1 || h.sender.links[1].up == nil {
-		t.Fatalf("uploads=%d", h.sender.uploads)
+	if h.sender.uploads != 1 || h.sender.links[1].up == nil || !h.sender.links[1].up.UploadedAt.Equal(t0Send) {
+		t.Fatalf("uploads=%d up=%+v", h.sender.uploads, h.sender.links[1].up)
 	}
 }
 
@@ -98,6 +102,7 @@ func TestSendLinkPreviewRefusals(t *testing.T) {
 		"with media":        {promoLink, OutLinkPreview{URL: promoLink}, &OutMedia{Data: testJPEG(t, 10, 10)}, CodeInvalid},
 		"description long":  {promoLink, OutLinkPreview{URL: promoLink, Description: strings.Repeat("é", MaxPreviewDescription+1)}, nil, CodeTooLong},
 		"image is empty":    {promoLink, OutLinkPreview{URL: promoLink, Image: &OutMedia{}}, nil, CodeInvalid},
+		"too many pixels":   {promoLink, OutLinkPreview{URL: promoLink, Image: &OutMedia{Data: hugePNG(t)}}, nil, CodeTooLong},
 		"broken jpeg bytes": {promoLink, OutLinkPreview{URL: promoLink, Image: &OutMedia{Data: append([]byte("\xff\xd8\xff\xe0"), make([]byte, 32)...)}}, nil, CodeInvalid},
 	} {
 		h := newOutbox(t)
@@ -113,20 +118,33 @@ func TestSendLinkPreviewRefusals(t *testing.T) {
 	}
 }
 
+// hugePNG is a tiny file that would decode to gigabytes: a valid header
+// claiming 20000×20000 pixels is all DecodeConfig reads.
+func hugePNG(t *testing.T) []byte {
+	t.Helper()
+	b := testPNG(t)
+	// IHDR: length 8:12, type 12:16, width 16:20, height 20:24, CRC (of
+	// type and data) 29:33.
+	binary.BigEndian.PutUint32(b[16:], 20000)
+	binary.BigEndian.PutUint32(b[20:], 20000)
+	binary.BigEndian.PutUint32(b[29:], crc32.ChecksumIEEE(b[12:29]))
+	return b
+}
+
 func TestBuildLinkMessage(t *testing.T) {
-	now := time.Unix(1_800_000_000, 0)
+	uploaded := time.Unix(1_800_000_000, 0)
 	p := &LinkPreview{URL: promoLink, Title: "Top Selene", Thumbnail: []byte{1}, Width: 1000, Height: 1000}
-	up := &UploadedMedia{DirectPath: "/v/t62/x", MediaKey: []byte{2}, FileSHA256: []byte{3}, FileEncSHA256: []byte{4}}
-	et := buildLinkMessage("x "+promoLink, p, up, now).GetExtendedTextMessage()
+	up := &UploadedMedia{DirectPath: "/v/t62/x", MediaKey: []byte{2}, FileSHA256: []byte{3}, FileEncSHA256: []byte{4}, UploadedAt: uploaded}
+	et := buildLinkMessage("x "+promoLink, p, up).GetExtendedTextMessage()
 	if et.GetText() != "x "+promoLink || et.GetMatchedText() != promoLink || et.GetTitle() != "Top Selene" || et.Description != nil {
 		t.Fatalf("text fields %+v", et)
 	}
-	if et.GetThumbnailDirectPath() != "/v/t62/x" || et.GetMediaKeyTimestamp() != now.Unix() || et.GetThumbnailWidth() != 1000 ||
+	if et.GetThumbnailDirectPath() != "/v/t62/x" || et.GetMediaKeyTimestamp() != uploaded.Unix() || et.GetThumbnailWidth() != 1000 ||
 		!bytes.Equal(et.GetThumbnailEncSHA256(), []byte{4}) || !bytes.Equal(et.GetJPEGThumbnail(), []byte{1}) {
 		t.Fatalf("thumbnail fields %+v", et)
 	}
 	// Without an upload the card carries only the inline thumbnail.
-	et = buildLinkMessage(promoLink, p, nil, now).GetExtendedTextMessage()
+	et = buildLinkMessage(promoLink, p, nil).GetExtendedTextMessage()
 	if et.ThumbnailDirectPath != nil || et.MediaKey != nil || len(et.GetJPEGThumbnail()) != 1 {
 		t.Fatalf("no-upload fields %+v", et)
 	}
