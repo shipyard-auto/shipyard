@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -443,8 +444,10 @@ func ResolveLatestCommsVersion(ctx context.Context, client HTTPClient) (string, 
 	return ResolveLatestVersion(ctx, client, Comms)
 }
 
-// ResolveLatestVersion returns the newest stable release version of p.
+// ResolveLatestVersion returns the highest stable release version of p.
 // Prefixes are disjoint ("comms-v" never matches "comms-whatsapp-v1.0").
+// GitHub's list order is not version order (it put 0.9.3 before 0.10.0),
+// so every matching tag is compared numerically.
 func ResolveLatestVersion(ctx context.Context, client HTTPClient, p Product) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, commsReleasesAPI, nil)
 	if err != nil {
@@ -467,17 +470,52 @@ func ResolveLatestVersion(ctx context.Context, client HTTPClient, p Product) (st
 		return "", fmt.Errorf("comms: decode version response: %w", err)
 	}
 
+	best, bestParts := "", []int(nil)
 	for _, r := range releases {
 		if r.Draft || r.Prerelease {
 			continue
 		}
-		if strings.HasPrefix(r.TagName, p.TagPrefix) {
-			version := strings.TrimPrefix(r.TagName, p.TagPrefix)
-			if version != "" {
-				return version, nil
-			}
+		version, ok := strings.CutPrefix(r.TagName, p.TagPrefix)
+		if !ok {
+			continue
+		}
+		parts, ok := parseReleaseVersion(version)
+		if ok && (best == "" || compareReleaseVersions(parts, bestParts) > 0) {
+			best, bestParts = version, parts
 		}
 	}
+	if best == "" {
+		return "", fmt.Errorf("comms: no stable %s release found", p.Binary)
+	}
+	return best, nil
+}
 
-	return "", fmt.Errorf("comms: no stable %s release found", p.Binary)
+// parseReleaseVersion parses "MAJOR.MINOR.PATCH". Anything else (a
+// suffix, a missing part) is not a stable release version.
+func parseReleaseVersion(v string) ([]int, bool) {
+	raw := strings.Split(v, ".")
+	if len(raw) != 3 {
+		return nil, false
+	}
+	parts := make([]int, 3)
+	for i, s := range raw {
+		n, err := strconv.Atoi(s)
+		if err != nil || n < 0 {
+			return nil, false
+		}
+		parts[i] = n
+	}
+	return parts, true
+}
+
+func compareReleaseVersions(a, b []int) int {
+	for i := range a {
+		if a[i] != b[i] {
+			if a[i] < b[i] {
+				return -1
+			}
+			return 1
+		}
+	}
+	return 0
 }
