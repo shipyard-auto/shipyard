@@ -123,6 +123,22 @@ func TestCommsPurgeKeepsProviderState(t *testing.T) {
 	}
 }
 
+// GitHub listed comms-whatsapp-v0.9.3 before v0.10.0, and the first match
+// used to win: 'shipyard update' kept 0.9.3 as "latest".
+func TestResolveLatestVersionPicksHighestSemver(t *testing.T) {
+	body := `[{"tag_name":"comms-whatsapp-v0.9.3"},{"tag_name":"comms-whatsapp-v0.10.0"},{"tag_name":"comms-whatsapp-v0.9.2"},` +
+		`{"tag_name":"comms-whatsapp-v0.11.0","draft":true},{"tag_name":"comms-whatsapp-v0.12.0-rc1","prerelease":true},` +
+		`{"tag_name":"comms-whatsapp-vnext"},{"tag_name":"comms-v1.0.0"}]`
+	client := &fakeHTTPClient{responses: map[string]func() *http.Response{
+		commsReleasesAPI: func() *http.Response {
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body))}
+		},
+	}}
+	if v, err := ResolveLatestVersion(context.Background(), client, WhatsApp); err != nil || v != "0.10.0" {
+		t.Fatalf("whatsapp latest=%q err=%v, want 0.10.0", v, err)
+	}
+}
+
 func TestResolveLatestVersionPrefixesAreDisjoint(t *testing.T) {
 	body := `[{"tag_name":"comms-whatsapp-v0.3.0"},{"tag_name":"comms-v0.4.0-rc1","prerelease":true},{"tag_name":"comms-v0.3.0"},{"tag_name":"crew-v0.7.0"}]`
 	client := &fakeHTTPClient{responses: map[string]func() *http.Response{
