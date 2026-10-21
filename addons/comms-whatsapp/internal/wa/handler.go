@@ -23,6 +23,8 @@ type Directory interface {
 	OwnPushName() string
 	// PNForLID maps a hidden-user LID to its phone-number JID.
 	PNForLID(ctx context.Context, lid types.JID) (types.JID, bool)
+	// LIDForPN is the reverse mapping.
+	LIDForPN(ctx context.Context, pn types.JID) (types.JID, bool)
 	// ContactName is the best local name for a user: saved contact name,
 	// then push name, then business name. Empty when unknown.
 	ContactName(ctx context.Context, jid types.JID) string
@@ -61,6 +63,9 @@ type Handler struct {
 	// (false = queue full). Either nil disables downloads.
 	Media    func() MediaConfig
 	Download func(MediaJob) bool
+	// Members records membership changes of tracked groups; nil ignores
+	// them.
+	Members *MemberEvents
 }
 
 // Fatal errors passed to OnFatal.
@@ -77,6 +82,8 @@ func (h *Handler) Handle(ctx context.Context, evt any) {
 		h.onMessage(ctx, e)
 	case *events.HistorySync:
 		h.onHistorySync(ctx, e)
+	case *events.GroupInfo:
+		h.onGroupInfo(ctx, e)
 	case *events.Connected:
 		h.Tracker.SetState(StateConnected, "")
 		pn, _ := h.Dir.Own()
@@ -196,6 +203,22 @@ func (h *Handler) onMessage(ctx context.Context, e *events.Message) {
 	}
 	if err != nil {
 		h.archiveError(chatJID, err)
+	}
+}
+
+// onGroupInfo keeps a renamed group's catalog name current and hands
+// participant changes to the member tracker.
+func (h *Handler) onGroupInfo(ctx context.Context, e *events.GroupInfo) {
+	chat := e.JID.ToNonAD().String()
+	if e.Name != nil && e.Name.Name != "" {
+		if known, err := h.Archive.Known(ctx, chat); err == nil && known {
+			if err := h.Archive.UpsertChat(ctx, chat, e.Name.Name, archive.KindGroup); err != nil {
+				h.archiveError(chat, err)
+			}
+		}
+	}
+	if h.Members != nil {
+		h.Members.OnGroupInfo(ctx, e)
 	}
 }
 

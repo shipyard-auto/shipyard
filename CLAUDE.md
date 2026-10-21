@@ -45,7 +45,7 @@ Shipyard stores all state under `~/.shipyard/`:
 | `~/.shipyard/crew/` | Crew addon state and agent definitions |
 | `~/.shipyard/crew/tools/` | Reusable tool definitions for crew agents |
 | `~/.shipyard/comms/` | Comms channels and per-channel secrets |
-| `~/.shipyard/comms/whatsapp/` | WhatsApp session keys, archive (SQLite, TTL-bound), `media/` attachments of watched chats (deleted with their message), daemon status |
+| `~/.shipyard/comms/whatsapp/` | WhatsApp session keys, archive (SQLite, TTL-bound), `media/` attachments of watched chats (deleted with their message), member events of tracked groups (hashed, `members.key` 0600), daemon status |
 
 ## Build and Test
 
@@ -635,7 +635,10 @@ shipyard comms send --channel <n> --to <recipient> --text "…" [--idempotency-k
 The WhatsApp provider (`shipyard-comms-whatsapp`): a linked-device daemon with
 a TTL-bound archive of watched chats, inbound delivery to fairway and
 policy-checked sending of text and files (allowlist, prior conversation, rate
-limits, pause; `send --file`, API `media` + `/v1/upload`).
+limits, pause; `send --file`, API `media` + `/v1/upload`), and group
+membership analytics (`group info` counts, `members track` events with
+HMAC-hashed members, scope `whatsapp.members`, which never grants message
+reads).
 install/update/uninstall are handled by the core; everything else passes
 through to the addon, whose `help` is the full reference (written for agents):
 

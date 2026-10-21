@@ -31,6 +31,8 @@ var apiEndpoints = []struct {
 	{"media", wa.APIMediaPath, wa.ReadScopeName, 60 * time.Second},
 
 	{"upload", wa.APIUploadPath, wa.SendScopeName, 60 * time.Second},
+	{"groups/info", wa.APIGroupInfoPath, wa.MembersScopeName, 30 * time.Second},
+	{"groups/events", wa.APIGroupEventsPath, wa.MembersScopeName, 30 * time.Second},
 }
 
 func runAPI(_ context.Context, e env, args []string) error {
@@ -161,7 +163,7 @@ func writeAPIRoutes(p wa.Paths, addr, prefix, token string) ([]apiRouteFile, err
 		if err != nil {
 			return nil, err
 		}
-		file := filepath.Join(p.APIRoutes, ep.name+".json")
+		file := filepath.Join(p.APIRoutes, strings.ReplaceAll(ep.name, "/", "-")+".json")
 		if err := os.WriteFile(file, append(raw, '\n'), 0o600); err != nil {
 			return nil, fmt.Errorf("api: write %s: %w", file, err)
 		}
@@ -179,7 +181,8 @@ func printAPISteps(e env, files []apiRouteFile, prefix string, restart bool) {
 		fmt.Fprintf(e.stdout, "%d. Restart the daemon so it starts listening (e.g. 'shipyard service restart <id>').\n", step)
 		step++
 	}
-	fmt.Fprintf(e.stdout, "%d. Register the routes in fairway (signed clients; scope %s to read, %s to send):\n", step, wa.ReadScopeName, wa.SendScopeName)
+	fmt.Fprintf(e.stdout, "%d. Register the routes in fairway (signed clients; scope %s to read, %s to send, %s for group membership):\n",
+		step, wa.ReadScopeName, wa.SendScopeName, wa.MembersScopeName)
 	for _, f := range files {
 		fmt.Fprintf(e.stdout, "     shipyard fairway route add --from-file %s\n", f.file)
 	}
@@ -193,6 +196,8 @@ func printAPISteps(e env, files []apiRouteFile, prefix string, restart bool) {
 	fmt.Fprintf(e.stdout, "     POST %s/chats     {}\n", strings.TrimSuffix(prefix, "/"))
 	fmt.Fprintf(e.stdout, "     POST %s/send      {\"chat\":\"<jid>\",\"text\":\"…\",\"idempotency_key\":\"promo-123\"}\n", strings.TrimSuffix(prefix, "/"))
 	fmt.Fprintf(e.stdout, "     POST %s/limits    {\"chat\":\"<jid>\"}\n", strings.TrimSuffix(prefix, "/"))
+	fmt.Fprintf(e.stdout, "     POST %s/groups/info    {\"chat\":\"<group jid>\"}\n", strings.TrimSuffix(prefix, "/"))
+	fmt.Fprintf(e.stdout, "     POST %s/groups/events  {\"chat\":\"<group jid>\",\"since\":\"7d\"}  → then {\"after\":\"<next_cursor>\"}\n", strings.TrimSuffix(prefix, "/"))
 }
 
 func validPrefix(p string) error {

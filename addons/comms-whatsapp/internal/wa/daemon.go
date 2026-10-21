@@ -95,6 +95,14 @@ func Serve(ctx context.Context, opts ServeOptions) error {
 	}
 	downloader := NewDownloader(arch, sess.Fetcher(), log)
 	go downloader.Run(ctx)
+	// Without its key, membership tracking stays off; everything else runs.
+	var members *MemberEvents
+	if key, err := EnsureMembersKey(opts.Paths.MembersKey); err != nil {
+		log.Error(yardlogs.EventWAArchiveError, slog.String(yardlogs.KeyMessage, "member events disabled"), slog.String(yardlogs.KeyError, err.Error()))
+	} else {
+		members = &MemberEvents{Archive: arch, Dir: sess.Directory(), Hasher: NewMemberHasher(key), Publish: deliverer.PublishMembers, Log: log}
+	}
+	groups := &GroupInfoCache{Fetch: sess.Client.GetGroupInfo, Own: sess.Directory().Own, Log: log}
 	h := &Handler{
 		Archive:   arch,
 		Dir:       sess.Directory(),
@@ -107,6 +115,7 @@ func Serve(ctx context.Context, opts ServeOptions) error {
 		Publish:   deliverer.Publish,
 		Media:     func() MediaConfig { cfg, _ := cfgCache.Get(); return cfg.Media },
 		Download:  downloader.Enqueue,
+		Members:   members,
 	}
 	sess.Client.AddEventHandler(func(evt any) { h.Handle(ctx, evt) })
 
@@ -131,7 +140,7 @@ func Serve(ctx context.Context, opts ServeOptions) error {
 		Now:     time.Now,
 		Sleep:   SleepCtx,
 	}
-	rpc := &RPCServer{Outbox: outbox, Tracker: tracker, Log: log}
+	rpc := &RPCServer{Outbox: outbox, Tracker: tracker, Log: log, Groups: groups}
 	var uploads *UploadStore
 	// The query API is optional; failing to bind it is logged, not fatal:
 	// receiving and sending keep working.
@@ -147,6 +156,7 @@ func Serve(ctx context.Context, opts ServeOptions) error {
 			Log:     log,
 			Outbox:  outbox,
 			Uploads: uploads,
+			Groups:  groups,
 		}
 		if stop, err := ServeAPI(ctx, cfg.APIAddr, api.Handler()); err != nil {
 			log.Error(yardlogs.EventWAAPIError, slog.String(yardlogs.KeyMessage, "query API not started"), slog.String(yardlogs.KeyError, err.Error()))
@@ -176,6 +186,11 @@ func Serve(ctx context.Context, opts ServeOptions) error {
 		}
 		if n > 0 {
 			log.Info(yardlogs.EventWAPruned, slog.String(yardlogs.KeyMessage, "expired messages pruned"), slog.Int64(yardlogs.KeyCount, n))
+		}
+		if n, err := arch.PruneGroupEvents(ctx, opts.Config.MembersTTLDuration()); err != nil {
+			h.archiveError("", err)
+		} else if n > 0 {
+			log.Info(yardlogs.EventWAPruned, slog.String(yardlogs.KeyMessage, "expired member events pruned"), slog.Int64(yardlogs.KeyCount, n))
 		}
 		// Files left behind by a crash between a delete and its file
 		// removal, or by an interrupted download.

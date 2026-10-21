@@ -102,6 +102,14 @@ func (d storeDirectory) PNForLID(ctx context.Context, lid types.JID) (types.JID,
 	return pn, true
 }
 
+func (d storeDirectory) LIDForPN(ctx context.Context, pn types.JID) (types.JID, bool) {
+	lid, err := d.cli.Store.LIDs.GetLIDForPN(ctx, pn)
+	if err != nil || lid.IsEmpty() {
+		return types.JID{}, false
+	}
+	return lid, true
+}
+
 func (d storeDirectory) ContactName(ctx context.Context, jid types.JID) string {
 	info, err := d.cli.Store.Contacts.GetContact(ctx, jid)
 	if err != nil || !info.Found {

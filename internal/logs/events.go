@@ -89,6 +89,8 @@ const (
 	EventWAAPIError         = "wa_api_error"
 	EventWAMediaStored      = "wa_media_stored"
 	EventWAMediaFailed      = "wa_media_failed"
+	EventWAGroupMember      = "wa_group_member"
+	EventWAGroupInfo        = "wa_group_info"
 
 	// Fairway events and webhooks.
 	EventEventPublished = "event_published"

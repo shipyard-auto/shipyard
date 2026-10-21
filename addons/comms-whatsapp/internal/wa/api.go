@@ -44,6 +44,9 @@ const (
 	APILimitsPath   = "/v1/limits"
 	APIMediaPath    = "/v1/media"
 	APIUploadPath   = "/v1/upload"
+	// Group membership (scope whatsapp.members).
+	APIGroupInfoPath   = "/v1/groups/info"
+	APIGroupEventsPath = "/v1/groups/events"
 )
 
 // Query limits.
@@ -87,6 +90,8 @@ type APIServer struct {
 	// Outbox sends for /v1/send (every policy check applies); /v1/limits
 	// reads its config. Nil disables both.
 	Outbox *Outbox
+	// Groups answers /v1/groups/info; nil disables it.
+	Groups *GroupInfoCache
 }
 
 // Handler returns the HTTP handler.
@@ -98,9 +103,12 @@ func (s *APIServer) Handler() http.Handler {
 	mux.HandleFunc(APIUploadPath, s.guardBody(s.upload, apiMaxMediaBody))
 	mux.HandleFunc(APILimitsPath, s.guard(s.limits))
 	mux.HandleFunc(APIMediaPath, s.guard(s.media))
+	mux.HandleFunc(APIGroupInfoPath, s.guard(s.groupInfo))
+	mux.HandleFunc(APIGroupEventsPath, s.guard(s.groupEvents))
 	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
 		apiError(w, http.StatusNotFound, "not_found", "unknown endpoint; use POST "+
-			strings.Join([]string{APIMessagesPath, APIChatsPath, APISendPath, APILimitsPath, APIMediaPath, APIUploadPath}, ", "))
+			strings.Join([]string{APIMessagesPath, APIChatsPath, APISendPath, APILimitsPath, APIMediaPath, APIUploadPath,
+				APIGroupInfoPath, APIGroupEventsPath}, ", "))
 	})
 	return mux
 }
@@ -340,12 +348,156 @@ func (s *APIServer) resolveFor(w http.ResponseWriter, r *http.Request, c apiCall
 		return chat, false
 	}
 	s.denied(r, c.ID, "chat not in scopes: "+query)
-	verb := "read"
-	if scopeName == SendScopeName {
-		verb = "send to"
+	verb := map[string]string{SendScopeName: "send to", MembersScopeName: "see the members of"}[scopeName]
+	if verb == "" {
+		verb = "read"
 	}
 	apiError(w, http.StatusForbidden, "forbidden", fmt.Sprintf("not allowed to %s %q: needs scope %s:<chat jid>", verb, query, scopeName))
 	return chat, false
+}
+
+// resolveGroup is resolveFor(whatsapp.members) for endpoints that only
+// make sense on groups.
+func (s *APIServer) resolveGroup(w http.ResponseWriter, r *http.Request, c apiCaller, query string) (archive.Chat, bool) {
+	chat, ok := s.resolveFor(w, r, c, query, MembersScopeName)
+	if ok && chat.Kind != archive.KindGroup {
+		apiError(w, http.StatusBadRequest, "not_a_group", fmt.Sprintf("%q is not a group", query))
+		return chat, false
+	}
+	return chat, ok
+}
+
+// GroupInfoRequest is the body of POST /v1/groups/info.
+type GroupInfoRequest struct {
+	Chat string `json:"chat"` // JID, name or phone
+}
+
+func (s *APIServer) groupInfo(w http.ResponseWriter, r *http.Request, c apiCaller, body []byte) {
+	if s.Groups == nil {
+		apiError(w, http.StatusServiceUnavailable, "unavailable", "group info is not available on this daemon")
+		return
+	}
+	var req GroupInfoRequest
+	if err := decodeBody(body, &req); err != nil {
+		apiError(w, http.StatusBadRequest, "invalid", err.Error())
+		return
+	}
+	if strings.TrimSpace(req.Chat) == "" {
+		apiError(w, http.StatusBadRequest, "invalid", "chat is required")
+		return
+	}
+	chat, ok := s.resolveGroup(w, r, c, req.Chat)
+	if !ok {
+		return
+	}
+	jid, err := types.ParseJID(chat.JID)
+	if err != nil {
+		apiError(w, http.StatusInternalServerError, "internal", "bad chat jid in catalog")
+		return
+	}
+	info, err := s.Groups.Get(r.Context(), jid, false)
+	var th *GroupInfoThrottled
+	switch {
+	case err == nil:
+	case errors.As(err, &th):
+		secs := max(1, int(th.RetryAfter.Round(time.Second)/time.Second))
+		w.Header().Set("Retry-After", strconv.Itoa(secs))
+		var b apiErrorBody
+		b.Error.Code, b.Error.Message, b.Error.RetryAfterSeconds = "rate_limited", err.Error(), secs
+		apiJSON(w, http.StatusTooManyRequests, b)
+		return
+	case errors.Is(err, ErrNotInGroup):
+		apiError(w, http.StatusConflict, "not_in_group", err.Error())
+		return
+	default:
+		apiError(w, http.StatusBadGateway, "fetch_failed", "WhatsApp did not answer: "+err.Error())
+		return
+	}
+	s.Log.Info(yardlogs.EventWAAPIQuery, slog.String(yardlogs.KeyMessage, "api group info"),
+		slog.String(yardlogs.KeyClientID, c.ID), slog.String(yardlogs.KeyChatJID, chat.JID))
+	apiJSON(w, http.StatusOK, info)
+}
+
+// GroupEventsRequest is the body of POST /v1/groups/events. Cursor
+// semantics are those of /v1/messages.
+type GroupEventsRequest struct {
+	Chat  string `json:"chat,omitempty"`
+	After string `json:"after,omitempty"`
+	Since string `json:"since,omitempty"`
+	Limit int    `json:"limit,omitempty"`
+}
+
+// GroupEventsResponse is one page of membership events, oldest first.
+type GroupEventsResponse struct {
+	Events     []MemberEvent `json:"events"`
+	NextCursor string        `json:"next_cursor"`
+	HasMore    bool          `json:"has_more"`
+}
+
+func (s *APIServer) groupEvents(w http.ResponseWriter, r *http.Request, c apiCaller, body []byte) {
+	var req GroupEventsRequest
+	if err := decodeBody(body, &req); err != nil {
+		apiError(w, http.StatusBadRequest, "invalid", err.Error())
+		return
+	}
+	limit := req.Limit
+	switch {
+	case limit == 0:
+		limit = APIDefaultLimit
+	case limit < 0 || limit > APIMaxLimit:
+		apiError(w, http.StatusBadRequest, "invalid", fmt.Sprintf("limit must be 1-%d", APIMaxLimit))
+		return
+	}
+	after, err := decodeCursor(req.After)
+	if err != nil {
+		apiError(w, http.StatusBadRequest, "invalid", err.Error())
+		return
+	}
+	since, err := parseSince(req.Since, time.Now())
+	if err != nil {
+		apiError(w, http.StatusBadRequest, "invalid", err.Error())
+		return
+	}
+	q := archive.GroupEventQuery{Since: since}
+	if req.Chat != "" {
+		chat, ok := s.resolveGroup(w, r, c, req.Chat)
+		if !ok {
+			return
+		}
+		q.Chat = chat.JID
+	}
+	resp := GroupEventsResponse{Events: []MemberEvent{}}
+	cursor, scanned := after, 0
+scan:
+	for {
+		q.After, q.Limit = cursor, apiBatch
+		rows, err := s.Archive.GroupEvents(r.Context(), q)
+		if err != nil {
+			apiError(w, http.StatusInternalServerError, "internal", "archive read failed")
+			s.Log.Error(yardlogs.EventWAArchiveError, slog.String(yardlogs.KeyMessage, "api group events read failed"), slog.String(yardlogs.KeyError, err.Error()))
+			return
+		}
+		for _, row := range rows {
+			if len(resp.Events) == limit || scanned == apiMaxScan {
+				resp.HasMore = true
+				break scan
+			}
+			cursor, scanned = row.Seq, scanned+1
+			if c.can(MembersScopeName, row.ChatJID) {
+				resp.Events = append(resp.Events, memberEvent(row))
+			}
+		}
+		if len(rows) < apiBatch {
+			break
+		}
+	}
+	if cursor > 0 {
+		resp.NextCursor = encodeCursor(cursor)
+	}
+	s.Log.Info(yardlogs.EventWAAPIQuery, slog.String(yardlogs.KeyMessage, "api group events query"),
+		slog.String(yardlogs.KeyClientID, c.ID), slog.String(yardlogs.KeyChatJID, q.Chat),
+		slog.Int(yardlogs.KeyCount, len(resp.Events)))
+	apiJSON(w, http.StatusOK, resp)
 }
 
 // SendAPIRequest is the body of POST /v1/send.

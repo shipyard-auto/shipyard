@@ -43,7 +43,7 @@ type cmdDoc struct {
 	examples []string
 }
 
-var groups = []string{"Setup", "Daemon", "Archive", "Receiving", "Sending", "Agents", "External systems"}
+var groups = []string{"Setup", "Daemon", "Archive", "Receiving", "Groups", "Sending", "Agents", "External systems"}
 
 var cmdDocs = []cmdDoc{
 	{
@@ -102,6 +102,8 @@ Keys:
   media-max-size  skip larger files: 25MB, 512KB… (default 25MB, max 100MB)
   media-send-max-size  largest file send --file / the API accept (default
                   16MB, max 100MB)
+  members-ttl     retention of member events of tracked groups (default 90d,
+                  1h-90d; read at daemon start)
 
 Pausing is not a key: use pause / resume.`,
 		examples: []string{"config", "config set default-ttl 7d", "config set allow-groups true",
@@ -277,7 +279,20 @@ Typical first sync, then catch-up after downtime:
   {"since":"7d"} → page with "after" until has_more=false → store next_cursor
   later: {"after":"<stored cursor>"}
 Pair it with 'publish add' for live delivery: events are the fast path,
-the cursor is how a consumer recovers what it missed.`,
+the cursor is how a consumer recovers what it missed.
+
+Group membership (scope whatsapp.members:<group jid>, which grants no
+message access — and whatsapp.read grants no membership access):
+POST <prefix>/groups/info  {"chat":"<jid|name>"}
+  → {"jid","name","participants","admins","self_is_admin","fetched_at",
+     "cached"}  (see 'help group': cached 10 min, one fetch per minute per
+  group; 429 rate_limited + Retry-After when it cannot answer yet, 409
+  not_in_group, 400 not_a_group, 502 fetch_failed)
+POST <prefix>/groups/events  body (all optional):
+  {"chat":"<jid|name>", "since":"7d", "after":"<next_cursor>", "limit":100}
+  → {"events":[<member event, see 'help members'>…], "next_cursor":"…",
+     "has_more":false}
+  Same cursor rules as /messages; only tracked groups have events.`,
 		examples: []string{"api enable", "api", "api enable --addr 127.0.0.1:9877 --prefix /api/whatsapp", "api rotate-token", "api disable"},
 	},
 	{
@@ -313,6 +328,59 @@ back to them. Changes apply live, without a restart. A subscriber still
 needs whatsapp.read for a chat to receive it: publishing is the daemon's
 filter, scopes are fairway's.`,
 		examples: []string{"publish add watched", `publish add "Herói da Promo #1213"`, "publish list", "publish rm watched", "publish add '*'"},
+	},
+	{
+		name: "group", group: "Groups",
+		usage:   "group info <group> [--refresh] [--json]",
+		summary: "show a group's member and admin counts (from WhatsApp)",
+		details: `Asks WhatsApp's servers for the group's metadata through the running daemon
+and prints counts only — the member list and numbers are never shown:
+
+  {"jid","name","participants","admins","self_is_admin","fetched_at","cached"}
+
+admins counts admins and the owner. Answers are cached for 10 minutes and a
+group is fetched at most once a minute, whoever asks (this command or POST
+<prefix>/groups/info): polling WhatsApp would look like a bot. --refresh skips
+the cache but not the one-minute pace; within it the cached answer comes back
+with "cached":true. If the last fetch failed and a minute has not passed, the
+answer is an error with the seconds to wait. Needs the daemon and a group the
+account belongs to. Over time, member events ('members') say who came and
+went between counts.`,
+		examples: []string{`group info "Fisgou Descontos #12"`, "group info 120363431473592108@g.us --json", "group info <group> --refresh"},
+	},
+	{
+		name: "members", group: "Groups",
+		usage:   "members list [--json] | members track <group> | members untrack <group>",
+		summary: "record joins, leaves, promotions and demotions of chosen groups",
+		details: `For each tracked group, every membership change WhatsApp reports — join,
+leave, promote, demote — becomes one event per member affected. Each is
+stored in archive.db (kept members-ttl, default 90d, see 'config') and
+published to fairway's events API as topic whatsapp.group.members, scope
+whatsapp.members:<group jid> (see 'help receiving'). Nothing is recorded for
+untracked groups. Tracking applies live; untrack deletes the group's stored
+events at once (subscribers keep what they received).
+
+Event (schema v1):
+  {"schema_version":1, "id":"evt_wa_gm_…", "ts":"2026-10-21T13:02:00Z",
+   "chat_jid":"120363…@g.us", "chat_name":"…",
+   "action":"join|leave|promote|demote",
+   "member":"<hash>", "actor":"<hash>"|null,
+   "via":"invite_link|added|removed|left"|null}
+
+member and actor are never numbers or JIDs: they are HMAC-SHA256 of the
+user's WhatsApp id (the LID when known) under a secret of this installation
+(members.key), truncated to 32 hex characters. The same person gets the same
+hash in every group and every event on this installation, so "did whoever
+left join before?" has an answer; a different installation, or a lost
+members.key, gives unrelated hashes. actor is who made the change (null
+when WhatsApp does not say); via is how: invite_link (joined by link),
+added (by an admin), removed (by an admin), left (on their own), or null.
+ids are stable: a change WhatsApp redelivers keeps its id. Changes made
+while the daemon was offline arrive when it reconnects, as WhatsApp holds
+them, with their original ts.
+
+Catch up with POST <prefix>/groups/events (see 'help api').`,
+		examples: []string{`members track "Fisgou Descontos #12"`, "members list", "members list --json", "members untrack <group>"},
 	},
 	{
 		name: "send", group: "Sending",
@@ -510,7 +578,16 @@ subscribe on the fairway side:
   shipyard fairway subscription add <client> --topic whatsapp.message \
       --url https://…
 The event id is stable per message, so subscribers can deduplicate retries.
-Publishing uses the same queue and retries as routes.`},
+Publishing uses the same queue and retries as routes.
+
+Membership changes of groups tracked with 'members track' are published the
+same way as topic whatsapp.group.members, scope whatsapp.members:<group jid>
+(payload in 'help members'):
+  shipyard fairway client scopes <client> \
+      --scope events.subscribe:whatsapp.group.members \
+      --scope 'whatsapp.members:<group jid>'
+  shipyard fairway subscription add <client> --topic whatsapp.group.members \
+      --url https://…`},
 	{"agent-tools", "crew tool contract for wa_send, wa_chats and wa_history", `'tools install' writes crew tool definitions that run '<binary> tool <name>'.
 Input: one JSON object on stdin. Output: an envelope on stdout, exit 0.
 
@@ -539,8 +616,11 @@ whatsapp), mode 0700:
   session.db        the linked device's keys — whoever has this file can act
                     as the device; protect it like a password
   archive.db        SQLite: chat catalog (name, kind, watched, TTL, allowlist,
-                    last activity), messages of watched chats only, and the
-                    send log (30 days)
+                    last activity), messages of watched chats only, the
+                    send log (30 days) and member events of tracked groups
+                    (members-ttl, hashes only)
+  members.key       secret behind member hashes (0600); keep it with backups,
+                    a new one makes new hashes unlinkable to old ones
   run/status.json   daemon heartbeat and connection state
   run/wa.sock       control socket (0600)
   run/wa.lock       one process owns the session at a time

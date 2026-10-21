@@ -51,6 +51,10 @@ shipyard-comms-whatsapp send "Vini Eduqo" --text "oi" [--idempotency-key K] [--d
 shipyard-comms-whatsapp pause | resume          # emergency stop for all sending
 shipyard-comms-whatsapp route set "Vini Eduqo" /wa/vini   # deliver received messages to fairway
 shipyard-comms-whatsapp tools install           # wa_send / wa_chats / wa_history for crew
+
+shipyard-comms-whatsapp group info "Fisgou" [--refresh] [--json]   # member/admin counts (cached 10 min)
+shipyard-comms-whatsapp members track "Fisgou"  # join/leave/promote/demote events, hashed members
+shipyard-comms-whatsapp members list | untrack "Fisgou"
 ```
 
 `<chat>` accepts a JID, a chat name (case and accents ignored) or a phone
@@ -228,7 +232,8 @@ the policy-checked tool.
 ~/.shipyard/comms/whatsapp/        0700
   config.json                       device_name, default_ttl
   session.db                        linked-device keys (whatsmeow store)
-  archive.db                        chat catalog + archived messages
+  archive.db                        chat catalog + archived messages + member events (hashes)
+  members.key                       secret behind member hashes (0600; back it up)
   run/status.json                   written by the daemon every 30s
   run/wa.sock                       control socket (send, status)
   run/wa.lock                       one process owns the session at a time

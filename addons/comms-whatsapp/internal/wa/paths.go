@@ -25,6 +25,9 @@ type Paths struct {
 	APIRoutes string
 	// Uploads holds API uploads in progress (0700); emptied at start.
 	Uploads string
+	// MembersKey is the secret member hashes are keyed with (0600). Losing
+	// it makes new hashes unlinkable to old ones.
+	MembersKey string
 	// FairwayDir is the sibling fairway addon's state, read (never
 	// written) to find where to deliver inbound events.
 	FairwayDir string
@@ -49,17 +52,18 @@ func Home() (string, error) {
 func PathsAt(dir string) Paths {
 	run := filepath.Join(dir, "run")
 	return Paths{
-		Dir:       dir,
-		Config:    filepath.Join(dir, "config.json"),
-		Session:   filepath.Join(dir, "session.db"),
-		Archive:   filepath.Join(dir, "archive.db"),
-		RunDir:    run,
-		Status:    filepath.Join(run, "status.json"),
-		Lock:      filepath.Join(run, "wa.lock"),
-		Socket:    filepath.Join(run, "wa.sock"),
-		APIToken:  filepath.Join(dir, "api.token"),
-		APIRoutes: filepath.Join(dir, "api-routes"),
-		Uploads:   filepath.Join(dir, "uploads"),
+		Dir:        dir,
+		Config:     filepath.Join(dir, "config.json"),
+		Session:    filepath.Join(dir, "session.db"),
+		Archive:    filepath.Join(dir, "archive.db"),
+		RunDir:     run,
+		Status:     filepath.Join(run, "status.json"),
+		Lock:       filepath.Join(run, "wa.lock"),
+		Socket:     filepath.Join(run, "wa.sock"),
+		APIToken:   filepath.Join(dir, "api.token"),
+		APIRoutes:  filepath.Join(dir, "api-routes"),
+		Uploads:    filepath.Join(dir, "uploads"),
+		MembersKey: filepath.Join(dir, "members.key"),
 		// dir is <shipyard home>/comms/whatsapp.
 		FairwayDir: filepath.Join(filepath.Dir(filepath.Dir(dir)), "fairway"),
 	}

@@ -84,6 +84,8 @@ without a resource covers every chat.
 | `events.subscribe:whatsapp.message` | registering a webhook for new messages |
 | `whatsapp.read:<chat jid>` | receiving that chat's events; reading its messages and media |
 | `whatsapp.send:<chat jid>` | sending to that chat (`/send`), uploading (`/upload`), `/limits` |
+| `events.subscribe:whatsapp.group.members` | registering a webhook for membership changes (§6) |
+| `whatsapp.members:<group jid>` | that group's counts (`/groups/info`) and membership events (`/groups/events`, webhooks); **no** message access (§6) |
 
 Find JIDs with `shipyard comms whatsapp chats --watched`. Use
 `fairway client scopes <id> --scope …` to replace a client's scopes,
@@ -348,7 +350,105 @@ Refusals carry a code. Branch on the code, never on the message:
 | 502 | `send_failed` | WhatsApp rejected the send; retry later with the same key |
 | 503 | `paused`, `not_connected` | the owner paused sending, or the daemon is offline; retry later |
 
-## 6. Errors and troubleshooting
+## 6. Group membership (optional)
+
+For analytics of a group the client runs: member counts over time, joins
+and leaves per day, retention. Available from comms-whatsapp 0.10.0.
+Membership is a scope of its own, `whatsapp.members:<group jid>`. It gives
+no access to the group's messages, and `whatsapp.read` gives no access to
+membership. A client that posts offers into its own group can watch that
+group's audience without reading it, so its posts never come back to it.
+
+**Operator setup**
+
+```bash
+shipyard comms whatsapp members track "Fisgou Descontos #12"   # opt-in per group, applies live
+shipyard comms whatsapp api enable          # rewrites the route files, adding groups-info/-events
+shipyard fairway route add --from-file ~/.shipyard/comms/whatsapp/api-routes/groups-info.json
+shipyard fairway route add --from-file ~/.shipyard/comms/whatsapp/api-routes/groups-events.json
+shipyard fairway client scopes promo-manager \
+  --scope events.subscribe:whatsapp.message --scope 'whatsapp.read:<source group jid>' … \
+  --scope events.subscribe:whatsapp.group.members \
+  --scope 'whatsapp.members:120363431473592108@g.us'
+```
+
+`client scopes` replaces the whole list, so repeat the scopes the client
+already holds. `api enable` keeps the existing token and address. Only the
+two new routes need `route add`.
+
+### 6.1 Member counts
+
+```
+POST /api/whatsapp/groups/info   {"chat": "120363431473592108@g.us"}
+→ 200 {"jid": "120363431473592108@g.us", "name": "Fisgou Descontos #12",
+       "participants": 812, "admins": 3, "self_is_admin": true,
+       "fetched_at": "2026-10-21T13:00:04Z", "cached": false}
+```
+
+These are counts only. The member list is never exposed. The daemon asks
+WhatsApp at most once a minute per group and caches the answer for 10
+minutes. A call within that window gets the cached answer, with
+`"cached": true` and the original `fetched_at`. For a time series, one call
+every 10 minutes or more is enough. Errors: `429 rate_limited` with
+`Retry-After` (the last fetch failed less than a minute ago), `409
+not_in_group`, `400 not_a_group`, `502 fetch_failed`.
+
+### 6.2 Membership events (webhook)
+
+Subscribe the same way as for messages (§4.1), with topic
+`whatsapp.group.members`. There is one event per member affected, so a
+batch add of 3 people produces 3 events:
+
+```json
+{"id": "evt_wa_gm_5f0c…", "topic": "whatsapp.group.members",
+ "scope": "whatsapp.members:120363431473592108@g.us", "source": "comms-whatsapp",
+ "occurred_at": "2026-10-21T13:02:00Z",
+ "data": {
+   "schema_version": 1,
+   "id": "evt_wa_gm_5f0c…",
+   "ts": "2026-10-21T13:02:00Z",
+   "chat_jid": "120363431473592108@g.us",
+   "chat_name": "Fisgou Descontos #12",
+   "action": "join",
+   "member": "9b1d3c0e7f2a4d6b8c1e0f3a5b7d9e2c",
+   "actor": null,
+   "via": "invite_link"}}
+```
+
+| Field | Meaning |
+|---|---|
+| `action` | `join`, `leave`, `promote`, `demote` |
+| `member` | who was affected: a 32-hex hash, never a number or JID |
+| `actor` | who made the change (hash), or `null` when WhatsApp does not say |
+| `via` | `invite_link` (joined by link), `added` (by an admin), `removed` (by an admin), `left` (on their own), or `null` |
+
+The hashes are HMAC-SHA256 of the user's WhatsApp id under a secret of this
+installation, so they are pseudonymous data under LGPD, not anonymous. The
+same person gets the same hash across events and groups on this
+installation, so you can tell whether someone who left had joined before.
+A different installation, or a lost `members.key`, produces unrelated
+hashes. Treat hashes as opaque strings.
+
+Ids are stable, because WhatsApp sometimes delivers a change twice: dedupe
+on `id`. Changes that happen while the daemon is offline reach it when it
+reconnects, since WhatsApp holds them. They keep their original `ts` and
+are then published. Order by `ts` and do not rely on arrival order.
+
+### 6.3 Catching up
+
+This works like §4.4, with the same cursor rules:
+
+```
+POST /api/whatsapp/groups/events  {"chat": "<group jid>", "since": "7d", "limit": 100}
+→ {"events": [<the "data" object above>…], "next_cursor": "…", "has_more": false}
+then {"after": "<stored next_cursor>"} on each startup
+```
+
+Without `chat`, the response covers every group the client may see. Events
+are kept for 90 days (`config set members-ttl`). Untracking a group deletes
+its stored events.
+
+## 7. Errors and troubleshooting
 
 There are two error shapes.
 
@@ -370,7 +470,7 @@ There are two error shapes.
 | Image event, but `/media` returns 404 | `media_status` is not `stored` (see `media_reason`), or the file expired with its message |
 | `/send` returns 413 from fairway | body over 4 MB: use `/upload` |
 
-## 7. Checklist for a production client
+## 8. Checklist for a production client
 
 - [ ] Secret read from a file or secret store, never logged; supports rotation.
 - [ ] Clock synced (NTP).
@@ -380,4 +480,5 @@ There are two error shapes.
 - [ ] Fetch `stored` media promptly and check its sha256.
 - [ ] Reposting: no read scope on the target chat, and own or target messages dropped in code (§5).
 - [ ] Sending: an idempotency key per message and destination; honour `Retry-After`; check `/limits` before batches; never work around `not_allowed` or `groups_disabled`.
+- [ ] Membership (if used): only `whatsapp.members` on the group you post to, never `whatsapp.read`; dedupe events by id; catch up from a stored `/groups/events` cursor.
 - [ ] Monitor `shipyard fairway subscription list` (failures) and `shipyard comms whatsapp status`.

@@ -137,6 +137,24 @@ func (d *Deliverer) Publish(ev Event) bool {
 	return d.enqueue(deliveryJob{path: EventsPath, body: body, traceID: ev.TraceID, chatJID: chat})
 }
 
+// PublishMembers sends a membership change as a whatsapp.group.members
+// event scoped to its group's membership: whatsapp.read does not receive
+// it. The envelope id is the event id, so retries dedupe.
+func (d *Deliverer) PublishMembers(ev MemberEvent) bool {
+	body, err := json.Marshal(struct {
+		ID         string      `json:"id"`
+		Topic      string      `json:"topic"`
+		Scope      string      `json:"scope"`
+		Source     string      `json:"source"`
+		OccurredAt time.Time   `json:"occurred_at"`
+		Data       MemberEvent `json:"data"`
+	}{ev.ID, MembersEventTopic, MembersScope(ev.ChatJID), "comms-whatsapp", ev.Timestamp, ev})
+	if err != nil {
+		return false
+	}
+	return d.enqueue(deliveryJob{path: EventsPath, body: body, traceID: newTraceID(), chatJID: ev.ChatJID})
+}
+
 func (d *Deliverer) enqueue(job deliveryJob) bool {
 	select {
 	case d.queue <- job:

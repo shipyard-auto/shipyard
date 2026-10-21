@@ -46,8 +46,11 @@ func TestAPICommands(t *testing.T) {
 		"send":     {wa.APISendPath, "whatsapp.send", 60 * time.Second},
 		"limits":   {wa.APILimitsPath, "whatsapp.send", 30 * time.Second},
 		"upload":   {wa.APIUploadPath, "whatsapp.send", 60 * time.Second},
+		// Nested paths get a flat file name.
+		"groups/info":   {wa.APIGroupInfoPath, "whatsapp.members", 30 * time.Second},
+		"groups/events": {wa.APIGroupEventsPath, "whatsapp.members", 30 * time.Second},
 	} {
-		file := filepath.Join(p.APIRoutes, name+".json")
+		file := filepath.Join(p.APIRoutes, strings.ReplaceAll(name, "/", "-")+".json")
 		st, err := os.Stat(file)
 		if err != nil || st.Mode().Perm() != 0o600 {
 			t.Fatalf("%s: %v %v", file, st, err)
