@@ -74,6 +74,8 @@ type UploadedMedia struct {
 	FileEncSHA256 []byte
 	FileSHA256    []byte
 	FileLength    uint64
+	// UploadedAt is when the Outbox uploaded it (link previews carry it).
+	UploadedAt time.Time
 }
 
 // thumbMaxSide is the longest side of image thumbnails, in pixels; about
@@ -187,16 +189,22 @@ func thumbnail(data []byte) []byte {
 	if err != nil {
 		return nil
 	}
+	return scaleJPEG(src, thumbMaxSide, 60)
+}
+
+// scaleJPEG shrinks src to fit side×side (nearest-neighbour) and encodes
+// it as JPEG; nil for an empty image.
+func scaleJPEG(src image.Image, side, quality int) []byte {
 	b := src.Bounds()
 	w, h := b.Dx(), b.Dy()
 	if w == 0 || h == 0 {
 		return nil
 	}
-	tw, th := thumbMaxSide, thumbMaxSide
+	tw, th := min(w, side), min(h, side)
 	if w >= h {
-		th = max(1, h*thumbMaxSide/w)
+		th = max(1, h*tw/w)
 	} else {
-		tw = max(1, w*thumbMaxSide/h)
+		tw = max(1, w*th/h)
 	}
 	dst := image.NewRGBA(image.Rect(0, 0, tw, th))
 	for y := range th {
@@ -205,7 +213,7 @@ func thumbnail(data []byte) []byte {
 		}
 	}
 	var buf bytes.Buffer
-	if err := jpeg.Encode(&buf, dst, &jpeg.Options{Quality: 60}); err != nil {
+	if err := jpeg.Encode(&buf, dst, &jpeg.Options{Quality: quality}); err != nil {
 		return nil
 	}
 	return buf.Bytes()
@@ -259,6 +267,8 @@ func mediaType(kind string) whatsmeow.MediaType {
 		return whatsmeow.MediaVideo
 	case SendKindAudio:
 		return whatsmeow.MediaAudio
+	case linkThumbKind:
+		return whatsmeow.MediaLinkThumbnail
 	default:
 		return whatsmeow.MediaDocument
 	}

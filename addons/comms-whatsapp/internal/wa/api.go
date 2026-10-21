@@ -359,6 +359,16 @@ type SendAPIRequest struct {
 	// Media attaches a file: inline (data, up to 2 MiB) or a finished
 	// upload (upload_id, see /v1/upload). Text becomes the caption.
 	Media *SendAPIMedia `json:"media,omitempty"`
+	// LinkPreview shows a card for a link in the text. Not with Media.
+	LinkPreview *SendAPILinkPreview `json:"link_preview,omitempty"`
+}
+
+// SendAPILinkPreview is the preview card of an API text send.
+type SendAPILinkPreview struct {
+	URL         string        `json:"url"`
+	Title       string        `json:"title,omitempty"`
+	Description string        `json:"description,omitempty"`
+	Image       *SendAPIMedia `json:"image,omitempty"`
 }
 
 // SendAPIMedia is the attachment of an API send. Exactly one of Data and
@@ -494,17 +504,30 @@ func (s *APIServer) send(w http.ResponseWriter, r *http.Request, c apiCaller, bo
 		key = c.ID + "/" + req.IdempotencyKey
 	}
 	sr := SendRequest{Chat: chat.JID, Text: req.Text, IdempotencyKey: key, DryRun: req.DryRun, Client: c.ID}
-	if req.Media != nil {
-		m, code, err := s.outMedia(c, req.Media)
+	attach := func(m *SendAPIMedia) (*OutMedia, bool) {
+		out, code, err := s.outMedia(c, m)
 		if err != nil {
 			status := map[string]int{"unknown_upload": http.StatusNotFound, "too_long": http.StatusRequestEntityTooLarge}[code]
 			if status == 0 {
 				status = http.StatusBadRequest
 			}
 			apiError(w, status, code, err.Error())
+			return nil, false
+		}
+		return out, true
+	}
+	if req.Media != nil {
+		if sr.Media, ok = attach(req.Media); !ok {
 			return
 		}
-		sr.Media = m
+	}
+	if p := req.LinkPreview; p != nil {
+		sr.LinkPreview = &OutLinkPreview{URL: p.URL, Title: p.Title, Description: p.Description}
+		if p.Image != nil {
+			if sr.LinkPreview.Image, ok = attach(p.Image); !ok {
+				return
+			}
+		}
 	}
 	res, err := s.Outbox.Send(r.Context(), sr)
 	if err != nil {

@@ -31,6 +31,8 @@ type SendRequest struct {
 	Text string `json:"text"`
 	// Media attaches an image, video, audio or file.
 	Media *OutMedia `json:"media,omitempty"`
+	// LinkPreview shows a card for a link in Text. Not with Media.
+	LinkPreview *OutLinkPreview `json:"link_preview,omitempty"`
 	// IdempotencyKey, when set, makes retries safe: a second request with
 	// the same key returns the first result instead of sending again.
 	IdempotencyKey string `json:"idempotency_key,omitempty"`
@@ -95,6 +97,9 @@ type Sender interface {
 	// Upload encrypts and uploads an attachment to WhatsApp's CDN.
 	Upload(ctx context.Context, data []byte, kind string) (UploadedMedia, error)
 	SendMedia(ctx context.Context, chat types.JID, up UploadedMedia, m *MediaMessage) (id string, at time.Time, err error)
+	// SendLink sends text with a preview card; up is its uploaded large
+	// image, nil when there is none.
+	SendLink(ctx context.Context, chat types.JID, text string, p *LinkPreview, up *UploadedMedia) (id string, at time.Time, err error)
 }
 
 // Outbox is the only path a message takes out of this machine. Every check
@@ -207,6 +212,16 @@ func (o *Outbox) send(ctx context.Context, req SendRequest) (SendResult, error) 
 		media.Caption = strings.TrimSpace(text)
 		result.Kind = media.Kind
 	}
+	var preview *LinkPreview
+	if req.LinkPreview != nil {
+		if media != nil {
+			return result, refuse(CodeInvalid, "a link preview goes on a text message; it cannot be combined with media")
+		}
+		var se *SendError
+		if preview, se = preparePreview(req.LinkPreview, text, cfg.Media.SendMaxBytes); se != nil {
+			return result, se
+		}
+	}
 
 	if cfg.Paused {
 		return result, refuse(CodePaused, "sending is paused ('resume' to lift)")
@@ -267,10 +282,13 @@ func (o *Outbox) send(ctx context.Context, req SendRequest) (SendResult, error) 
 
 	var id string
 	var at time.Time
-	if media == nil {
-		id, at, err = o.Sender.SendText(ctx, jid, text)
-	} else {
+	switch {
+	case media != nil:
 		id, at, err = o.sendMedia(ctx, jid, media)
+	case preview != nil:
+		id, at, err = o.sendLink(ctx, jid, text, preview)
+	default:
+		id, at, err = o.Sender.SendText(ctx, jid, text)
 	}
 	if err != nil {
 		return result, refuse(CodeSendFailed, "%v", err)
@@ -347,6 +365,11 @@ func (o *Outbox) keepSentMedia(ctx context.Context, chatJID, id string, m *Media
 
 func (o *Outbox) logArchiveError(chatJID string, err error) {
 	o.Log.Error(yardlogs.EventWAArchiveError, slog.String(yardlogs.KeyMessage, "recording a sent message failed"),
+		slog.String(yardlogs.KeyChatJID, chatJID), slog.String(yardlogs.KeyError, err.Error()))
+}
+
+func (o *Outbox) logPreviewUploadError(chatJID string, err error) {
+	o.Log.Warn(yardlogs.EventWAMediaFailed, slog.String(yardlogs.KeyMessage, "link preview image upload failed; sending the small thumbnail only"),
 		slog.String(yardlogs.KeyChatJID, chatJID), slog.String(yardlogs.KeyError, err.Error()))
 }
 

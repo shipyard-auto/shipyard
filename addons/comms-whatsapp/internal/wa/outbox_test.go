@@ -30,6 +30,14 @@ type fakeSender struct {
 	n         int
 	uploads   int
 	media     []*MediaMessage
+	links     []sentLink
+	upFail    error // fails uploads only
+}
+
+type sentLink struct {
+	text    string
+	preview *LinkPreview
+	up      *UploadedMedia
 }
 
 func (f *fakeSender) Connected() bool { return f.connected }
@@ -58,6 +66,9 @@ func (f *fakeSender) Upload(_ context.Context, data []byte, kind string) (Upload
 	if f.fail != nil {
 		return UploadedMedia{}, f.fail
 	}
+	if f.upFail != nil {
+		return UploadedMedia{}, f.upFail
+	}
 	f.uploads++
 	f.calls = append(f.calls, fmt.Sprintf("upload:%s:%d", kind, len(data)))
 	return UploadedMedia{URL: "https://cdn/x", DirectPath: "/x", FileLength: uint64(len(data))}, nil
@@ -69,6 +80,18 @@ func (f *fakeSender) SendMedia(_ context.Context, _ types.JID, up UploadedMedia,
 	f.n++
 	f.media = append(f.media, m)
 	f.calls = append(f.calls, fmt.Sprintf("media:%s:%s", m.Kind, m.Caption))
+	return fmt.Sprintf("MSG%d", f.n), t0Send, nil
+}
+
+func (f *fakeSender) SendLink(_ context.Context, _ types.JID, text string, p *LinkPreview, up *UploadedMedia) (string, time.Time, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.fail != nil {
+		return "", time.Time{}, f.fail
+	}
+	f.n++
+	f.links = append(f.links, sentLink{text, p, up})
+	f.calls = append(f.calls, "link:"+p.URL)
 	return fmt.Sprintf("MSG%d", f.n), t0Send, nil
 }
 
