@@ -19,6 +19,8 @@
 //	history <chat>        print archived messages
 //	send <chat> --text T  send a message through the daemon's policy
 //	allow|deny <chat>     edit the send allowlist
+//	group info <group>    member counts of a group (cached, paced)
+//	members track <group> record join/leave/promote/demote events
 //	pause|resume          stop or restart all sending
 //	tool <name>           crew exec tool (JSON stdin → envelope stdout)
 //	tools install         write wa_* tool definitions for crew
@@ -114,6 +116,10 @@ func dispatch(ctx context.Context, e env, args []string) error {
 		return runRoute(ctx, e, rest)
 	case "publish":
 		return runPublish(ctx, e, rest)
+	case "group":
+		return runGroup(ctx, e, rest)
+	case "members":
+		return runMembers(ctx, e, rest)
 	case "limits":
 		return runLimits(ctx, e, rest)
 	case "api":

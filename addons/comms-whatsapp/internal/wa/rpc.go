@@ -13,6 +13,8 @@ import (
 	"syscall"
 	"time"
 
+	"go.mau.fi/whatsmeow/types"
+
 	"github.com/shipyard-auto/shipyard/addons/comms-whatsapp/internal/wa/archive"
 	yardlogs "github.com/shipyard-auto/shipyard/internal/logs"
 )
@@ -23,6 +25,7 @@ import (
 //	status → Status
 //	send   SendRequest → SendResult
 //	limits {chat?} → LimitsReport
+//	group_info {chat, refresh?} → GroupInfo
 //
 // Refusals carry their SendCode in error.data.code so clients can branch
 // on it without parsing messages.
@@ -92,6 +95,8 @@ type RPCServer struct {
 	Outbox  *Outbox
 	Tracker *Tracker
 	Log     *slog.Logger
+	// Groups answers group_info; nil disables it.
+	Groups *GroupInfoCache
 }
 
 // ListenRPC binds the socket at path with mode 0600. A leftover socket
@@ -203,6 +208,25 @@ func (s *RPCServer) dispatch(ctx context.Context, req rpcRequest) (any, *RPCErro
 		s.Log.Error(yardlogs.EventWARPCError, slog.String(yardlogs.KeyMessage, "send failed internally"),
 			slog.String(yardlogs.KeyError, err.Error()))
 		return nil, &RPCError{Code: rpcInternal, Message: err.Error()}
+	case "group_info":
+		var p GroupInfoParams
+		if err := json.Unmarshal(req.Params, &p); err != nil {
+			return nil, &RPCError{Code: sendCodeNumbers[CodeInvalid], Message: "invalid params: " + err.Error(), Data: &rpcErrData{Code: CodeInvalid}}
+		}
+		info, err := s.groupInfo(ctx, p)
+		if err == nil {
+			return info, nil
+		}
+		var th *GroupInfoThrottled
+		var se *SendError
+		switch {
+		case errors.As(err, &th):
+			return nil, &RPCError{Code: sendCodeNumbers[CodeRateLimited], Message: err.Error(),
+				Data: &rpcErrData{Code: CodeRateLimited, RetryAfterSeconds: max(1, int(th.RetryAfter.Seconds()))}}
+		case errors.As(err, &se):
+			return nil, &RPCError{Code: sendCodeNumbers[se.Code], Message: se.Msg, Data: &rpcErrData{Code: se.Code}}
+		}
+		return nil, &RPCError{Code: rpcInternal, Message: err.Error()}
 	default:
 		return nil, &RPCError{Code: rpcMethodNotFound, Message: "unknown method " + req.Method}
 	}
@@ -223,6 +247,30 @@ func (s *RPCServer) limits(ctx context.Context, chatQuery string) (LimitsReport,
 		chat = &c
 	}
 	return BuildLimitsReport(ctx, s.Outbox.Archive, cfg, s.Outbox.Now(), chat)
+}
+
+// GroupInfoParams are the params of group_info.
+type GroupInfoParams struct {
+	Chat    string `json:"chat"` // JID, name or phone
+	Refresh bool   `json:"refresh,omitempty"`
+}
+
+func (s *RPCServer) groupInfo(ctx context.Context, p GroupInfoParams) (GroupInfo, error) {
+	if s.Groups == nil {
+		return GroupInfo{}, errors.New("group info is not available on this daemon")
+	}
+	c, err := ResolveChat(ctx, s.Outbox.Archive, p.Chat)
+	if err != nil {
+		return GroupInfo{}, refuse(CodeUnknownChat, "%v", err)
+	}
+	if c.Kind != archive.KindGroup {
+		return GroupInfo{}, refuse(CodeInvalid, "%s is not a group", c.Name)
+	}
+	jid, err := types.ParseJID(c.JID)
+	if err != nil {
+		return GroupInfo{}, err
+	}
+	return s.Groups.Get(ctx, jid, p.Refresh)
 }
 
 // ErrDaemonNotRunning is returned by CallRPC when nothing listens on the

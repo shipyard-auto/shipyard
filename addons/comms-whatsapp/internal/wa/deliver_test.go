@@ -332,3 +332,33 @@ func TestHandlerPublishesSelectedChats(t *testing.T) {
 	hs.h.Handle(ctx, message(types.MessageSource{Chat: family, Sender: ownPN, IsFromMe: true, IsGroup: true}, "own2", text("meu")))
 	check("include_own", "own2@"+family.String())
 }
+
+func TestPublishMembersPostsMembershipScopedEvent(t *testing.T) {
+	var mu sync.Mutex
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &got)
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer srv.Close()
+	d := testDeliverer(t, srv)
+	via := ViaInviteLink
+	if !d.PublishMembers(MemberEvent{SchemaVersion: 1, ID: "evt_wa_gm_x", Timestamp: t0Send, ChatJID: promoA, ChatName: "Fisgou",
+		Action: "join", Member: "abc", Via: &via}) {
+		t.Fatal("publish refused")
+	}
+	runUntil(t, d, func() bool { n, _ := d.Counts(); return n == 1 })
+	mu.Lock()
+	defer mu.Unlock()
+	data, _ := got["data"].(map[string]any)
+	if got["id"] != "evt_wa_gm_x" || got["topic"] != "whatsapp.group.members" || got["scope"] != "whatsapp.members:"+promoA ||
+		data["member"] != "abc" || data["via"] != "invite_link" || data["actor"] != nil {
+		t.Fatalf("event=%v", got)
+	}
+	if _, has := data["actor"]; !has {
+		t.Fatal("actor must be present as null")
+	}
+}

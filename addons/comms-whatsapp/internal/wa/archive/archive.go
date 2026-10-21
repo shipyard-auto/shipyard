@@ -241,6 +241,22 @@ var migrations = []string{
 
 	// v6: what each send carried (text, image, video, audio, file).
 	`ALTER TABLE sent ADD COLUMN kind TEXT NOT NULL DEFAULT 'text';`,
+
+	// v7: group membership changes of tracked groups. member and actor are
+	// keyed hashes, never JIDs; seq is the cursor, as in messages.
+	`ALTER TABLE chats ADD COLUMN members_tracked INTEGER NOT NULL DEFAULT 0;
+	CREATE TABLE group_events (
+		seq       INTEGER PRIMARY KEY AUTOINCREMENT,
+		id        TEXT NOT NULL UNIQUE,
+		chat_jid  TEXT NOT NULL REFERENCES chats(jid) ON DELETE CASCADE,
+		ts        INTEGER NOT NULL,
+		action    TEXT NOT NULL CHECK (action IN ('join','leave','promote','demote')),
+		member    TEXT NOT NULL,
+		actor     TEXT,
+		via       TEXT
+	);
+	CREATE INDEX group_events_chat_seq ON group_events(chat_jid, seq);
+	CREATE INDEX group_events_ts ON group_events(ts);`,
 }
 
 // Open opens (creating if needed) the archive at path with mode 0600 and

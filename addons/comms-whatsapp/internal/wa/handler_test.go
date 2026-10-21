@@ -53,6 +53,14 @@ func (d *fakeDir) PNForLID(_ context.Context, lid types.JID) (types.JID, bool) {
 	pn, ok := d.lids[lid]
 	return pn, ok
 }
+func (d *fakeDir) LIDForPN(_ context.Context, pn types.JID) (types.JID, bool) {
+	for lid, p := range d.lids {
+		if p == pn {
+			return lid, true
+		}
+	}
+	return types.JID{}, false
+}
 func (d *fakeDir) ContactName(_ context.Context, j types.JID) string { return d.contacts[j].Name }
 func (d *fakeDir) GroupName(_ context.Context, j types.JID) string   { return d.groups[j] }
 func (d *fakeDir) Contacts(context.Context) (map[types.JID]ContactName, error) {

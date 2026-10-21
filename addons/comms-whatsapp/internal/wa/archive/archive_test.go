@@ -313,7 +313,7 @@ func TestMigrationFromV1KeepsData(t *testing.T) {
 	_ = s.Close()
 	raw, err := Open(ctx, path)
 	must(t, err)
-	if _, err := raw.db.Exec(`DROP TABLE media; DROP TABLE sent; DROP INDEX IF EXISTS sent_ts;`); err != nil {
+	if _, err := raw.db.Exec(`DROP TABLE group_events; DROP TABLE media; DROP TABLE sent; DROP INDEX IF EXISTS sent_ts;`); err != nil {
 		t.Fatal(err)
 	}
 	// SQLite cannot drop the added columns portably; rebuild v1 tables.

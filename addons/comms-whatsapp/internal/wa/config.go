@@ -67,6 +67,9 @@ type Config struct {
 
 	// Media controls which attachments of watched chats are downloaded.
 	Media MediaConfig `json:"media"`
+
+	// MembersTTL is how long membership events of tracked groups are kept.
+	MembersTTL string `json:"members_ttl"`
 }
 
 // MediaConfig is the attachment download policy. Files are kept next to
@@ -233,6 +236,7 @@ func DefaultConfig() Config {
 		Humanize:   true,
 		Media: MediaConfig{Download: defaultMediaDownload(), MaxBytes: DefaultMediaMaxBytes,
 			SendMaxBytes: DefaultMediaSendMaxBytes},
+		MembersTTL: FormatDuration(DefaultMembersTTL),
 	}
 }
 
@@ -249,6 +253,9 @@ func (c Config) Validate() error {
 	}
 	if _, err := ParseTTL(c.DefaultTTL); err != nil {
 		return fmt.Errorf("config: default_ttl: %w", err)
+	}
+	if _, err := ParseTTL(c.MembersTTL); err != nil {
+		return fmt.Errorf("config: members_ttl: %w", err)
 	}
 	if _, err := ParseRate(c.Limits.PerChat); err != nil {
 		return fmt.Errorf("config: limits.per_chat: %w", err)
@@ -348,6 +355,15 @@ func (c Config) DefaultTTLDuration() time.Duration {
 	return d
 }
 
+// MembersTTLDuration is MembersTTL parsed, DefaultMembersTTL if invalid.
+func (c Config) MembersTTLDuration() time.Duration {
+	d, err := ParseTTL(c.MembersTTL)
+	if err != nil {
+		return DefaultMembersTTL
+	}
+	return d
+}
+
 // Set updates one field by its CLI key.
 func (c *Config) Set(key, value string) error {
 	switch key {
@@ -355,6 +371,8 @@ func (c *Config) Set(key, value string) error {
 		c.DeviceName = value
 	case "default-ttl":
 		c.DefaultTTL = value
+	case "members-ttl":
+		c.MembersTTL = value
 	case "limit-per-chat":
 		c.Limits.PerChat = value
 	case "limit-per-group":
@@ -441,7 +459,7 @@ func (c *Config) Set(key, value string) error {
 // one of them: pause/resume have their own commands.
 var ConfigKeys = []string{"device-name", "default-ttl", "limit-per-chat", "limit-per-group", "limit-global",
 	"allow-groups", "max-chars", "humanize", "fairway-addr", "include-own", "publish-events", "api-addr",
-	"media-download", "media-max-size", "media-send-max-size"}
+	"media-download", "media-max-size", "media-send-max-size", "members-ttl"}
 
 // LoadConfig reads path, returning DefaultConfig when it does not exist.
 func LoadConfig(path string) (Config, error) {
