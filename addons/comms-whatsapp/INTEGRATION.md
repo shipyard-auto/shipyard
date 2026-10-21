@@ -281,7 +281,7 @@ Requires `whatsapp.send:<chat>`, the chat on the owner's allowlist, and
 ```
 POST /api/whatsapp/send
 {"chat": "<jid|name|phone>", "text": "Ração 30% off", "idempotency_key": "promo-881-grupoA",
- "dry_run": false, "media": {…}?}
+ "dry_run": false, "media": {…}?, "link_preview": {…}?}
 → {"msg_id", "kind", "chat", "chat_name", "sent_at", "duplicate"}
 ```
 
@@ -297,6 +297,16 @@ POST /api/whatsapp/send
   - Audio carries no caption.
   - Anything else goes as a document.
   - The limit is the owner's `media-send-max-size`, 16 MB by default.
+- **Link preview.** A text message can carry the card WhatsApp shows
+  above a link: `"link_preview": {"url": "https://amzn.to/…", "title"?,
+  "description"?, "image"?: {"data"|"upload_id", "mime_type"?}}`.
+  - `url` must appear in `text` exactly as written.
+  - The daemon never fetches the URL. The card shows exactly what you pass,
+    so short links and pages that block bots work too.
+  - The image is JPEG or PNG. It goes as a large card, plus a small inline
+    thumbnail for older clients. If the large upload fails, the message
+    still goes out with the small one.
+  - Not combined with `media`. The result `kind` is `text`.
 - **Large files** are uploaded in chunks first, because fairway caps one
   request at 4 MB:
 

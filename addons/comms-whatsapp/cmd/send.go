@@ -34,15 +34,23 @@ func runSend(ctx context.Context, e env, args []string) error {
 	voiceNote := fs.Bool("voice-note", false, "send an Ogg/Opus --file as a voice note")
 	mimeType := fs.String("mime", "", "MIME type of --file (default: from its name, then its content)")
 	fileName := fs.String("file-name", "", "name the recipient sees for a document (default: the file's name)")
+	linkURL := fs.String("link-url", "", "show a preview card for this link (it must appear in --text)")
+	linkTitle := fs.String("link-title", "", "title of the preview card (needs --link-url)")
+	linkDesc := fs.String("link-description", "", "description of the preview card (needs --link-url)")
+	linkImage := fs.String("link-image", "", "JPEG/PNG image of the preview card (needs --link-url)")
 	asJSON := fs.Bool("json", false, "emit JSON")
 	pos, err := parse(fs, args)
 	if err != nil {
 		return err
 	}
 	if len(pos) != 1 {
-		return errors.New("usage: send <chat> (--text T | --stdin | --file F [--text caption]) [--idempotency-key K] [--dry-run] [--json]")
+		return errors.New("usage: send <chat> (--text T | --stdin | --file F [--text caption]) [--link-url U [--link-title T] [--link-description D] [--link-image F]] [--idempotency-key K] [--dry-run] [--json]")
 	}
 	media, err := cliMedia(*file, *mimeType, *fileName, *voiceNote)
+	if err != nil {
+		return err
+	}
+	preview, err := cliLinkPreview(*linkURL, *linkTitle, *linkDesc, *linkImage)
 	if err != nil {
 		return err
 	}
@@ -58,7 +66,7 @@ func runSend(ctx context.Context, e env, args []string) error {
 		body = strings.TrimRight(string(raw), "\n")
 	}
 
-	res, err := sendVia(ctx, e, pos[0], wa.SendRequest{Text: body, Media: media, IdempotencyKey: *key, DryRun: *dryRun})
+	res, err := sendVia(ctx, e, pos[0], wa.SendRequest{Text: body, Media: media, LinkPreview: preview, IdempotencyKey: *key, DryRun: *dryRun})
 	if err != nil {
 		var se *wa.SendError
 		if errors.As(err, &se) {
@@ -104,6 +112,29 @@ func cliMedia(file, mimeType, fileName string, voiceNote bool) (*wa.OutMedia, er
 		return nil, fmt.Errorf("--file: %w", err)
 	}
 	return &wa.OutMedia{Path: abs, MimeType: mimeType, FileName: fileName, VoiceNote: voiceNote}, nil
+}
+
+// cliLinkPreview builds the preview card of a local send; its image path
+// is made absolute like --file's.
+func cliLinkPreview(link, title, desc, img string) (*wa.OutLinkPreview, error) {
+	if link == "" {
+		if title != "" || desc != "" || img != "" {
+			return nil, errors.New("--link-title, --link-description and --link-image need --link-url")
+		}
+		return nil, nil
+	}
+	p := &wa.OutLinkPreview{URL: link, Title: title, Description: desc}
+	if img != "" {
+		abs, err := filepath.Abs(img)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := os.Stat(abs); err != nil {
+			return nil, fmt.Errorf("--link-image: %w", err)
+		}
+		p.Image = &wa.OutMedia{Path: abs}
+	}
+	return p, nil
 }
 
 // sendVia resolves a chat name/phone/JID locally, then asks the daemon to

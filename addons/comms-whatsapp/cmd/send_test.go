@@ -38,6 +38,13 @@ func (s *stubSender) SendMedia(_ context.Context, _ types.JID, _ wa.UploadedMedi
 	return "MED" + string(rune('0'+len(s.media))), time.Now(), nil
 }
 
+func (s *stubSender) SendLink(_ context.Context, _ types.JID, text string, _ *wa.LinkPreview, _ *wa.UploadedMedia) (string, time.Time, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.texts = append(s.texts, text)
+	return "LNK" + string(rune('0'+len(s.texts))), time.Now(), nil
+}
+
 func (s *stubSender) Connected() bool                               { return true }
 func (s *stubSender) Typing(context.Context, types.JID, bool) error { return nil }
 func (s *stubSender) SendText(_ context.Context, _ types.JID, text string) (string, time.Time, error) {

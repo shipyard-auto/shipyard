@@ -230,11 +230,15 @@ POST <prefix>/chats  body (optional): {"search":"promo", "kind":"group",
   "watched_only":true}  → {"chats":[{"jid","name","kind","watched",…}]}
 POST <prefix>/send  (scope whatsapp.send:<chat>)
   {"chat":"<jid|name|phone>", "text":"…", "idempotency_key":"promo-123",
-   "dry_run":false, "media":{…}?}
+   "dry_run":false, "media":{…}?, "link_preview":{…}?}
   → {"msg_id","kind","chat","chat_name","sent_at","duplicate"}
   media attaches a file, with text as its caption (see 'help media'):
     {"data":"<base64, up to 2 MiB>"}  or  {"upload_id":"up_…"} (below),
     plus optional "mime_type", "file_name" (documents), "voice_note".
+  link_preview shows a card for a link of the text (not with media):
+    {"url":"<as it appears in text>", "title"?, "description"?,
+     "image"?:{"data"|"upload_id", "mime_type"?}}  — JPEG/PNG. The daemon
+    never fetches the URL: the card shows exactly what you pass.
   The scope is the client's permission; every rule of 'help sending' still
   applies on top (allowlist, allow-groups, limits, pause, humanize), so the
   owner keeps the last word. Always pass an idempotency_key: a retry with
@@ -312,7 +316,7 @@ filter, scopes are fairway's.`,
 	},
 	{
 		name: "send", group: "Sending",
-		usage:   "send <chat> (--text T | --stdin | --file F [--text caption]) [--idempotency-key K] [--dry-run] [--json]",
+		usage:   "send <chat> (--text T | --stdin | --file F [--text caption]) [--link-url U [--link-title T] [--link-description D] [--link-image F]] [--idempotency-key K] [--dry-run] [--json]",
 		summary: "send a text message or a file through the daemon's policy",
 		details: `Asks the running daemon to send a text message or, with --file, an image,
 video, audio or document (--text becomes its caption; see 'help media').
@@ -322,6 +326,10 @@ sending. --idempotency-key makes retries safe: a repeated key returns the
 first result (duplicate=true) instead of sending again — always pass one
 from automation. Shows "typing…" first when humanize is on.
 
+--link-url shows a preview card for a link of the text, with
+--link-title, --link-description and --link-image (JPEG/PNG). The daemon
+never fetches the link: the card shows what you pass. Not with --file.
+
 The daemon must be running; with it stopped, send fails (exit 1).`,
 		examples: []string{
 			`send "Vini Eduqo" --text "Fala Vini!" --dry-run`,
@@ -329,6 +337,7 @@ The daemon must be running; with it stopped, send fails (exit 1).`,
 			`echo "texto longo" | {prog} send 5512982016477 --stdin --json`,
 			`send "Promos da Casa" --file ./oferta.jpg --text "Ração 30% off" --idempotency-key promo-881`,
 			`send "Vini Eduqo" --file ./audio.ogg --voice-note`,
+			`send "Promos da Casa" --text "Ração 30% off https://amzn.to/x" --link-url https://amzn.to/x --link-title "Ração 15kg" --link-image ./racao.jpg`,
 		},
 	},
 	{
