@@ -139,7 +139,7 @@ func (b *CLIBackend) Run(ctx context.Context, in RunInput, _ ToolDispatcher) (Ru
 		args = append(args, "--resume", in.History.SessionID)
 	}
 
-	cfgPath, cleanup, err := b.buildMCPConfig(in.Agent)
+	cfgPath, denyArgs, cleanup, err := b.buildMCPConfig(in.Agent)
 	if err != nil {
 		return RunOutput{}, fmt.Errorf("cli mcp config: %w", err)
 	}
@@ -160,6 +160,9 @@ func (b *CLIBackend) Run(ctx context.Context, in RunInput, _ ToolDispatcher) (Ru
 			"--mcp-config", cfgPath,
 			"--strict-mcp-config",
 		)
+		// Whitelists of remote MCP servers, enforced by the CLI itself as
+		// deny rules (see mcpallow.go).
+		args = append(args, denyArgs...)
 	}
 
 	if bt := in.Agent.BuiltinTools; bt != nil {
@@ -292,7 +295,8 @@ func parseClaudeJSONResult(raw []byte, prevSID string) (RunOutput, error) {
 }
 
 // buildMCPConfig materialises a temporary `--mcp-config` JSON file for the
-// given agent. It returns ("", noop, nil) when the agent declares neither
+// given agent, plus the `--disallowedTools=` argv elements that enforce the
+// tool whitelists of remote (non-stdio) refs. It returns ("", nil, noop, nil) when the agent declares neither
 // tools nor mcp_servers — preserving the original zero-config behaviour so
 // existing agents do not pay for a feature they don't use.
 //
@@ -307,15 +311,19 @@ func parseClaudeJSONResult(raw []byte, prevSID string) (RunOutput, error) {
 //	  }
 //	}
 //
+// A restricted stdio ref is replaced by an mcp-filter wrapper; a restricted
+// remote ref keeps its verbatim entry and is narrowed by deny rules instead.
+//
 // Cleanup is idempotent and always safe to defer, even on the error path.
-func (b *CLIBackend) buildMCPConfig(agent *crew.Agent) (string, func(), error) {
+func (b *CLIBackend) buildMCPConfig(agent *crew.Agent) (string, []string, func(), error) {
 	noop := func() {}
 	if agent == nil {
-		return "", noop, errors.New("nil agent")
+		return "", nil, noop, errors.New("nil agent")
 	}
 	if len(agent.Tools) == 0 && len(agent.MCPServers) == 0 {
-		return "", noop, nil
+		return "", nil, noop, nil
 	}
+	var denyRules []string
 
 	servers := map[string]json.RawMessage{}
 	// tempPaths accumulates per-ref upstream-config files written for the
@@ -332,7 +340,7 @@ func (b *CLIBackend) buildMCPConfig(agent *crew.Agent) (string, func(), error) {
 		self, err := b.resolveSelfPath()
 		if err != nil {
 			cleanup()
-			return "", noop, fmt.Errorf("self path: %w", err)
+			return "", nil, noop, fmt.Errorf("self path: %w", err)
 		}
 		internal := map[string]any{
 			"type":    "stdio",
@@ -342,7 +350,7 @@ func (b *CLIBackend) buildMCPConfig(agent *crew.Agent) (string, func(), error) {
 		raw, err := json.Marshal(internal)
 		if err != nil {
 			cleanup()
-			return "", noop, fmt.Errorf("marshal internal server: %w", err)
+			return "", nil, noop, fmt.Errorf("marshal internal server: %w", err)
 		}
 		servers[internalServerKey] = raw
 	}
@@ -351,19 +359,19 @@ func (b *CLIBackend) buildMCPConfig(agent *crew.Agent) (string, func(), error) {
 		src, err := LoadClaudeMCPsForScope(b.userHomeDir, agent.ProjectScope)
 		if err != nil {
 			cleanup()
-			return "", noop, err
+			return "", nil, noop, err
 		}
 		resolved, err := ResolveServerRefs(agent.MCPServers, src)
 		if err != nil {
 			cleanup()
-			return "", noop, err
+			return "", nil, noop, err
 		}
 		// Iterate the original ref slice (not the resolved map) so we can
 		// access each ref's Tools whitelist.
 		for _, ref := range agent.MCPServers {
 			if _, clash := servers[ref.Ref]; clash {
 				cleanup()
-				return "", noop, fmt.Errorf("mcp_servers: ref %q collides with internal server key", ref.Ref)
+				return "", nil, noop, fmt.Errorf("mcp_servers: ref %q collides with internal server key", ref.Ref)
 			}
 			upstream := resolved[ref.Ref]
 			if ref.AllowsAllTools() {
@@ -372,19 +380,32 @@ func (b *CLIBackend) buildMCPConfig(agent *crew.Agent) (string, func(), error) {
 				servers[ref.Ref] = upstream
 				continue
 			}
+			stdio, err := isStdioEntry(upstream)
+			if err != nil {
+				cleanup()
+				return "", nil, noop, fmt.Errorf("mcp_servers: ref %q: parse entry: %w", ref.Ref, err)
+			}
+			if !stdio {
+				// Remote server: Claude Code holds its OAuth sign-in, so
+				// the entry must reach it untouched. The whitelist becomes
+				// deny rules for every other tool name.
+				servers[ref.Ref] = upstream
+				denyRules = append(denyRules, remoteToolDenyRules(ref.Ref, ref.Tools)...)
+				continue
+			}
 			// Restricted whitelist: write the upstream config to a temp
 			// file and replace the entry with an mcp-filter invocation
 			// that proxies stdio between claude and the real server.
 			upstreamPath, err := writeUpstreamConfig(upstream)
 			if err != nil {
 				cleanup()
-				return "", noop, fmt.Errorf("write upstream config for %q: %w", ref.Ref, err)
+				return "", nil, noop, fmt.Errorf("write upstream config for %q: %w", ref.Ref, err)
 			}
 			tempPaths = append(tempPaths, upstreamPath)
 			self, err := b.resolveSelfPath()
 			if err != nil {
 				cleanup()
-				return "", noop, fmt.Errorf("self path: %w", err)
+				return "", nil, noop, fmt.Errorf("self path: %w", err)
 			}
 			wrapper := map[string]any{
 				"type":    "stdio",
@@ -398,36 +419,42 @@ func (b *CLIBackend) buildMCPConfig(agent *crew.Agent) (string, func(), error) {
 			raw, err := json.Marshal(wrapper)
 			if err != nil {
 				cleanup()
-				return "", noop, fmt.Errorf("marshal wrapper for %q: %w", ref.Ref, err)
+				return "", nil, noop, fmt.Errorf("marshal wrapper for %q: %w", ref.Ref, err)
 			}
 			servers[ref.Ref] = raw
 		}
+	}
+
+	denyArgs, err := disallowedToolsArgs(denyRules)
+	if err != nil {
+		cleanup()
+		return "", nil, noop, fmt.Errorf("mcp_servers: %w", err)
 	}
 
 	body := map[string]any{"mcpServers": servers}
 	data, err := json.Marshal(body)
 	if err != nil {
 		cleanup()
-		return "", noop, fmt.Errorf("marshal mcp config: %w", err)
+		return "", nil, noop, fmt.Errorf("marshal mcp config: %w", err)
 	}
 
 	tmp, err := os.CreateTemp("", "shipyard-crew-mcp-*.json")
 	if err != nil {
 		cleanup()
-		return "", noop, fmt.Errorf("create temp: %w", err)
+		return "", nil, noop, fmt.Errorf("create temp: %w", err)
 	}
 	mainPath := tmp.Name()
 	tempPaths = append(tempPaths, mainPath)
 	if _, err := tmp.Write(data); err != nil {
 		_ = tmp.Close()
 		cleanup()
-		return "", noop, fmt.Errorf("write temp: %w", err)
+		return "", nil, noop, fmt.Errorf("write temp: %w", err)
 	}
 	if err := tmp.Close(); err != nil {
 		cleanup()
-		return "", noop, fmt.Errorf("close temp: %w", err)
+		return "", nil, noop, fmt.Errorf("close temp: %w", err)
 	}
-	return mainPath, cleanup, nil
+	return mainPath, denyArgs, cleanup, nil
 }
 
 // writeUpstreamConfig persists a single MCP server definition (as it

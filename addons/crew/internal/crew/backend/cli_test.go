@@ -836,3 +836,52 @@ func itoa(n int) string {
 	}
 	return string(buf[i:])
 }
+
+func TestCLI_RemoteMCPWhitelistPassedAsDenyRules(t *testing.T) {
+	// An http ref with an explicit tools list must run (it used to fail in
+	// mcp-filter, which only spoke stdio) and hand the CLI the deny rules
+	// that hide everything outside the list. The agent's own
+	// --disallowedTools stays in place: Claude Code merges both.
+	agent, argsFile := captureArgvAgent(t, []string{"base", "--disallowedTools", "Bash"}, "")
+	agent.MCPServers = []crew.MCPServerRef{{Ref: "meta-ads", Tools: []string{"get_insights"}}}
+	home := t.TempDir()
+	if err := os.WriteFile(filepath.Join(home, ".claude.json"),
+		[]byte(`{"mcpServers":{"meta-ads":{"type":"http","url":"https://mcp.facebook.com/ads"}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	b := NewCLIBackend().
+		WithSelfPath("/fake/shipyard-crew").
+		WithUserHomeDir(func() (string, error) { return home, nil })
+	if _, err := b.Run(context.Background(), RunInput{User: "ping", Agent: agent}, nil); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	got := readArgvLines(t, argsFile)
+	if got[0] != "base" || got[1] != "--disallowedTools" || got[2] != "Bash" {
+		t.Fatalf("backend.command prefix changed: %v", got[:3])
+	}
+	var rules []string
+	for _, a := range got {
+		if v, ok := strings.CutPrefix(a, "--disallowedTools="); ok {
+			rules = append(rules, strings.Split(v, ",")...)
+		}
+	}
+	if len(rules) == 0 {
+		t.Fatalf("no deny rules in argv: %v", got)
+	}
+	for _, r := range rules {
+		if claudeGlobMatch(r, "mcp__meta-ads__get_insights") {
+			t.Fatalf("rule %q denies the whitelisted tool", r)
+		}
+	}
+	denied := false
+	for _, r := range rules {
+		if claudeGlobMatch(r, "mcp__meta-ads__create_campaign") {
+			denied = true
+		}
+	}
+	if !denied {
+		t.Fatalf("create_campaign stays visible")
+	}
+}

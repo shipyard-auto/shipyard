@@ -139,9 +139,27 @@ tools:
   - ref: echo
 mcp_servers:
   - ref: chrome-devtools     # must exist under ~/.claude.json mcpServers.<key>
+    tools: [take_screenshot, click]
+  - ref: meta-ads            # remote (type: http), OAuth done in Claude Code
+    tools: [get_ad_accounts, get_campaigns, get_insights]
+  - ref: playwright
+    tools: ["*"]             # every tool the server offers, explicitly
 ```
 
-At run-time, the crew backend copies the matching block **verbatim** from `~/.claude.json` into the synthesised `--mcp-config` handed to the external CLI. If the ref is missing, the run fails with the list of available keys (or `<none>` when `~/.claude.json` is absent) — there is no silent fallback. Only the root-level `mcpServers` is read in v1; per-project scopes (`projects.<path>.mcpServers`) are ignored (roadmap §1.7).
+At run-time, the crew backend looks the ref up in `~/.claude.json` (root `mcpServers`, with `projects.<project_scope>.mcpServers` layered on top when the agent sets `project_scope`). If the ref is missing, the run fails with the list of available keys (or `<none>` when `~/.claude.json` is absent) — there is no silent fallback.
+
+`tools` is required and is a whitelist: the agent sees and can call only the tools listed, and a tool the server adds later stays hidden. `["*"]` opts into the full surface. How the whitelist is enforced depends on the server type:
+
+| Server type in `~/.claude.json` | Whitelist enforced by |
+|---|---|
+| `stdio` (or no `type`) | `shipyard-crew mcp-filter`, a stdio proxy that replaces the entry: it filters `tools/list` and refuses `tools/call` outside the list. |
+| `http`, `sse`, `ws` (remote) | Claude Code itself. The entry is passed through **verbatim**, so the OAuth sign-in Claude Code stored for it (via `/mcp` or `claude mcp login`) keeps working, and crew adds `--disallowedTools=` rules that deny every other tool name the server could expose. |
+
+The remote rules are computed from the whitelist alone; crew never connects to the server. They rely on two Claude Code behaviours: tools are exposed as `mcp__<server>__<tool>` with every character outside `[A-Za-z0-9_-]` turned into `_` (write the whitelist in either form), and a deny rule's `*` matches any run of characters. A rule for each character no listed tool uses, plus one per branch of the trie of the listed names, covers the whole complement. Under `--permission-mode bypassPermissions` deny rules are the only rules Claude Code honours, and they remove the tools from the model's context, not just the calls. Some consequences:
+
+- The rules add to any `--disallowedTools` already in `backend.command`; there is no need to keep a hand-written denylist of a server's write tools any more.
+- Expect about 5 KiB of argv per listed tool (20 tools ≈ 100 KiB). Above 512 KiB in total the run fails with an error instead of risking `ARG_MAX`.
+- Do not put a `--settings` file with `permissions.deny` in `backend.command` expecting it to merge: when `--settings` is given twice, Claude Code keeps only the last one. The rules are passed as flags for that reason.
 
 When the agent has neither tools nor `mcp_servers`, no `--mcp-config` is generated and the CLI is invoked exactly as before — so existing agents pay nothing for the new feature.
 
@@ -198,7 +216,8 @@ All agents declare `schema_version: "1"` at the top. Unknown fields are rejected
 | `tools[].url` | string | if `protocol=http` | — | Tool endpoint |
 | `tools[].headers` | map[string]string | no | `{}` | HTTP headers; values support templates |
 | `tools[].body` | string | no | `""` | HTTP body; supports templates |
-| `mcp_servers[].ref` | string | no | — | Key from `~/.claude.json` `mcpServers` to expose verbatim on this agent's MCP config |
+| `mcp_servers[].ref` | string | no | — | Key from `~/.claude.json` `mcpServers` to expose on this agent's MCP config |
+| `mcp_servers[].tools` | []string | yes (per ref) | — | Whitelist of that server's tools, or `["*"]` for all. Works for stdio and remote (`http`/`sse`) servers. See [Using MCPs you already installed in Claude Code](#using-mcps-you-already-installed-in-claude-code). |
 | `builtin_tools` | []string | no | absent (all) | `cli` only. Built-in tools of the host CLI the agent keeps (`Bash`, `Read`, …). `[]` removes them all. See [Built-in tools](#built-in-tools-backend-cli). |
 
 Validation rules enforced by the loader:
@@ -309,9 +328,13 @@ The synthesised config always has the same shape:
       "command": "<path to shipyard-crew>",
       "args": ["mcp-serve", "--agent", "<name>"]
     },
-    // Any entry listed in agent.yaml::mcp_servers[] is copied byte-for-byte
-    // from ~/.claude.json.mcpServers.<ref>. A missing ref is a hard error.
-    "chrome-devtools": { "type": "stdio", "command": "npx", "args": ["-y", "chrome-devtools-mcp"] }
+    // Any entry listed in agent.yaml::mcp_servers[] comes from
+    // ~/.claude.json.mcpServers.<ref>. A missing ref is a hard error.
+    // tools: ["*"] and remote (http/sse) entries are copied byte-for-byte;
+    // a stdio entry with a whitelist becomes an mcp-filter wrapper.
+    "chrome-devtools": { "type": "stdio", "command": "<path to shipyard-crew>",
+                         "args": ["mcp-filter", "--upstream-config", "<tmp>", "--tools", "take_screenshot,click"] },
+    "meta-ads": { "type": "http", "url": "https://mcp.facebook.com/ads" }
   }
 }
 ```
@@ -444,8 +467,6 @@ The roadmap at `docs/crew/roadmap.md` has the full list. Highlights:
 - No multi-agent communication / `crew_call` tool (§2.2).
 - No integrated secrets manager; use `{{env.*}}` and shell-level injection (§2.3).
 - Backend `cli` exposes declared tools through an auto-provisioned MCP stdio bridge (Task 34), but:
-  - `mcp_servers[]` does not yet support an `only:` filter; referencing an external MCP exposes all of its tools (§1.7).
-  - Only the root `mcpServers` of `~/.claude.json` is consumed; per-project scopes (`projects.<path>.mcpServers`) are ignored (§1.7).
   - In `execution.mode: service`, the internal MCP subprocess is still cold-started per turn (§1.7).
 - The `ollama` pool is documented as an example in `config.yaml` but has no dedicated backend driver in v1 (§2.5).
 - Log format is provisional (§1.1).
