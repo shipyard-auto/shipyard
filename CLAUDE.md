@@ -615,6 +615,24 @@ WebFetch) besides what it declares. `builtin_tools: []` in `agent.yaml` removes
 them (`--tools=` plus `--strict-mcp-config`); `[Read, Grep]` keeps a subset;
 absent keeps all. Agents that act on the user's behalf should set it.
 
+#### MCP tool whitelists (`mcp_servers[].tools`)
+
+Each `mcp_servers` ref names a server from `~/.claude.json` and a required
+`tools` whitelist (`["*"]` = all). The agent sees and can call only those
+tools; tools the server adds later stay hidden.
+
+- **stdio** refs are wrapped in `shipyard-crew mcp-filter` (stdio proxy,
+  `internal/crew/mcpfilter`), which filters `tools/list` and `tools/call`.
+- **Remote** refs (`http`/`sse`/`ws`) cannot be proxied: Claude Code holds
+  their OAuth tokens. The entry is passed through verbatim (the stored
+  sign-in keeps matching) and `backend/mcpallow.go` turns the whitelist into
+  `--disallowedTools=` rules covering every other name the server could
+  expose, using Claude Code's name normalization (`[A-Za-z0-9_-]`, rest → `_`)
+  and `*` globs. Under `bypassPermissions` only deny rules hold, and they
+  remove the tools from the model's context. The rules are flags rather than a
+  `--settings` file because a second `--settings` replaces the first.
+  About 5 KiB of argv per listed tool; above 512 KiB the run errors.
+
 ---
 
 ### `shipyard comms`

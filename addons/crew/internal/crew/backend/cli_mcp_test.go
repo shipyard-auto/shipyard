@@ -36,7 +36,7 @@ func readMCPConfig(t *testing.T, path string) map[string]map[string]json.RawMess
 func TestBuildMCPConfig_NoToolsNoMCP(t *testing.T) {
 	b := newCLIBackendWithHome(t, t.TempDir(), "/usr/local/bin/shipyard-crew")
 	agent := &crew.Agent{Name: "a"}
-	path, cleanup, err := b.buildMCPConfig(agent)
+	path, _, cleanup, err := b.buildMCPConfig(agent)
 	if err != nil {
 		t.Fatalf("unexpected: %v", err)
 	}
@@ -55,7 +55,7 @@ func TestBuildMCPConfig_InternalServerOnly(t *testing.T) {
 			{Name: "echo", Protocol: crew.ToolExec, Command: []string{"/bin/true"}},
 		},
 	}
-	path, cleanup, err := b.buildMCPConfig(agent)
+	path, _, cleanup, err := b.buildMCPConfig(agent)
 	if err != nil {
 		t.Fatalf("unexpected: %v", err)
 	}
@@ -110,7 +110,7 @@ func TestBuildMCPConfig_ExternalRefCopiedVerbatim(t *testing.T) {
 		Name:       "greeter",
 		MCPServers: []crew.MCPServerRef{{Ref: "chrome-devtools", Tools: []string{"*"}}},
 	}
-	path, cleanup, err := b.buildMCPConfig(agent)
+	path, _, cleanup, err := b.buildMCPConfig(agent)
 	if err != nil {
 		t.Fatalf("unexpected: %v", err)
 	}
@@ -153,7 +153,7 @@ func TestBuildMCPConfig_BothInternalAndExternal(t *testing.T) {
 		Tools:      []crew.Tool{{Name: "echo", Protocol: crew.ToolExec, Command: []string{"/bin/true"}}},
 		MCPServers: []crew.MCPServerRef{{Ref: "playwright", Tools: []string{"*"}}},
 	}
-	path, cleanup, err := b.buildMCPConfig(agent)
+	path, _, cleanup, err := b.buildMCPConfig(agent)
 	if err != nil {
 		t.Fatalf("unexpected: %v", err)
 	}
@@ -183,7 +183,7 @@ func TestBuildMCPConfig_MissingRefHardErrors(t *testing.T) {
 		Name:       "a",
 		MCPServers: []crew.MCPServerRef{{Ref: "ghost", Tools: []string{"*"}}},
 	}
-	_, cleanup, err := b.buildMCPConfig(agent)
+	_, _, cleanup, err := b.buildMCPConfig(agent)
 	defer cleanup()
 	if err == nil {
 		t.Fatalf("expected error")
@@ -203,7 +203,7 @@ func TestBuildMCPConfig_ClaudeConfigMissingButMCPDeclared(t *testing.T) {
 		Name:       "a",
 		MCPServers: []crew.MCPServerRef{{Ref: "x", Tools: []string{"*"}}},
 	}
-	_, cleanup, err := b.buildMCPConfig(agent)
+	_, _, cleanup, err := b.buildMCPConfig(agent)
 	defer cleanup()
 	if err == nil {
 		t.Fatalf("expected error")
@@ -219,7 +219,7 @@ func TestBuildMCPConfig_CleanupRemovesTempFile(t *testing.T) {
 		Name:  "a",
 		Tools: []crew.Tool{{Name: "echo", Protocol: crew.ToolExec, Command: []string{"/bin/true"}}},
 	}
-	path, cleanup, err := b.buildMCPConfig(agent)
+	path, _, cleanup, err := b.buildMCPConfig(agent)
 	if err != nil {
 		t.Fatalf("unexpected: %v", err)
 	}
@@ -249,7 +249,7 @@ func TestBuildMCPConfig_RestrictedToolsRendersFilterWrapper(t *testing.T) {
 		Name:       "greeter",
 		MCPServers: []crew.MCPServerRef{{Ref: "chrome-devtools", Tools: []string{"take_screenshot", "click"}}},
 	}
-	path, cleanup, err := b.buildMCPConfig(agent)
+	path, _, cleanup, err := b.buildMCPConfig(agent)
 	if err != nil {
 		t.Fatalf("unexpected: %v", err)
 	}
@@ -313,7 +313,7 @@ func TestBuildMCPConfig_WildcardToolsKeepsVerbatimEntry(t *testing.T) {
 		Name:       "greeter",
 		MCPServers: []crew.MCPServerRef{{Ref: "chrome-devtools", Tools: []string{"*"}}},
 	}
-	path, cleanup, err := b.buildMCPConfig(agent)
+	path, _, cleanup, err := b.buildMCPConfig(agent)
 	if err != nil {
 		t.Fatalf("unexpected: %v", err)
 	}
@@ -349,7 +349,7 @@ func TestBuildMCPConfig_SelfPathFallsBackToExecutable(t *testing.T) {
 		Name:  "a",
 		Tools: []crew.Tool{{Name: "echo", Protocol: crew.ToolExec, Command: []string{"/bin/true"}}},
 	}
-	path, cleanup, err := b.buildMCPConfig(agent)
+	path, _, cleanup, err := b.buildMCPConfig(agent)
 	if err != nil {
 		t.Fatalf("unexpected: %v", err)
 	}
@@ -359,5 +359,132 @@ func TestBuildMCPConfig_SelfPathFallsBackToExecutable(t *testing.T) {
 	_ = json.Unmarshal(body["mcpServers"][internalServerKey], &def)
 	if def["command"] != "/injected/crew" {
 		t.Fatalf("executable resolver not used: %v", def["command"])
+	}
+}
+
+// writeClaudeJSON writes a ~/.claude.json with the given mcpServers body
+// into a fresh home dir and returns the dir.
+func writeClaudeJSON(t *testing.T, servers string) string {
+	t.Helper()
+	home := t.TempDir()
+	body := `{"mcpServers":` + servers + `}`
+	if err := os.WriteFile(filepath.Join(home, ".claude.json"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return home
+}
+
+// denyRulesFromArgs flattens --disallowedTools=a,b,... elements back into
+// the individual rules.
+func denyRulesFromArgs(t *testing.T, args []string) []string {
+	t.Helper()
+	var rules []string
+	for _, a := range args {
+		v, ok := strings.CutPrefix(a, "--disallowedTools=")
+		if !ok {
+			t.Fatalf("unexpected deny arg %.60q", a)
+		}
+		rules = append(rules, strings.Split(v, ",")...)
+	}
+	return rules
+}
+
+func TestBuildMCPConfig_RemoteRestrictedKeepsEntryAndDeniesTheRest(t *testing.T) {
+	for _, typ := range []string{"http", "sse"} {
+		t.Run(typ, func(t *testing.T) {
+			home := writeClaudeJSON(t, `{"meta-ads":{"type":"`+typ+`","url":"https://mcp.facebook.com/ads"}}`)
+			b := newCLIBackendWithHome(t, home, "/abs/shipyard-crew")
+			agent := &crew.Agent{
+				Name:       "trafego",
+				MCPServers: []crew.MCPServerRef{{Ref: "meta-ads", Tools: []string{"get_ad_accounts", "get_insights"}}},
+			}
+			path, denyArgs, cleanup, err := b.buildMCPConfig(agent)
+			if err != nil {
+				t.Fatalf("unexpected: %v", err)
+			}
+			defer cleanup()
+
+			// The entry reaches Claude Code untouched, so the OAuth sign-in it
+			// stored for this server keeps matching: no mcp-filter hop.
+			var entry map[string]any
+			if err := json.Unmarshal(readMCPConfig(t, path)["mcpServers"]["meta-ads"], &entry); err != nil {
+				t.Fatal(err)
+			}
+			if entry["type"] != typ || entry["url"] != "https://mcp.facebook.com/ads" || entry["command"] != nil {
+				t.Fatalf("remote entry not passed through verbatim: %v", entry)
+			}
+
+			rules := denyRulesFromArgs(t, denyArgs)
+			for _, keep := range []string{"get_ad_accounts", "get_insights"} {
+				if !visible(rules, "mcp__meta-ads__"+keep) {
+					t.Errorf("whitelisted %q denied", keep)
+				}
+			}
+			for _, drop := range []string{"create_campaign", "update_ad", "get_ad_accounts_v2", "get_insight", "some_tool_meta_adds_next_year"} {
+				if visible(rules, "mcp__meta-ads__"+drop) {
+					t.Errorf("%q not denied", drop)
+				}
+			}
+		})
+	}
+}
+
+func TestBuildMCPConfig_RemoteWildcardAddsNoDenyRules(t *testing.T) {
+	home := writeClaudeJSON(t, `{"meta-ads":{"type":"http","url":"https://mcp.facebook.com/ads"}}`)
+	b := newCLIBackendWithHome(t, home, "/abs/shipyard-crew")
+	agent := &crew.Agent{
+		Name:       "trafego",
+		MCPServers: []crew.MCPServerRef{{Ref: "meta-ads", Tools: []string{"*"}}},
+	}
+	_, denyArgs, cleanup, err := b.buildMCPConfig(agent)
+	if err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	defer cleanup()
+	if len(denyArgs) != 0 {
+		t.Fatalf("wildcard must not deny anything, got %d args", len(denyArgs))
+	}
+}
+
+func TestBuildMCPConfig_StdioRestrictedAddsNoDenyRules(t *testing.T) {
+	// Stdio refs keep going through mcp-filter; deny rules are only for
+	// servers the proxy cannot sit in front of.
+	home := writeClaudeJSON(t, `{"chrome":{"type":"stdio","command":"npx"},"meta-ads":{"type":"http","url":"https://x/mcp"}}`)
+	b := newCLIBackendWithHome(t, home, "/abs/shipyard-crew")
+	agent := &crew.Agent{
+		Name: "a",
+		MCPServers: []crew.MCPServerRef{
+			{Ref: "chrome", Tools: []string{"click"}},
+			{Ref: "meta-ads", Tools: []string{"get_ads"}},
+		},
+	}
+	path, denyArgs, cleanup, err := b.buildMCPConfig(agent)
+	if err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	defer cleanup()
+	var chrome map[string]any
+	_ = json.Unmarshal(readMCPConfig(t, path)["mcpServers"]["chrome"], &chrome)
+	if args, _ := chrome["args"].([]any); len(args) == 0 || args[0] != "mcp-filter" {
+		t.Fatalf("stdio ref should still use mcp-filter: %v", chrome)
+	}
+	for _, r := range denyRulesFromArgs(t, denyArgs) {
+		if !strings.HasPrefix(r, "mcp__meta-ads__") {
+			t.Fatalf("deny rule %q outside the remote server", r)
+		}
+	}
+}
+
+func TestBuildMCPConfig_MalformedRemoteEntryErrors(t *testing.T) {
+	home := writeClaudeJSON(t, `{"weird":[1,2]}`)
+	b := newCLIBackendWithHome(t, home, "/abs/shipyard-crew")
+	agent := &crew.Agent{
+		Name:       "a",
+		MCPServers: []crew.MCPServerRef{{Ref: "weird", Tools: []string{"x"}}},
+	}
+	_, _, cleanup, err := b.buildMCPConfig(agent)
+	defer cleanup()
+	if err == nil || !strings.Contains(err.Error(), "weird") {
+		t.Fatalf("want error naming the ref, got %v", err)
 	}
 }
